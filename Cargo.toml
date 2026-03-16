@@ -15,9 +15,8 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-candle-core = "0.8"
-candle-nn = "0.8"
-candle-transformers = "0.8"
+matrixmultiply = "0.3"
+bytemuck = "1"
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
 tokenizers = "0.21"

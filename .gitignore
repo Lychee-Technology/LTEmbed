@@ -21,3 +21,6 @@ target
 #.idea/
 
 .claude/
+
+# Large BERT weight file — download separately, do not commit
+assets/model.safetensors

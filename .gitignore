@@ -22,6 +22,9 @@ target
 
 .claude/
 
+# Distribution directory — contains build artifacts and deployment zips
+dist/
+
 # Large BERT weight file — download separately, do not commit
 assets/model.safetensors
 

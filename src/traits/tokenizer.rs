@@ -50,7 +50,11 @@ impl Tokenizer for HFTokenizer {
             });
         }
 
-        Ok(TokenizerOutput { input_ids, attention_mask, token_type_ids })
+        Ok(TokenizerOutput {
+            input_ids,
+            attention_mask,
+            token_type_ids,
+        })
     }
 }
 

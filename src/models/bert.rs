@@ -1,9 +1,9 @@
 // src/models/bert.rs
 
+use crate::error::LTEmbedError;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
-use crate::error::LTEmbedError;
 
 #[allow(dead_code)]
 pub struct Bert {
@@ -14,10 +14,7 @@ pub struct Bert {
 impl Bert {
     /// Load from `.safetensors` weights and a `config.json` string.
     /// Uses OS-level mmap — no heap copy of the 130MB weight file.
-    pub fn from_files(
-        safetensors_path: &str,
-        config_json: &str,
-    ) -> Result<Self, LTEmbedError> {
+    pub fn from_files(safetensors_path: &str, config_json: &str) -> Result<Self, LTEmbedError> {
         let device = Device::Cpu;
         let config: BertConfig = serde_json::from_str(config_json)
             .map_err(|e| LTEmbedError::ModelLoad(format!("Bad config JSON: {e}")))?;
@@ -126,8 +123,10 @@ mod tests {
         let token_type_ids = vec![0u32; 3];
         let attention_mask = vec![1u32; 3];
 
-        let output = bert.forward(&input_ids, &token_type_ids, &attention_mask).unwrap();
-        assert_eq!(output.len(), 3);       // seq_len = 3
-        assert_eq!(output[0].len(), 384);  // e5-small-v2 hidden_size = 384
+        let output = bert
+            .forward(&input_ids, &token_type_ids, &attention_mask)
+            .unwrap();
+        assert_eq!(output.len(), 3); // seq_len = 3
+        assert_eq!(output[0].len(), 384); // e5-small-v2 hidden_size = 384
     }
 }

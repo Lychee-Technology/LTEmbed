@@ -62,7 +62,9 @@ async fn handler(event: Request) -> Result<Response<Body>, Error> {
         return Ok(Response::builder()
             .status(400)
             .header("content-type", "application/json")
-            .body(Body::Text(r#"{"error": "inputs must not be empty"}"#.to_string()))?);
+            .body(Body::Text(
+                r#"{"error": "inputs must not be empty"}"#.to_string(),
+            ))?);
     }
 
     let engine = match get_engine() {
@@ -71,7 +73,9 @@ async fn handler(event: Request) -> Result<Response<Body>, Error> {
             return Ok(Response::builder()
                 .status(500)
                 .header("content-type", "application/json")
-                .body(Body::Text(format!(r#"{{"error": "Engine init failed: {e}"}}"#)))?);
+                .body(Body::Text(format!(
+                    r#"{{"error": "Engine init failed: {e}"}}"#
+                )))?);
         }
     };
 
@@ -92,7 +96,9 @@ async fn handler(event: Request) -> Result<Response<Body>, Error> {
             return Ok(Response::builder()
                 .status(500)
                 .header("content-type", "application/json")
-                .body(Body::Text(format!(r#"{{"error": "Inference failed: {e}"}}"#)))?);
+                .body(Body::Text(format!(
+                    r#"{{"error": "Inference failed: {e}"}}"#
+                )))?);
         }
     };
 
@@ -124,7 +130,6 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::Text(body.to_string()))
             .unwrap()
-            .into()
     }
 
     #[tokio::test]

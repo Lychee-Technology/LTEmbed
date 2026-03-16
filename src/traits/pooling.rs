@@ -38,7 +38,9 @@ impl Pooling for MeanPooling {
         }
 
         if count == 0 {
-            return Err(LTEmbedError::Inference("All tokens are padding".to_string()));
+            return Err(LTEmbedError::Inference(
+                "All tokens are padding".to_string(),
+            ));
         }
 
         Ok(sum.iter().map(|x| x / count as f32).collect())
@@ -51,10 +53,9 @@ impl Pooling for CLSPooling {
         last_hidden_state: &[Vec<f32>],
         _attention_mask: &[u32],
     ) -> Result<Vec<f32>, LTEmbedError> {
-        last_hidden_state
-            .first()
-            .cloned()
-            .ok_or_else(|| LTEmbedError::Inference("Empty hidden state for CLS pooling".to_string()))
+        last_hidden_state.first().cloned().ok_or_else(|| {
+            LTEmbedError::Inference("Empty hidden state for CLS pooling".to_string())
+        })
     }
 }
 
@@ -98,7 +99,10 @@ mod tests {
         let hs = vec![vec![1.0_f32, 2.0], vec![3.0, 4.0]];
         let mask = vec![0u32, 0]; // all padding
         let result = p.pool(&hs, &mask);
-        assert!(result.is_err(), "Expected error when all tokens are padding");
+        assert!(
+            result.is_err(),
+            "Expected error when all tokens are padding"
+        );
     }
 
     #[test]

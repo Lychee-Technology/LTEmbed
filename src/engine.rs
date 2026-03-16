@@ -30,7 +30,11 @@ impl ZeroVecEngine {
     ) -> Result<Self, LTEmbedError> {
         let bert = Bert::from_files(safetensors_path, config_json)?;
         let tokenizer = HFTokenizer::from_file(tokenizer_path)?;
-        Ok(Self { bert, tokenizer, pooling })
+        Ok(Self {
+            bert,
+            tokenizer,
+            pooling,
+        })
     }
 
     /// Full inference pipeline: text → L2-normalized 384-dim embedding.
@@ -41,7 +45,9 @@ impl ZeroVecEngine {
             &encoded.token_type_ids,
             &encoded.attention_mask,
         )?;
-        let pooled = self.pooling.pool(&last_hidden_state, &encoded.attention_mask)?;
+        let pooled = self
+            .pooling
+            .pool(&last_hidden_state, &encoded.attention_mask)?;
         Ok(l2_normalize(&pooled))
     }
 
@@ -56,8 +62,8 @@ mod tests {
     use super::*;
     use crate::traits::pooling::MeanPooling;
     use approx::assert_relative_eq;
-    use std::path::Path;
     use static_assertions::assert_impl_all;
+    use std::path::Path;
 
     // Compile-time guard: ZeroVecEngine must be Send + Sync to be stored in a
     // `static OnceLock<Result<ZeroVecEngine, String>>`.

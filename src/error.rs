@@ -41,7 +41,13 @@ mod tests {
 
     #[test]
     fn test_input_too_long_display() {
-        let e = LTEmbedError::InputTooLong { tokens: 600, max: 512 };
-        assert_eq!(e.to_string(), "Input too long: 600 tokens exceeds the 512 token limit");
+        let e = LTEmbedError::InputTooLong {
+            tokens: 600,
+            max: 512,
+        };
+        assert_eq!(
+            e.to_string(),
+            "Input too long: 600 tokens exceeds the 512 token limit"
+        );
     }
 }

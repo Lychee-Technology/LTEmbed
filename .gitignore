@@ -21,3 +21,23 @@ target
 #.idea/
 
 .claude/
+
+# Distribution directory — contains build artifacts and deployment zips
+dist/
+
+# Large BERT weight file — download separately, do not commit
+assets/model.safetensors
+
+# Extra HuggingFace snapshot files — only config.json and tokenizer.json are committed
+assets/*.gitattributes
+assets/1_Pooling/
+assets/README.md
+assets/model.onnx
+assets/modules.json
+assets/onnx/
+assets/openvino/
+assets/pytorch_model.bin
+assets/sentence_bert_config.json
+assets/special_tokens_map.json
+assets/tokenizer_config.json
+assets/vocab.txt

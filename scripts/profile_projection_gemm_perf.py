@@ -107,7 +107,11 @@ def extract_matrixmultiply_symbols(report_text: str, limit: int) -> list[str]:
     for raw_line in report_text.splitlines():
         if "matrixmultiply::" not in raw_line or "[.]" not in raw_line:
             continue
-        symbol = raw_line.split("[.]", 1)[1].strip()
+        remainder = raw_line.split("[.]", 1)[1]
+        match = re.search(r"(matrixmultiply::\S+)", remainder)
+        if match is None:
+            continue
+        symbol = match.group(1)
         if not symbol.startswith("matrixmultiply::"):
             continue
         if symbol in seen:

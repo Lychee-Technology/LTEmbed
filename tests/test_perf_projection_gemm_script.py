@@ -116,6 +116,23 @@ class ProfileProjectionGemmPerfTests(unittest.TestCase):
             ],
         )
 
+    def test_extract_matrixmultiply_symbols_strips_perf_ipc_columns(self):
+        perf = load_module()
+        report_text = """
+    59.74%  [.] matrixmultiply::sgemm_kernel::kernel_target_neon                                                                                                                                                                                                               -      -
+     4.43%  [.] matrixmultiply::gemm::gemm_loop                                                                                                                                                                                                                                -      -
+"""
+
+        symbols = perf.extract_matrixmultiply_symbols(report_text, limit=3)
+
+        self.assertEqual(
+            symbols,
+            [
+                "matrixmultiply::sgemm_kernel::kernel_target_neon",
+                "matrixmultiply::gemm::gemm_loop",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

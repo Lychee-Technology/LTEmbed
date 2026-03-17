@@ -124,6 +124,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-arm64-results
+          retention-days: 1
           path: |
             artifacts/benchmark-report.csv
             artifacts/benchmark-summary.txt

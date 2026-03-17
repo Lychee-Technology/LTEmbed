@@ -1,6 +1,4 @@
-use ltembed::benchmarking::{
-    scenario_by_name, scenario_texts, selected_scenarios, LatencyStats,
-};
+use ltembed::benchmarking::{scenario_by_name, scenario_texts, selected_scenarios, LatencyStats};
 use ltembed::engine::ZeroVecEngine;
 use ltembed::error::LTEmbedError;
 use ltembed::traits::pooling::MeanPooling;

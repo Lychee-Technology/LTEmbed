@@ -1,0 +1,129 @@
+name: benchmark-arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      warmup:
+        description: Warmup iterations per scenario
+        required: false
+        default: "10"
+      iters:
+        description: Timed iterations per scenario
+        required: false
+        default: "100"
+      threads:
+        description: CPU threads per implementation
+        required: false
+        default: "1"
+      include_cold_start:
+        description: Include cold start measurements
+        required: false
+        default: true
+        type: boolean
+      include_correctness:
+        description: Include correctness checks against PyTorch
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  benchmark:
+    runs-on:
+      - self-hosted
+      - Linux
+      - ARM64
+    env:
+      MODEL_ID: intfloat/e5-small-v2
+      MODEL_DIR: ${{ github.workspace }}/.cache/models/intfloat-e5-small-v2
+      BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-cargo-
+
+      - name: Cache Pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-arm64-pip-${{ hashFiles('.github/workflows/benchmark-arm64.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-pip-
+
+      - name: Cache Model
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MODEL_DIR }}
+          key: ${{ runner.os }}-arm64-model-e5-small-v2-v1
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy torch transformers huggingface_hub
+
+      - name: Download Model Snapshot
+        run: |
+          mkdir -p "$MODEL_DIR"
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id=os.environ["MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              local_dir_use_symlinks=False,
+              allow_patterns=[
+                  "config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "special_tokens_map.json",
+                  "vocab.txt",
+                  "model.safetensors",
+              ],
+          )
+          PY
+
+      - name: Run Unified Benchmark Harness
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.include_cold_start }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
+          fi
+          if [ "${{ inputs.include_correctness }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-include-correctness"
+          fi
+          python3 scripts/run_embedding_benchmarks.py \
+            --model-dir "$MODEL_DIR" \
+            --model-id "$MODEL_ID" \
+            --model-source "huggingface" \
+            --warmup "${{ inputs.warmup }}" \
+            --iters "${{ inputs.iters }}" \
+            --threads "${{ inputs.threads }}" \
+            --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
+            --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
+            $EXTRA_ARGS
+
+      - name: Upload Benchmark Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-arm64-results
+          path: |
+            artifacts/benchmark-report.csv
+            artifacts/benchmark-summary.txt

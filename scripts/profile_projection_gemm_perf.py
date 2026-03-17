@@ -13,6 +13,7 @@ import argparse
 import json
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,8 @@ def perf_record_command(
         "record",
         "-F",
         str(args.perf_freq),
+        "-e",
+        str(args.perf_event),
         "-g",
         "--call-graph",
         str(args.call_graph),
@@ -120,6 +123,14 @@ def sanitize_symbol_name(symbol: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", symbol).strip("_")
 
 
+def format_command_failure(command: list[str], stderr: str) -> str:
+    message = f"command failed: {shlex.join(command)}"
+    details = stderr.strip()
+    if details:
+        message += f"\n{details}"
+    return message
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Record and export Linux perf data for projection-heavy LTEmbed GEMM paths."
@@ -130,6 +141,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--iters", type=int, default=1)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--perf-freq", type=int, default=999)
+    parser.add_argument("--perf-event", default="cpu-clock")
     parser.add_argument("--call-graph", default="dwarf")
     parser.add_argument("--top-symbols", type=int, default=3)
     parser.add_argument("--skip-build", action="store_true")
@@ -160,27 +172,31 @@ def run_command(
     cwd: Path = ROOT,
     stdout_path: Path | None = None,
 ) -> str:
-    if stdout_path is None:
-        completed = subprocess.run(
-            command,
-            check=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
-        return completed.stdout
+    try:
+        if stdout_path is None:
+            completed = subprocess.run(
+                command,
+                check=True,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+            )
+            return completed.stdout
 
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with stdout_path.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(
-            command,
-            check=True,
-            cwd=cwd,
-            stdout=handle,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    return completed.stderr
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_path.open("w", encoding="utf-8") as handle:
+            completed = subprocess.run(
+                command,
+                check=True,
+                cwd=cwd,
+                stdout=handle,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        return completed.stderr
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr or exc.stdout or ""
+        raise RuntimeError(format_command_failure(command, stderr)) from exc
 
 
 def write_metadata(output_dir: Path, metadata: dict[str, object]) -> None:
@@ -189,91 +205,95 @@ def write_metadata(output_dir: Path, metadata: dict[str, object]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    ensure_environment(args)
+    try:
+        args = parse_args(argv)
+        ensure_environment(args)
 
-    output_dir = resolve_output_dir(args)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = resolve_output_dir(args)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    binary_path = args.binary
-    perf_data_path = output_dir / "perf.data"
-    report_path = output_dir / "perf-report.txt"
-    report_children_path = output_dir / "perf-report-children.txt"
-    symbol_report_path = output_dir / "perf-report-symbols.txt"
-    annotate_dir = output_dir / "annotate"
-    annotate_dir.mkdir(parents=True, exist_ok=True)
+        binary_path = args.binary
+        perf_data_path = output_dir / "perf.data"
+        report_path = output_dir / "perf-report.txt"
+        report_children_path = output_dir / "perf-report-children.txt"
+        symbol_report_path = output_dir / "perf-report-symbols.txt"
+        annotate_dir = output_dir / "annotate"
+        annotate_dir.mkdir(parents=True, exist_ok=True)
 
-    commands: dict[str, list[str]] = {}
+        commands: dict[str, list[str]] = {}
 
-    if not args.skip_build:
-        build_command = ["cargo", "build", "--release", "--bin", "benchmark_ltembed"]
-        commands["build"] = build_command
-        run_command(build_command)
+        if not args.skip_build:
+            build_command = ["cargo", "build", "--release", "--bin", "benchmark_ltembed"]
+            commands["build"] = build_command
+            run_command(build_command)
 
-    record_command = perf_record_command(args, binary_path, perf_data_path)
-    commands["record"] = record_command
-    run_command(record_command)
+        record_command = perf_record_command(args, binary_path, perf_data_path)
+        commands["record"] = record_command
+        run_command(record_command)
 
-    report_command = perf_report_command(perf_data_path, children=False)
-    commands["report"] = report_command
-    run_command(report_command, stdout_path=report_path)
+        report_command = perf_report_command(perf_data_path, children=False)
+        commands["report"] = report_command
+        run_command(report_command, stdout_path=report_path)
 
-    report_children_command = perf_report_command(perf_data_path, children=True)
-    commands["report_children"] = report_children_command
-    run_command(report_children_command, stdout_path=report_children_path)
+        report_children_command = perf_report_command(perf_data_path, children=True)
+        commands["report_children"] = report_children_command
+        run_command(report_children_command, stdout_path=report_children_path)
 
-    symbol_report_command = [
-        "perf",
-        "report",
-        "--stdio",
-        "--input",
-        str(perf_data_path),
-        "--no-children",
-        "--sort",
-        "symbol",
-    ]
-    commands["report_symbols"] = symbol_report_command
-    run_command(symbol_report_command, stdout_path=symbol_report_path)
+        symbol_report_command = [
+            "perf",
+            "report",
+            "--stdio",
+            "--input",
+            str(perf_data_path),
+            "--no-children",
+            "--sort",
+            "symbol",
+        ]
+        commands["report_symbols"] = symbol_report_command
+        run_command(symbol_report_command, stdout_path=symbol_report_path)
 
-    symbol_report_text = symbol_report_path.read_text(encoding="utf-8")
-    symbols = extract_matrixmultiply_symbols(symbol_report_text, args.top_symbols)
+        symbol_report_text = symbol_report_path.read_text(encoding="utf-8")
+        symbols = extract_matrixmultiply_symbols(symbol_report_text, args.top_symbols)
 
-    annotate_outputs: list[dict[str, str]] = []
-    for index, symbol in enumerate(symbols, start=1):
-        annotate_path = annotate_dir / f"{index:02d}-{sanitize_symbol_name(symbol)}.txt"
-        annotate_command = perf_annotate_command(perf_data_path, symbol)
-        commands[f"annotate_{index}"] = annotate_command
-        run_command(annotate_command, stdout_path=annotate_path)
-        annotate_outputs.append({"symbol": symbol, "path": str(annotate_path)})
+        annotate_outputs: list[dict[str, str]] = []
+        for index, symbol in enumerate(symbols, start=1):
+            annotate_path = annotate_dir / f"{index:02d}-{sanitize_symbol_name(symbol)}.txt"
+            annotate_command = perf_annotate_command(perf_data_path, symbol)
+            commands[f"annotate_{index}"] = annotate_command
+            run_command(annotate_command, stdout_path=annotate_path)
+            annotate_outputs.append({"symbol": symbol, "path": str(annotate_path)})
 
-    metadata = {
-        "scenario": args.scenario,
-        "model_dir": str(args.model_dir),
-        "binary": str(binary_path),
-        "output_dir": str(output_dir),
-        "commands": commands,
-        "artifacts": {
-            "perf_data": str(perf_data_path),
-            "report": str(report_path),
-            "report_children": str(report_children_path),
-            "report_symbols": str(symbol_report_path),
-            "annotate": annotate_outputs,
-        },
-    }
-    write_metadata(output_dir, metadata)
+        metadata = {
+            "scenario": args.scenario,
+            "model_dir": str(args.model_dir),
+            "binary": str(binary_path),
+            "output_dir": str(output_dir),
+            "commands": commands,
+            "artifacts": {
+                "perf_data": str(perf_data_path),
+                "report": str(report_path),
+                "report_children": str(report_children_path),
+                "report_symbols": str(symbol_report_path),
+                "annotate": annotate_outputs,
+            },
+        }
+        write_metadata(output_dir, metadata)
 
-    print(f"perf capture complete: {output_dir}")
-    print(f"report: {report_path}")
-    print(f"report with children: {report_children_path}")
-    print(f"symbol report: {symbol_report_path}")
-    if annotate_outputs:
-        print("annotate files:")
-        for item in annotate_outputs:
-            print(f"  {item['symbol']}: {item['path']}")
-    else:
-        print("annotate files: none (no matrixmultiply symbols found in perf report)")
-    print("share back the report files or paste the top matrixmultiply symbol sections.")
-    return 0
+        print(f"perf capture complete: {output_dir}")
+        print(f"report: {report_path}")
+        print(f"report with children: {report_children_path}")
+        print(f"symbol report: {symbol_report_path}")
+        if annotate_outputs:
+            print("annotate files:")
+            for item in annotate_outputs:
+                print(f"  {item['symbol']}: {item['path']}")
+        else:
+            print("annotate files: none (no matrixmultiply symbols found in perf report)")
+        print("share back the report files or paste the top matrixmultiply symbol sections.")
+        return 0
+    except RuntimeError as err:
+        print(err, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

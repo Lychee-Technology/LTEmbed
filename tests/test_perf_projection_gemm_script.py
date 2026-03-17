@@ -52,6 +52,7 @@ class ProfileProjectionGemmPerfTests(unittest.TestCase):
         perf = load_module()
         args = argparse.Namespace(
             perf_freq=999,
+            perf_event="cpu-clock",
             call_graph="dwarf",
             model_dir=Path("assets"),
             scenario="single/long",
@@ -67,12 +68,14 @@ class ProfileProjectionGemmPerfTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            command[:10],
+            command[:12],
             [
                 "perf",
                 "record",
                 "-F",
                 "999",
+                "-e",
+                "cpu-clock",
                 "-g",
                 "--call-graph",
                 "dwarf",
@@ -82,6 +85,17 @@ class ProfileProjectionGemmPerfTests(unittest.TestCase):
             ],
         )
         self.assertIn("single/long", command)
+
+    def test_format_command_failure_includes_stderr(self):
+        perf = load_module()
+
+        message = perf.format_command_failure(
+            ["perf", "record", "--call-graph", "dwarf"],
+            "perf_event_open(..., PERF_FLAG_FD_CLOEXEC) failed with unexpected error 1",
+        )
+
+        self.assertIn("perf record --call-graph dwarf", message)
+        self.assertIn("perf_event_open", message)
 
     def test_extract_matrixmultiply_symbols_ignores_non_gemm_symbols(self):
         perf = load_module()

@@ -68,6 +68,13 @@ version = "0.8.4"
         self.assertEqual(row["status"], "fail")
         self.assertEqual(row["cosine_similarity_vs_pytorch"], "0.998000")
 
+    def test_candle_runner_uses_example_target(self):
+        bench = load_module()
+        args = type("Args", (), {"model_dir": Path("assets"), "warmup": 0, "iters": 1, "threads": 1})
+        command = bench.candle_warm_command(args)
+        self.assertEqual(command[:5], ["cargo", "run", "--quiet", "--release", "--example"])
+        self.assertEqual(command[5], "benchmark_candle")
+
 
 if __name__ == "__main__":
     unittest.main()

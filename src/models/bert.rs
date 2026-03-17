@@ -6,6 +6,7 @@
 use crate::error::LTEmbedError;
 use safetensors::SafeTensors;
 use std::fs;
+use std::sync::Mutex;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,20 @@ struct BertConfig {
     num_hidden_layers: usize,
     num_attention_heads: usize,
     intermediate_size: usize,
+    max_position_embeddings: usize,
+}
+
+// ── Scratch buffers ───────────────────────────────────────────────────────────
+
+struct Scratch {
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    attn_out: Vec<f32>,
+    scores: Vec<f32>,
+    attn_proj: Vec<f32>,
+    inter: Vec<f32>,
+    ffn_out: Vec<f32>,
 }
 
 // ── Weight structs ────────────────────────────────────────────────────────────
@@ -46,6 +61,7 @@ pub struct Bert {
     emb_ln_weight: Vec<f32>,
     emb_ln_bias: Vec<f32>,
     layers: Vec<LayerWeights>,
+    scratch: Mutex<Scratch>,
 }
 
 // ── Helper: load tensor from SafeTensors into owned Vec<f32> ─────────────────
@@ -249,6 +265,19 @@ impl Bert {
             layers.push(layer);
         }
 
+        // Pre-allocate scratch buffers sized for max_position_embeddings
+        let max_seq = config.max_position_embeddings;
+        let scratch = Scratch {
+            q: vec![0.0f32; max_seq * config.hidden_size],
+            k: vec![0.0f32; max_seq * config.hidden_size],
+            v: vec![0.0f32; max_seq * config.hidden_size],
+            attn_out: vec![0.0f32; max_seq * config.hidden_size],
+            scores: vec![0.0f32; max_seq * max_seq],
+            attn_proj: vec![0.0f32; max_seq * config.hidden_size],
+            inter: vec![0.0f32; max_seq * config.intermediate_size],
+            ffn_out: vec![0.0f32; max_seq * config.hidden_size],
+        };
+
         Ok(Self {
             config,
             word_emb,
@@ -257,6 +286,7 @@ impl Bert {
             emb_ln_weight,
             emb_ln_bias,
             layers,
+            scratch: Mutex::new(scratch),
         })
     }
 
@@ -307,83 +337,139 @@ impl Bert {
         );
 
         // ── 2. Encoder layers ──────────────────────────────────────────────────
+        let mut sc = self.scratch.lock().unwrap();
+        let seq_hidden = seq_len * hidden;
+        let seq_inter = seq_len * intermediate;
+        let seq_sq = seq_len * seq_len;
+
         for layer in &self.layers {
             // ── a. Self-attention ──────────────────────────────────────────────
 
             // Q, K, V projections: [seq × hidden]
-            let mut q = vec![0.0f32; seq_len * hidden];
-            let mut k = vec![0.0f32; seq_len * hidden];
-            let mut v = vec![0.0f32; seq_len * hidden];
+            sc.q[..seq_hidden].fill(0.0);
+            sc.k[..seq_hidden].fill(0.0);
+            sc.v[..seq_hidden].fill(0.0);
 
-            linear_batch(&x, seq_len, hidden, &layer.q_weight, &layer.q_bias, &mut q);
-            linear_batch(&x, seq_len, hidden, &layer.k_weight, &layer.k_bias, &mut k);
-            linear_batch(&x, seq_len, hidden, &layer.v_weight, &layer.v_bias, &mut v);
+            linear_batch(
+                &x,
+                seq_len,
+                hidden,
+                &layer.q_weight,
+                &layer.q_bias,
+                &mut sc.q[..seq_hidden],
+            );
+            linear_batch(
+                &x,
+                seq_len,
+                hidden,
+                &layer.k_weight,
+                &layer.k_bias,
+                &mut sc.k[..seq_hidden],
+            );
+            linear_batch(
+                &x,
+                seq_len,
+                hidden,
+                &layer.v_weight,
+                &layer.v_bias,
+                &mut sc.v[..seq_hidden],
+            );
 
-            // Multi-head attention
+            // Multi-head attention using GEMM
             // scores[h][i][j] = sum_d(q[i,h,d] * k[j,h,d]) / sqrt(head_dim)
             // q layout: [seq, num_heads, head_dim] — q[i*hidden + h*head_dim + d]
             let scale = 1.0 / (head_dim as f32).sqrt();
-            let mut attn_out = vec![0.0f32; seq_len * hidden];
+            sc.attn_out[..seq_hidden].fill(0.0);
+
+            // Allocate scores once outside the head loop
+            sc.scores[..seq_sq].fill(0.0);
 
             for h in 0..num_heads {
-                let head_offset = h * head_dim;
+                // Reset scores for this head
+                sc.scores[..seq_sq].fill(0.0);
 
-                // Compute scores[seq_i][seq_j] for this head
-                let mut scores = vec![0.0f32; seq_len * seq_len];
-                for i in 0..seq_len {
-                    let q_off = i * hidden + head_offset;
-                    for j in 0..seq_len {
-                        let k_off = j * hidden + head_offset;
-                        let mut dot = 0.0f32;
-                        for d in 0..head_dim {
-                            dot += q[q_off + d] * k[k_off + d];
-                        }
-                        scores[i * seq_len + j] = dot * scale;
-                    }
+                // scores_h = Q_h @ K_h^T  scaled by 1/sqrt(head_dim)
+                // A = Q_h: logical [seq_len, head_dim], pointer = q[h*head_dim..], rsa=hidden, csa=1
+                // B = K_h^T: logical [head_dim, seq_len], same K data but transposed via strides:
+                //   rsb=1 (moving "down a row of K_h^T" = moving +1 in K_h's column dimension)
+                //   csb=hidden (moving "right in K_h^T" = moving to next row of K_h = +hidden in K)
+                unsafe {
+                    matrixmultiply::sgemm(
+                        seq_len,                         // m
+                        head_dim,                        // k
+                        seq_len,                         // n
+                        scale,                           // alpha
+                        sc.q.as_ptr().add(h * head_dim), // A ptr
+                        hidden as isize,                 // rsa
+                        1,                               // csa
+                        sc.k.as_ptr().add(h * head_dim), // B ptr (K transposed via strides)
+                        1,                               // rsb
+                        hidden as isize,                 // csb
+                        0.0f32,                          // beta
+                        sc.scores.as_mut_ptr(),          // C ptr
+                        seq_len as isize,                // rsc
+                        1,                               // csc
+                    );
                 }
 
                 // Apply attention mask
-                for j in 0..seq_len {
-                    let mask_val = attention_mask[j] as f32;
-                    if mask_val == 0.0 {
+                for (j, &m) in attention_mask.iter().enumerate() {
+                    if m == 0 {
                         for i in 0..seq_len {
-                            scores[i * seq_len + j] += -10000.0;
+                            sc.scores[i * seq_len + j] += -10000.0;
                         }
                     }
                 }
 
                 // Softmax over j for each i
                 for i in 0..seq_len {
-                    softmax(&mut scores[i * seq_len..(i + 1) * seq_len]);
+                    softmax(&mut sc.scores[i * seq_len..(i + 1) * seq_len]);
                 }
 
-                // Weighted sum of V: attn_out[i, h, d] = sum_j(scores[i,j] * v[j,h,d])
-                for i in 0..seq_len {
-                    let out_off = i * hidden + head_offset;
-                    for d in 0..head_dim {
-                        let mut acc = 0.0f32;
-                        for j in 0..seq_len {
-                            acc += scores[i * seq_len + j] * v[j * hidden + head_offset + d];
-                        }
-                        attn_out[out_off + d] = acc;
-                    }
+                // attn_out_h = scores_h @ V_h
+                // A = scores_h: [seq_len, seq_len], contiguous
+                // B = V_h: logical [seq_len, head_dim], pointer = v[h*head_dim..], rsb=hidden, csb=1
+                // C = attn_out_h: written into attn_out[h*head_dim..], rsc=hidden, csc=1
+                unsafe {
+                    matrixmultiply::sgemm(
+                        seq_len,                                    // m
+                        seq_len,                                    // k
+                        head_dim,                                   // n
+                        1.0f32,                                     // alpha
+                        sc.scores.as_ptr(),                         // A
+                        seq_len as isize,                           // rsa
+                        1,                                          // csa
+                        sc.v.as_ptr().add(h * head_dim),            // B = V_h
+                        hidden as isize,                            // rsb
+                        1,                                          // csb
+                        0.0f32,                                     // beta
+                        sc.attn_out.as_mut_ptr().add(h * head_dim), // C output for this head
+                        hidden as isize,                            // rsc (interleaved)
+                        1,                                          // csc
+                    );
                 }
             }
 
             // Output projection: [seq × hidden] → [seq × hidden]
-            let mut attn_proj = vec![0.0f32; seq_len * hidden];
-            linear_batch(
-                &attn_out,
-                seq_len,
-                hidden,
-                &layer.attn_out_weight,
-                &layer.attn_out_bias,
-                &mut attn_proj,
-            );
+            sc.attn_proj[..seq_hidden].fill(0.0);
+            {
+                // Use raw pointers to allow simultaneous reads from attn_out and
+                // writes to attn_proj, which are distinct fields of sc.
+                let src = sc.attn_out.as_ptr();
+                let dst = sc.attn_proj.as_mut_ptr();
+                linear_batch(
+                    unsafe { std::slice::from_raw_parts(src, seq_hidden) },
+                    seq_len,
+                    hidden,
+                    &layer.attn_out_weight,
+                    &layer.attn_out_bias,
+                    unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
+                );
+            }
 
             // Residual + LayerNorm
-            for i in 0..seq_len * hidden {
-                x[i] += attn_proj[i];
+            for (xi, ai) in x.iter_mut().zip(sc.attn_proj[..seq_hidden].iter()) {
+                *xi += ai;
             }
             layer_norm_rows(
                 &mut x,
@@ -396,33 +482,39 @@ impl Bert {
             // ── b. FFN ─────────────────────────────────────────────────────────
 
             // Intermediate projection: [seq × hidden] → [seq × intermediate]
-            let mut inter = vec![0.0f32; seq_len * intermediate];
+            sc.inter[..seq_inter].fill(0.0);
             linear_batch(
                 &x,
                 seq_len,
                 hidden,
                 &layer.inter_weight,
                 &layer.inter_bias,
-                &mut inter,
+                &mut sc.inter[..seq_inter],
             );
 
             // GELU activation
-            gelu(&mut inter);
+            gelu(&mut sc.inter[..seq_inter]);
 
             // Output projection: [seq × intermediate] → [seq × hidden]
-            let mut ffn_out = vec![0.0f32; seq_len * hidden];
-            linear_batch(
-                &inter,
-                seq_len,
-                intermediate,
-                &layer.out_weight,
-                &layer.out_bias,
-                &mut ffn_out,
-            );
+            sc.ffn_out[..seq_hidden].fill(0.0);
+            {
+                // Use raw pointers to allow simultaneous reads from inter and
+                // writes to ffn_out, which are distinct fields of sc.
+                let src = sc.inter.as_ptr();
+                let dst = sc.ffn_out.as_mut_ptr();
+                linear_batch(
+                    unsafe { std::slice::from_raw_parts(src, seq_inter) },
+                    seq_len,
+                    intermediate,
+                    &layer.out_weight,
+                    &layer.out_bias,
+                    unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
+                );
+            }
 
             // Residual + LayerNorm
-            for i in 0..seq_len * hidden {
-                x[i] += ffn_out[i];
+            for (xi, fi) in x.iter_mut().zip(sc.ffn_out[..seq_hidden].iter()) {
+                *xi += fi;
             }
             layer_norm_rows(
                 &mut x,

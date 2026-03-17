@@ -10,6 +10,16 @@ pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
     v.iter().map(|x| x / norm).collect()
 }
 
+/// Normalize `v` to unit length in-place.
+/// Uses a floor of 1e-12 on the norm to avoid division by zero.
+pub fn l2_normalize_inplace(v: &mut [f32]) {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let inv = 1.0 / norm.max(1e-12);
+    for x in v.iter_mut() {
+        *x *= inv;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

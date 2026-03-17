@@ -4,7 +4,7 @@ use crate::error::LTEmbedError;
 use crate::models::bert::Bert;
 use crate::traits::pooling::Pooling;
 use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
-use crate::utils::l2_normalize;
+use crate::utils::l2_normalize_inplace;
 
 const MAX_LENGTH: usize = 512;
 
@@ -45,10 +45,11 @@ impl ZeroVecEngine {
             &encoded.token_type_ids,
             &encoded.attention_mask,
         )?;
-        let pooled = self
+        let mut pooled = self
             .pooling
             .pool(&last_hidden_state, &encoded.attention_mask)?;
-        Ok(l2_normalize(&pooled))
+        l2_normalize_inplace(&mut pooled);
+        Ok(pooled)
     }
 
     /// Embed a batch of texts. Returns one vector per input.

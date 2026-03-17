@@ -253,13 +253,33 @@ fn layer_norm_rows(x: &mut [f32], rows: usize, hidden: usize, weight: &[f32], bi
     }
 }
 
+/// Fast tanh approximation used by GELU to avoid a libm call in the hot path.
+fn fast_tanh(x: f32) -> f32 {
+    if x > 5.0 {
+        return 1.0;
+    }
+    if x < -5.0 {
+        return -1.0;
+    }
+
+    let x2 = x * x;
+    let numerator = x * (135_135.0 + x2 * (17_325.0 + x2 * (378.0 + x2)));
+    let denominator = 135_135.0 + x2 * (62_370.0 + x2 * (3_150.0 + 28.0 * x2));
+    numerator / denominator
+}
+
+/// GELU activation (approximate tanh variant) in-place.
+fn gelu_scalar(x: f32) -> f32 {
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6; // sqrt(2/pi)
+    let x3 = x * x * x;
+    let inner = SQRT_2_OVER_PI * (x + 0.044715 * x3);
+    x * 0.5 * (1.0 + fast_tanh(inner))
+}
+
 /// GELU activation (approximate tanh variant) in-place.
 fn gelu(x: &mut [f32]) {
-    const SQRT_2_OVER_PI: f32 = 0.797_884_6; // sqrt(2/pi)
     for v in x.iter_mut() {
-        let x3 = *v * *v * *v;
-        let inner = SQRT_2_OVER_PI * (*v + 0.044715 * x3);
-        *v = *v * 0.5 * (1.0 + inner.tanh());
+        *v = gelu_scalar(*v);
     }
 }
 
@@ -982,6 +1002,38 @@ mod tests {
             mean.abs() < 1e-5,
             "layer norm mean should be ~0, got {mean}"
         );
+    }
+
+    #[test]
+    fn test_gelu_scalar_matches_reference_samples() {
+        fn reference_gelu(x: f32) -> f32 {
+            const SQRT_2_OVER_PI: f32 = 0.797_884_6;
+            let x3 = x * x * x;
+            let inner = SQRT_2_OVER_PI * (x + 0.044715 * x3);
+            x * 0.5 * (1.0 + inner.tanh())
+        }
+
+        for input in [-6.0f32, -3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0, 6.0] {
+            let actual = gelu_scalar(input);
+            let expected = reference_gelu(input);
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "input={input} actual={actual} expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_gelu_inplace_tracks_scalar_reference() {
+        let mut values = vec![-3.0f32, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0];
+        let expected: Vec<f32> = values.iter().copied().map(gelu_scalar).collect();
+        gelu(&mut values);
+        for (actual, expected) in values.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "actual={actual} expected={expected}"
+            );
+        }
     }
 
     #[test]

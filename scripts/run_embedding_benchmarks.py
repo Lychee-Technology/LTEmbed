@@ -92,6 +92,21 @@ SCENARIOS = [
     Scenario(name="batch/medium/4", batch_size=4, text_profile="medium", texts=(MEDIUM_TEXT,) * 4),
     Scenario(name="batch/medium/8", batch_size=8, text_profile="medium", texts=(MEDIUM_TEXT,) * 8),
     Scenario(
+        name="batch/mixed/8",
+        batch_size=8,
+        text_profile="mixed",
+        texts=(
+            SHORT_TEXT,
+            MEDIUM_TEXT,
+            LONG_TEXT,
+            SHORT_TEXT,
+            MEDIUM_TEXT,
+            LONG_TEXT,
+            SHORT_TEXT,
+            MEDIUM_TEXT,
+        ),
+    ),
+    Scenario(
         name="batch/medium/16",
         batch_size=16,
         text_profile="medium",

@@ -755,3 +755,22 @@ The strongest next hypothesis for issue #44 is:
 1. keep targeting the projection / FFN dense layers rather than attention scratch layout
 2. prioritize experiments that reduce repeated GEMM packing / setup cost or move to a backend that handles these ARM64 shapes better
 3. treat `expf` as the next scalar fallback only if the GEMM-side experiments do not produce a clearer win
+
+## Attempted experiment: swap projection dense layers to `gemm`
+
+After the Linux ARM64 `perf` pass, I tried a minimal backend swap for the projection-heavy dense path: replace the `linear_batch_transposed` implementation with `gemm 0.19` while keeping the shapes, weight layout, and bias handling unchanged.
+
+Correctness stayed green locally, but the local A/B against commit `c05a344` did not justify keeping the change:
+
+| Scenario | Baseline mean ms | `gemm` experiment mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | `215.632` | `215.721` | `+0.04%` |
+| `batch/medium/8` | `77.330` | `79.319` | `+2.57%` |
+
+Interpretation:
+
+- the backend swap was effectively neutral on the long single-input path
+- the same change regressed the smaller batched path enough that it should not be kept without stronger Linux-only evidence
+- given that result, the experiment was reverted and the branch stayed on the existing `matrixmultiply` implementation
+
+This rules out the simplest "drop-in GEMM backend replacement" hypothesis. The remaining high-value GEMM direction is narrower: focus on reducing repeated packing / setup cost for the existing dense shapes rather than assuming a generic backend swap will win.

@@ -871,4 +871,42 @@ cargo run --release --features vendored-blas --bin benchmark_ltembed -- \
   --iters 30
 ```
 
-This change does not yet claim a keep/revert decision for issue `#44`; the benchmark verdict still depends on a fresh Linux ARM64 before/after run against merged `main`.
+## Issue 44: Linux ARM64 vendored backend verdict
+
+Fresh Linux ARM64 benchmark evidence now exists for both:
+
+- merged `main` baseline: `git_sha=9bf7f59`
+- vendored backend branch: `git_sha=f4ceb73`
+
+The vendored run summary reports:
+
+- `ltembed_dense_backend=openblas-cblas`
+- per-row CSV notes: `dense_backend=openblas-cblas`
+
+Warm latency A/B against the merged-`main` baseline:
+
+| Scenario | Baseline mean ms | Vendored mean ms | Delta |
+|---|---:|---:|---:|
+| `single/medium` | `40.785` | `24.390` | `-40.20%` |
+| `single/long` | `487.197` | `446.579` | `-8.34%` |
+| `batch/medium/8` | `167.824` | `130.296` | `-22.36%` |
+| `batch/medium/16` | `319.496` | `257.170` | `-19.51%` |
+| `batch/mixed/8` | `3367.085` | `2646.584` | `-21.40%` |
+
+Correctness remained within the existing threshold on all scenarios:
+
+- `single/long`: cosine `0.999999`
+- all other reported LTEmbed scenarios: cosine `1.000000`
+
+Interpretation:
+
+- this is a keep, not revert
+- the vendored `openblas-cblas` backend clears the issue-44 success bar on the primary `single/long` scenario
+- it also produces materially larger wins on the batch scenarios, which strengthens the case beyond the original acceptance threshold
+- there is no evidence of a numerics regression in the benchmark correctness pass
+
+Conclusion:
+
+1. keep the vendored dense backend integration for Linux ARM64
+2. close the benchmark-verdict loop in issue `#48` as resolved in favor of `openblas-cblas`
+3. treat future dense work as follow-on optimization, not as a revert investigation

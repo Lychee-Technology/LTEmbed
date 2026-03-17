@@ -216,6 +216,45 @@ xychart-beta
     bar [5407, 1631, 606, 202, 995]
 ```
 
+## Follow-up: GELU optimization pass
+
+After the profiling above identified `tanhf` as the clearest remaining scalar hotspot, `gelu` was updated to use a high-accuracy rational `fast_tanh` approximation instead of the libm `tanhf` call.
+
+### Benchmark comparison vs. previous commit (`3ac842f`)
+
+| Scenario | Before mean ms | After mean ms | Delta |
+|---|---:|---:|---:|
+| `single/medium` | 24.012 | 21.187 | `-11.77%` |
+| `single/long` | 294.194 | 241.441 | `-17.93%` |
+
+### `xctrace` follow-up: `single/long`
+
+Forward-only family summary before vs. after the GELU change:
+
+| Family | Before samples | After samples | Delta |
+|---|---:|---:|---:|
+| `sgemm` | 5407 | 5423 | `+0.3%` |
+| `tanhf` | 1631 | 0 | `-100%` |
+| `softmax-expf` | 606 | 624 | `+3.0%` |
+| `layer-norm` | 202 | 171 | `-15.3%` |
+| `other` | 995 | 1070 | `+7.5%` |
+
+Interpretation:
+
+- the `tanhf` hotspot was effectively removed from the `single/long` forward trace
+- after eliminating GELU’s libm call, `softmax-expf` becomes more visible as the next scalar attention hotspot
+- dense GEMM remains the dominant cost center overall
+
+### Chart: `single/long` after GELU optimization
+
+```mermaid
+xychart-beta
+    title "Issue 30 Hotspot Families (xctrace export, single/long, after GELU optimization)"
+    x-axis ["sgemm", "softmax-expf", "layer-norm", "other"]
+    y-axis "Sample count" 0 --> 5600
+    bar [5423, 624, 171, 1070]
+```
+
 ### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:

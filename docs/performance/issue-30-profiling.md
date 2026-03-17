@@ -152,6 +152,70 @@ xychart-beta
     bar [251, 36, 4, 2]
 ```
 
+### `xctrace` export: `single/long`
+
+To amplify the remaining scalar attention work, a second trace was recorded on `single/long`:
+
+```bash
+xcrun xctrace record \
+  --template 'Time Profiler' \
+  --output /tmp/issue30-single-long.trace \
+  --time-limit 12s \
+  --launch -- \
+  target/release/benchmark_ltembed \
+    --mode warm \
+    --scenario single/long \
+    --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+    --warmup 1 \
+    --iters 30
+```
+
+and exported with:
+
+```bash
+xcrun xctrace export \
+  --input /tmp/issue30-single-long.trace \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' \
+  --output /tmp/issue30-single-long-time-profile.xml
+```
+
+Forward-only summary (`8841` samples total):
+
+| Family | Samples | Share |
+|---|---:|---:|
+| `sgemm` | 5407 | 61.2% |
+| `tanhf` | 1631 | 18.4% |
+| `softmax-expf` | 606 | 6.9% |
+| `layer-norm` | 202 | 2.3% |
+| `other` | 995 | 11.3% |
+
+Top leaf hotspots:
+
+| Rank | Leaf hotspot | Samples | Share of `forward` samples | Interpretation |
+|---|---|---:|---:|---|
+| 1 | `matrixmultiply::sgemm_kernel::kernel_target_neon` | 4755 | 53.8% | dominant dense compute |
+| 2 | `tanhf` | 1581 | 17.9% | GELU scalar activation |
+| 3 | `Bert::forward` internal scalar work | 919 | 10.4% | loop bodies not fully symbol-split by Instruments |
+| 4 | `matrixmultiply::gemm::gemm_loop` | 649 | 7.3% | GEMM orchestration |
+| 5 | `expf` | 424 | 4.8% | softmax exponentiation on the attention path |
+| 6 | `layer_norm_rows` | 202 | 2.3% | row-wise normalization |
+
+Interpretation:
+
+- on the long sequence trace, `expf` finally shows up clearly as a top scalar leaf
+- this confirms the original issue framing: after the earlier batching and mmap work, scalar kernels around softmax and normalization are still visible costs
+- the fused `masked_softmax` path did not remove `expf` itself, but it did reduce surrounding extra passes over the attention-score rows
+
+### Chart: `xctrace` forward-only families, `single/long`
+
+```mermaid
+xychart-beta
+    title "Issue 30 Hotspot Families (xctrace export, single/long, forward-only)"
+    x-axis ["sgemm", "tanhf", "softmax-expf", "layer-norm", "other"]
+    y-axis "Sample count" 0 --> 5600
+    bar [5407, 1631, 606, 202, 995]
+```
+
 ### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:

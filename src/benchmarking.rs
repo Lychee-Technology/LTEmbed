@@ -1,3 +1,5 @@
+use crate::error::LTEmbedError;
+use crate::traits::tokenizer::Tokenizer;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +22,9 @@ pub struct LatencyStats {
 pub const SHORT_TEXT: &str = "query: Hello, world!";
 pub const MEDIUM_TEXT: &str =
     "query: What is the impact of large language models on software engineering productivity?";
+pub const BENCHMARK_MAX_LENGTH: usize = 512;
+const GEMM_MICROBENCHMARK_SCENARIO_NAMES: [&str; 3] =
+    ["single/long", "batch/medium/8", "batch/medium/16"];
 
 const BENCHMARK_SCENARIOS: [BenchmarkScenario; 8] = [
     BenchmarkScenario {
@@ -68,6 +73,13 @@ pub fn benchmark_scenarios() -> &'static [BenchmarkScenario] {
     &BENCHMARK_SCENARIOS
 }
 
+pub fn gemm_microbenchmark_scenarios() -> Vec<&'static BenchmarkScenario> {
+    GEMM_MICROBENCHMARK_SCENARIO_NAMES
+        .iter()
+        .filter_map(|name| scenario_by_name(name))
+        .collect()
+}
+
 pub fn scenario_by_name(name: &str) -> Option<&'static BenchmarkScenario> {
     benchmark_scenarios()
         .iter()
@@ -103,6 +115,25 @@ pub fn scenario_texts(scenario: &BenchmarkScenario) -> Vec<String> {
         ],
         _ => Vec::new(),
     }
+}
+
+pub fn scenario_token_lengths<T: Tokenizer>(
+    tokenizer: &T,
+    scenario: &BenchmarkScenario,
+    max_length: usize,
+) -> Result<Vec<usize>, LTEmbedError> {
+    scenario_texts(scenario)
+        .into_iter()
+        .map(|text| {
+            tokenizer
+                .encode(&text, max_length)
+                .map(|encoded| encoded.input_ids.len())
+        })
+        .collect()
+}
+
+pub fn padded_seq_len(token_lengths: &[usize]) -> usize {
+    token_lengths.iter().copied().max().unwrap_or(0)
 }
 
 pub fn long_text() -> String {

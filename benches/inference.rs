@@ -10,8 +10,15 @@
 // Skips gracefully if the model file is absent.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use ltembed::{engine::ZeroVecEngine, traits::pooling::MeanPooling};
+use ltembed::{
+    benchmarking::{
+        gemm_microbenchmark_scenarios, padded_seq_len, scenario_token_lengths, BENCHMARK_MAX_LENGTH,
+    },
+    engine::ZeroVecEngine,
+    traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
+};
 use once_cell::sync::Lazy;
+use serde::Deserialize;
 use std::path::Path;
 use std::thread;
 
@@ -33,6 +40,10 @@ fn assets_available() -> bool {
         && Path::new("assets/tokenizer.json").exists()
 }
 
+fn kernel_assets_available() -> bool {
+    Path::new("assets/config.json").exists() && Path::new("assets/tokenizer.json").exists()
+}
+
 // ── Shared engine (initialized once per bench run) ───────────────────────────
 
 static ENGINE: Lazy<ZeroVecEngine> = Lazy::new(|| {
@@ -46,6 +57,90 @@ static ENGINE: Lazy<ZeroVecEngine> = Lazy::new(|| {
     )
     .expect("Failed to initialize ZeroVecEngine")
 });
+
+#[derive(Debug, Deserialize)]
+struct ModelConfig {
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_attention_heads: usize,
+}
+
+#[derive(Debug, Clone)]
+struct KernelBenchmarkCase {
+    name: String,
+    batch_size: usize,
+    seq_len: usize,
+    total_tokens: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_attention_heads: usize,
+}
+
+impl KernelBenchmarkCase {
+    fn head_dim(&self) -> usize {
+        self.hidden_size / self.num_attention_heads
+    }
+}
+
+fn patterned_f32(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| ((i % 251) as f32 - 125.0) / 125.0)
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sgemm(
+    m: usize,
+    k: usize,
+    n: usize,
+    alpha: f32,
+    a: *const f32,
+    rsa: isize,
+    csa: isize,
+    b: *const f32,
+    rsb: isize,
+    csb: isize,
+    c: *mut f32,
+    rsc: isize,
+    csc: isize,
+) {
+    unsafe {
+        matrixmultiply::sgemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, 0.0, c, rsc, csc);
+    }
+}
+
+fn kernel_benchmark_cases() -> Result<Vec<KernelBenchmarkCase>, String> {
+    let config = std::fs::read_to_string("assets/config.json")
+        .map_err(|err| format!("failed to read config.json: {err}"))?;
+    let config: ModelConfig = serde_json::from_str(&config)
+        .map_err(|err| format!("failed to parse config.json: {err}"))?;
+    let tokenizer = HFTokenizer::from_file("assets/tokenizer.json")
+        .map_err(|err| format!("failed to load tokenizer: {err}"))?;
+
+    gemm_microbenchmark_scenarios()
+        .into_iter()
+        .map(|scenario| {
+            let token_lengths = scenario_token_lengths(&tokenizer, scenario, BENCHMARK_MAX_LENGTH)
+                .map_err(|err| format!("failed to tokenize {}: {err}", scenario.name))?;
+            let seq_len = padded_seq_len(&token_lengths);
+
+            Ok(KernelBenchmarkCase {
+                name: format!(
+                    "{}-seq{}-tokens{}",
+                    scenario.name.replace('/', "_"),
+                    seq_len,
+                    scenario.batch_size * seq_len
+                ),
+                batch_size: scenario.batch_size,
+                seq_len,
+                total_tokens: scenario.batch_size * seq_len,
+                hidden_size: config.hidden_size,
+                intermediate_size: config.intermediate_size,
+                num_attention_heads: config.num_attention_heads,
+            })
+        })
+        .collect()
+}
 
 // ── Benchmark groups ──────────────────────────────────────────────────────────
 
@@ -112,10 +207,274 @@ fn bench_ltembed_concurrent(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ltembed_kernel_projection(c: &mut Criterion) {
+    if !kernel_assets_available() {
+        eprintln!(
+            "bench_ltembed_kernel_projection: skipping — assets/config.json or assets/tokenizer.json not found"
+        );
+        return;
+    }
+    let cases = match kernel_benchmark_cases() {
+        Ok(cases) => cases,
+        Err(err) => {
+            eprintln!("bench_ltembed_kernel_projection: skipping — {err}");
+            return;
+        }
+    };
+
+    let mut group = c.benchmark_group("bench_ltembed_kernel_projection");
+    for case in &cases {
+        let total_tokens = case.total_tokens;
+        let hidden = case.hidden_size;
+        let intermediate = case.intermediate_size;
+
+        let x = patterned_f32(total_tokens * hidden);
+        let hidden_weight_t = patterned_f32(hidden * hidden);
+        let inter_weight_t = patterned_f32(hidden * intermediate);
+        let out_weight_t = patterned_f32(intermediate * hidden);
+
+        let mut hidden_out = vec![0.0f32; total_tokens * hidden];
+        let mut inter_out = vec![0.0f32; total_tokens * intermediate];
+
+        group.bench_with_input(BenchmarkId::new("qkv", &case.name), case, |b, _case| {
+            b.iter(|| {
+                run_sgemm(
+                    total_tokens,
+                    hidden,
+                    hidden,
+                    1.0,
+                    x.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_weight_t.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_out.as_mut_ptr(),
+                    hidden as isize,
+                    1,
+                );
+                run_sgemm(
+                    total_tokens,
+                    hidden,
+                    hidden,
+                    1.0,
+                    x.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_weight_t.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_out.as_mut_ptr(),
+                    hidden as isize,
+                    1,
+                );
+                run_sgemm(
+                    total_tokens,
+                    hidden,
+                    hidden,
+                    1.0,
+                    x.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_weight_t.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_out.as_mut_ptr(),
+                    hidden as isize,
+                    1,
+                );
+                criterion::black_box(&hidden_out);
+            })
+        });
+
+        group.bench_with_input(
+            BenchmarkId::new("attn_out", &case.name),
+            case,
+            |b, _case| {
+                b.iter(|| {
+                    run_sgemm(
+                        total_tokens,
+                        hidden,
+                        hidden,
+                        1.0,
+                        x.as_ptr(),
+                        hidden as isize,
+                        1,
+                        hidden_weight_t.as_ptr(),
+                        hidden as isize,
+                        1,
+                        hidden_out.as_mut_ptr(),
+                        hidden as isize,
+                        1,
+                    );
+                    criterion::black_box(&hidden_out);
+                })
+            },
+        );
+
+        group.bench_with_input(BenchmarkId::new("ffn_in", &case.name), case, |b, _case| {
+            b.iter(|| {
+                run_sgemm(
+                    total_tokens,
+                    hidden,
+                    intermediate,
+                    1.0,
+                    x.as_ptr(),
+                    hidden as isize,
+                    1,
+                    inter_weight_t.as_ptr(),
+                    intermediate as isize,
+                    1,
+                    inter_out.as_mut_ptr(),
+                    intermediate as isize,
+                    1,
+                );
+                criterion::black_box(&inter_out);
+            })
+        });
+
+        group.bench_with_input(BenchmarkId::new("ffn_out", &case.name), case, |b, _case| {
+            b.iter(|| {
+                run_sgemm(
+                    total_tokens,
+                    intermediate,
+                    hidden,
+                    1.0,
+                    inter_out.as_ptr(),
+                    intermediate as isize,
+                    1,
+                    out_weight_t.as_ptr(),
+                    hidden as isize,
+                    1,
+                    hidden_out.as_mut_ptr(),
+                    hidden as isize,
+                    1,
+                );
+                criterion::black_box(&hidden_out);
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_ltembed_kernel_attention_qk(c: &mut Criterion) {
+    if !kernel_assets_available() {
+        eprintln!(
+            "bench_ltembed_kernel_attention_qk: skipping — assets/config.json or assets/tokenizer.json not found"
+        );
+        return;
+    }
+    let cases = match kernel_benchmark_cases() {
+        Ok(cases) => cases,
+        Err(err) => {
+            eprintln!("bench_ltembed_kernel_attention_qk: skipping — {err}");
+            return;
+        }
+    };
+
+    let mut group = c.benchmark_group("bench_ltembed_kernel_attention_qk");
+    for case in &cases {
+        let hidden = case.hidden_size;
+        let seq_len = case.seq_len;
+        let head_dim = case.head_dim();
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let q = patterned_f32(case.total_tokens * hidden);
+        let k = patterned_f32(case.total_tokens * hidden);
+        let mut scores = vec![0.0f32; seq_len * seq_len];
+
+        group.bench_with_input(BenchmarkId::new("qk", &case.name), case, |b, case| {
+            b.iter(|| {
+                for batch_idx in 0..case.batch_size {
+                    let hidden_offset = batch_idx * seq_len * hidden;
+                    for head_idx in 0..case.num_attention_heads {
+                        run_sgemm(
+                            seq_len,
+                            head_dim,
+                            seq_len,
+                            scale,
+                            unsafe { q.as_ptr().add(hidden_offset + head_idx * head_dim) },
+                            hidden as isize,
+                            1,
+                            unsafe { k.as_ptr().add(hidden_offset + head_idx * head_dim) },
+                            1,
+                            hidden as isize,
+                            scores.as_mut_ptr(),
+                            seq_len as isize,
+                            1,
+                        );
+                    }
+                }
+                criterion::black_box(&scores);
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_ltembed_kernel_attention_sv(c: &mut Criterion) {
+    if !kernel_assets_available() {
+        eprintln!(
+            "bench_ltembed_kernel_attention_sv: skipping — assets/config.json or assets/tokenizer.json not found"
+        );
+        return;
+    }
+    let cases = match kernel_benchmark_cases() {
+        Ok(cases) => cases,
+        Err(err) => {
+            eprintln!("bench_ltembed_kernel_attention_sv: skipping — {err}");
+            return;
+        }
+    };
+
+    let mut group = c.benchmark_group("bench_ltembed_kernel_attention_sv");
+    for case in &cases {
+        let hidden = case.hidden_size;
+        let seq_len = case.seq_len;
+        let head_dim = case.head_dim();
+        let scores = patterned_f32(seq_len * seq_len);
+        let v = patterned_f32(case.total_tokens * hidden);
+        let mut attn_out = vec![0.0f32; case.total_tokens * hidden];
+
+        group.bench_with_input(BenchmarkId::new("sv", &case.name), case, |b, case| {
+            b.iter(|| {
+                for batch_idx in 0..case.batch_size {
+                    let hidden_offset = batch_idx * seq_len * hidden;
+                    for head_idx in 0..case.num_attention_heads {
+                        run_sgemm(
+                            seq_len,
+                            seq_len,
+                            head_dim,
+                            1.0,
+                            scores.as_ptr(),
+                            seq_len as isize,
+                            1,
+                            unsafe { v.as_ptr().add(hidden_offset + head_idx * head_dim) },
+                            hidden as isize,
+                            1,
+                            unsafe {
+                                attn_out
+                                    .as_mut_ptr()
+                                    .add(hidden_offset + head_idx * head_dim)
+                            },
+                            hidden as isize,
+                            1,
+                        );
+                    }
+                }
+                criterion::black_box(&attn_out);
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ltembed_single,
     bench_ltembed_batch,
-    bench_ltembed_concurrent
+    bench_ltembed_concurrent,
+    bench_ltembed_kernel_projection,
+    bench_ltembed_kernel_attention_qk,
+    bench_ltembed_kernel_attention_sv
 );
 criterion_main!(benches);

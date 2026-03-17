@@ -40,8 +40,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.94.0
+        uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Setup Python
         uses: actions/setup-python@v5

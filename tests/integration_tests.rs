@@ -116,9 +116,48 @@ fn test_long_input_returns_input_too_long_error() {
     let long_text = "hello world ".repeat(5000); // encodes to >> 512 tokens
     let result = tok.encode(&long_text, 512);
     assert!(result.is_err());
+    match result.unwrap_err() {
+        LTEmbedError::InputTooLong { tokens, max } => {
+            assert!(tokens > 512, "tokens={tokens} should be > 512");
+            assert_eq!(max, 512);
+        }
+        other => panic!("Expected InputTooLong, got {other:?}"),
+    }
+}
+
+// --- Scenario C3: Malformed config.json ---
+
+#[test]
+fn test_malformed_config_returns_model_load_error() {
+    let result = ZeroVecEngine::new(
+        "/nonexistent/model.safetensors",
+        "{ this is not valid json !!!",
+        "/nonexistent/tokenizer.json",
+        Box::new(MeanPooling),
+    );
+    assert!(result.is_err());
     assert!(
-        matches!(result.unwrap_err(), LTEmbedError::InputTooLong { .. }),
-        "Expected InputTooLong error, not silent truncation"
+        matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)),
+        "Expected ModelLoad error for malformed config"
+    );
+}
+
+// --- Scenario B: Output properties ---
+
+#[test]
+fn test_embed_batch_consistency() {
+    if !assets_available() {
+        eprintln!("Skipping: model assets not found");
+        return;
+    }
+    let engine = make_engine();
+    let batch = engine
+        .embed_batch(&["query: hello", "query: world"])
+        .unwrap();
+    let individual = engine.embed("query: hello").unwrap();
+    assert_eq!(
+        batch[0], individual,
+        "embed_batch[0] must equal embed() for same input"
     );
 }
 

@@ -694,3 +694,64 @@ This micro-benchmark pass shifts the next optimization priority toward the large
 1. keep looking at projection / FFN GEMM paths first
 2. treat attention matmul layout changes as secondary unless Linux `perf` shows a different ranking
 3. use Linux ARM64 `perf` as the next evidence source if we need to distinguish backend/kernel behavior inside the projection-heavy GEMMs
+
+## Follow-up: Linux ARM64 `perf` on `single/long`
+
+To validate the GEMM hypothesis on the target deployment class, I recorded Linux ARM64 `perf` data for `single/long` and exported both top-level reports and `perf annotate` output for the hottest `matrixmultiply` symbols.
+
+Artifacts:
+
+- report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report.txt)
+- symbol report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-symbols.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-symbols.txt)
+- children report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-children.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-children.txt)
+- annotate: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt)
+- annotate: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt)
+
+### Top-level hotspot summary
+
+| Symbol | Overhead | Interpretation |
+|---|---:|---|
+| `matrixmultiply::sgemm_kernel::kernel_target_neon` | `59.42%` | the dominant steady-state compute bucket remains inside the NEON GEMM micro-kernel |
+| `matrixmultiply::gemm::gemm_loop` | `5.15%` | non-trivial orchestration / packing cost around the kernel |
+| `expf` | `11.26%` | softmax is still the next largest scalar hotspot, but materially below GEMM |
+| `ltembed::models::bert::layer_norm_rows` | `1.13%` | not worth promoting over GEMM work |
+
+The combined GEMM family (`kernel_target_neon` + `gemm_loop`) is roughly `64.6%` of samples, which keeps issue #44 squarely in the GEMM bucket.
+
+### What `perf annotate` adds
+
+The Linux annotate output gives a more concrete answer than the earlier macOS `xctrace` view:
+
+- inside `kernel_target_neon`, the hottest instructions are vector loads, not the fused multiply-adds
+- inside `gemm_loop`, there is visible time in the panel-copy / packing loop before the kernel call
+
+Representative local hotspots from [`01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt):
+
+- `ldp q23, q24, [x11], #32`: `50.95%`
+- `ldp q22, q29, [x10], #32`: `6.02%`
+- `subs x0, x0, #0x1`: `13.36%`
+- selected `fmla` instructions such as `fmla v16.4s, v29.4s, v23.s[2]`: `8.22%`
+
+Representative local hotspots from [`02-matrixmultiply_gemm_gemm_loop.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt):
+
+- `ldp q1, q0, [x14]`: panel load in the packing path
+- `stp q1, q0, [x12], #32`: panel store in the packing path
+- the associated loop-carried `subs` / `b.ne` control flow around the copy loop
+
+Interpretation:
+
+- the NEON kernel is not presenting as pure FMA throughput saturation
+- operand supply and panel movement are meaningful parts of the remaining GEMM time
+- the next meaningful GEMM experiment should target packing / weight reuse behavior before trying more attention-layout micro-changes
+
+### Caveat: one-time transpose work is still visible
+
+`transpose_weight` still appears at `4.10%`, and the page-fault / `__pi_clear_page` subtree around it is also visible. This is not a steady-state GEMM conclusion; it is load-time work captured because the perf recording still includes engine initialization in the measured process. It should not outrank the steady-state GEMM findings above.
+
+### Resulting implementation hypothesis
+
+The strongest next hypothesis for issue #44 is:
+
+1. keep targeting the projection / FFN dense layers rather than attention scratch layout
+2. prioritize experiments that reduce repeated GEMM packing / setup cost or move to a backend that handles these ARM64 shapes better
+3. treat `expf` as the next scalar fallback only if the GEMM-side experiments do not produce a clearer win

@@ -779,7 +779,7 @@ This rules out the simplest "drop-in GEMM backend replacement" hypothesis. The r
 
 To test whether the `matrixmultiply::gemm::gemm_loop` hotspot was large enough to justify a packing-focused optimization by itself, I added a packing-surrogate Criterion group. Instead of timing the full GEMM, this group only copies the projection / FFN operands into contiguous scratch buffers, which provides a lower bound for "packing-like" memory movement cost on the same shapes.
 
-Representative results from `bench_ltembed_kernel_projection_packing`:
+Initial results from `bench_ltembed_kernel_projection_packing`:
 
 | Kernel surrogate | `single/long` | `batch/medium/8` | `batch/medium/16` |
 |---|---:|---:|---:|
@@ -806,3 +806,40 @@ This narrows the remaining issue-44 space again:
 1. do not spend the next pass on a packing-only workaround
 2. treat current pure-Rust dense GEMM throughput as the larger ceiling
 3. if issue #44 continues, the next meaningful experiment should be a more structural change than scratch-copy reduction alone
+
+## Follow-up: representative `single/long` setup-vs-pack split
+
+I then extended the same Criterion group to split the previous `lhs+rhs pack` surrogate into:
+
+- `lhs_pack`
+- `rhs_pack`
+- `output_clear`
+- `lhs_rhs_pack`
+- `total_setup = lhs_pack + rhs_pack + output_clear`
+
+Representative `single/long` results:
+
+| Kernel surrogate | `lhs_pack` | `rhs_pack` | `output_clear` | `lhs+rhs pack` | `total_setup` |
+|---|---:|---:|---:|---:|---:|
+| `qkv_triplet` | `23.63 µs` | `32.52 µs` | `12.65 µs` | `60.11 µs` | `72.82 µs` |
+| `attn_out` | `8.08 µs` | `10.40 µs` | `4.19 µs` | `18.93 µs` | `23.67 µs` |
+| `ffn_in` | `7.99 µs` | `57.43 µs` | `16.69 µs` | `64.24 µs` | `88.86 µs` |
+| `ffn_out` | `43.95 µs` | `58.60 µs` | `4.16 µs` | `113.69 µs` | `127.56 µs` |
+
+Compared against the earlier `single/long` projection GEMM timings:
+
+- `qkv_triplet`: `~72.8 µs` total setup surrogate vs `~2980 µs` GEMM
+- `attn_out`: `~23.7 µs` total setup surrogate vs `~1158 µs` GEMM
+- `ffn_in`: `~88.9 µs` total setup surrogate vs `~4046 µs` GEMM
+- `ffn_out`: `~127.6 µs` total setup surrogate vs `~4003 µs` GEMM
+
+Interpretation:
+
+- even after including output-buffer clearing, setup is still only a small fraction of end-to-end projection GEMM time
+- the largest setup surrogate here is `ffn_out`, but it is still only about `3.2%` of the corresponding real GEMM cost
+- `matrixmultiply::gemm::gemm_loop` is still a real hotspot, but these measurements suggest the payoff is unlikely to come from scratch-copy trimming alone
+
+This rules out a second narrow hypothesis:
+
+1. output-buffer setup is not large enough to justify a dedicated optimization pass by itself
+2. the remaining issue-44 ceiling is still dominated by dense GEMM throughput, not by copy-only setup work

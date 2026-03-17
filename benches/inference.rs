@@ -96,6 +96,13 @@ fn repeat_copy(src: &[f32], dst: &mut [f32], repeats: usize) {
     }
 }
 
+fn repeat_fill(dst: &mut [f32], repeats: usize) {
+    for _ in 0..repeats {
+        dst.fill(0.0);
+        criterion::black_box(&mut *dst);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sgemm(
     m: usize,
@@ -388,8 +395,10 @@ fn bench_ltembed_kernel_projection_packing(c: &mut Criterion) {
         for shape in shapes {
             let lhs = patterned_f32(shape.rows * shape.depth);
             let rhs = patterned_f32(shape.depth * shape.cols);
+            let output = patterned_f32(shape.rows * shape.cols);
             let mut lhs_pack = vec![0.0f32; lhs.len()];
             let mut rhs_pack = vec![0.0f32; rhs.len()];
+            let mut output_clear = output;
 
             group.bench_with_input(
                 BenchmarkId::new(format!("{}_lhs_pack", shape.label), &case.name),
@@ -412,12 +421,34 @@ fn bench_ltembed_kernel_projection_packing(c: &mut Criterion) {
             );
 
             group.bench_with_input(
+                BenchmarkId::new(format!("{}_output_clear", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        repeat_fill(&mut output_clear, shape.repeats);
+                    })
+                },
+            );
+
+            group.bench_with_input(
                 BenchmarkId::new(format!("{}_lhs_rhs_pack", shape.label), &case.name),
                 case,
                 |b, _case| {
                     b.iter(|| {
                         repeat_copy(&lhs, &mut lhs_pack, shape.repeats);
                         repeat_copy(&rhs, &mut rhs_pack, shape.repeats);
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_total_setup", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        repeat_copy(&lhs, &mut lhs_pack, shape.repeats);
+                        repeat_copy(&rhs, &mut rhs_pack, shape.repeats);
+                        repeat_fill(&mut output_clear, shape.repeats);
                     })
                 },
             );

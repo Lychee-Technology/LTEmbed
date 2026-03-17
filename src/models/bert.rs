@@ -4,6 +4,7 @@
 // No candle dependency.
 
 use crate::error::LTEmbedError;
+use crate::gemm;
 use memmap2::Mmap;
 use safetensors::SafeTensors;
 use std::cell::RefCell;
@@ -243,35 +244,7 @@ fn linear_batch_transposed(
     bias: &[f32],
     out: &mut [f32],
 ) {
-    let output_size = bias.len();
-    debug_assert_eq!(x_rows.len(), batch * input_size);
-    debug_assert_eq!(out.len(), batch * output_size);
-    debug_assert_eq!(weight_t.len(), input_size * output_size);
-
-    unsafe {
-        matrixmultiply::sgemm(
-            batch,
-            input_size,
-            output_size,
-            1.0,
-            x_rows.as_ptr(),
-            input_size as isize,
-            1,
-            weight_t.as_ptr(),
-            output_size as isize,
-            1,
-            0.0,
-            out.as_mut_ptr(),
-            output_size as isize,
-            1,
-        );
-    }
-    for row in 0..batch {
-        let offset = row * output_size;
-        for (j, b) in bias.iter().enumerate() {
-            out[offset + j] += b;
-        }
-    }
+    gemm::linear_batch_transposed_with_bias(x_rows, batch, input_size, weight_t, bias, out);
 }
 
 fn transpose_weight(weight: &[f32], output_size: usize, input_size: usize) -> Vec<f32> {
@@ -1315,5 +1288,55 @@ mod tests {
         linear_batch_transposed(&x_rows, 2, 3, &transposed, &bias, &mut actual);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_dense_backend_linear_with_bias_matches_row_major_reference() {
+        let x_rows = vec![
+            1.0f32, 2.0, 3.0, //
+            -1.0, 0.5, 4.0,
+        ];
+        let weight = vec![
+            1.0f32, 0.0, 2.0, //
+            -1.0, 3.0, 0.5,
+        ]; // [output=2, input=3]
+        let transposed = transpose_weight(&weight, 2, 3);
+        let bias = vec![0.25f32, -0.75];
+        let mut expected = vec![0.0f32; 4];
+        let mut actual = vec![123.0f32; 4];
+
+        linear_batch(&x_rows, 2, 3, &weight, &bias, &mut expected);
+        crate::gemm::linear_batch_transposed_with_bias(
+            &x_rows,
+            2,
+            3,
+            &transposed,
+            &bias,
+            &mut actual,
+        );
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "actual={actual} expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dense_backend_name_matches_platform_selection() {
+        #[cfg(all(
+            feature = "vendored-blas",
+            target_os = "linux",
+            target_arch = "aarch64"
+        ))]
+        assert_eq!(crate::gemm::dense_backend_name(), "openblas-cblas");
+
+        #[cfg(not(all(
+            feature = "vendored-blas",
+            target_os = "linux",
+            target_arch = "aarch64"
+        )))]
+        assert_eq!(crate::gemm::dense_backend_name(), "matrixmultiply");
     }
 }

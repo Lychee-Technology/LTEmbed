@@ -1,7 +1,8 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
-    benchmark_scenarios, gemm_microbenchmark_scenarios, padded_seq_len, projection_kernel_shapes,
-    scenario_by_name, scenario_texts, scenario_token_lengths, selected_scenarios, LatencyStats,
+    benchmark_scenarios, dense_backend_name, gemm_microbenchmark_scenarios, padded_seq_len,
+    projection_kernel_shapes, scenario_by_name, scenario_texts, scenario_token_lengths,
+    selected_scenarios, LatencyStats,
 };
 use ltembed::error::LTEmbedError;
 use ltembed::traits::tokenizer::{Tokenizer, TokenizerOutput};
@@ -156,4 +157,9 @@ fn test_projection_kernel_shapes_match_expected_dense_work_units() {
         shapes[3].setup_bytes(),
         (304 * 1536 * 4) + (1536 * 384 * 4) + (304 * 384 * 4)
     );
+}
+
+#[test]
+fn test_dense_backend_name_is_non_empty() {
+    assert!(!dense_backend_name().is_empty());
 }

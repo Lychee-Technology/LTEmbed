@@ -23,6 +23,19 @@ use serde::Deserialize;
 use std::path::Path;
 use std::thread;
 
+#[cfg(all(
+    feature = "vendored-blas",
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+use ltembed::benchmarking::dense_backend_name;
+#[cfg(all(
+    feature = "vendored-blas",
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+use openblas_src as _;
+
 // ── Test inputs ───────────────────────────────────────────────────────────────
 
 const SHORT: &str = "query: Hello, world!";
@@ -122,6 +135,85 @@ fn run_sgemm(
     unsafe {
         matrixmultiply::sgemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, 0.0, c, rsc, csc);
     }
+}
+
+#[cfg(all(
+    feature = "vendored-blas",
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+fn run_cblas_sgemm(m: usize, k: usize, n: usize, alpha: f32, a: &[f32], b: &[f32], c: &mut [f32]) {
+    unsafe {
+        cblas::sgemm(
+            cblas::Layout::RowMajor,
+            cblas::Transpose::None,
+            cblas::Transpose::None,
+            m as i32,
+            n as i32,
+            k as i32,
+            alpha,
+            a,
+            k as i32,
+            b,
+            n as i32,
+            0.0,
+            c,
+            n as i32,
+        );
+    }
+}
+
+fn add_bias_rows(out: &mut [f32], batch: usize, bias: &[f32]) {
+    let output_size = bias.len();
+    for row in 0..batch {
+        let offset = row * output_size;
+        for (col, value) in bias.iter().enumerate() {
+            out[offset + col] += value;
+        }
+    }
+}
+
+fn run_matrixmultiply_linear_with_bias(
+    x_rows: &[f32],
+    batch: usize,
+    input_size: usize,
+    weight_t: &[f32],
+    bias: &[f32],
+    out: &mut [f32],
+) {
+    run_sgemm(
+        batch,
+        input_size,
+        bias.len(),
+        1.0,
+        x_rows.as_ptr(),
+        input_size as isize,
+        1,
+        weight_t.as_ptr(),
+        bias.len() as isize,
+        1,
+        out.as_mut_ptr(),
+        bias.len() as isize,
+        1,
+    );
+    add_bias_rows(out, batch, bias);
+}
+
+#[cfg(all(
+    feature = "vendored-blas",
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+fn run_active_linear_with_bias(
+    x_rows: &[f32],
+    batch: usize,
+    input_size: usize,
+    weight_t: &[f32],
+    bias: &[f32],
+    out: &mut [f32],
+) {
+    run_cblas_sgemm(batch, input_size, bias.len(), 1.0, x_rows, weight_t, out);
+    add_bias_rows(out, batch, bias);
 }
 
 fn kernel_benchmark_cases() -> Result<Vec<KernelBenchmarkCase>, String> {
@@ -457,6 +549,80 @@ fn bench_ltembed_kernel_projection_packing(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ltembed_kernel_projection_backends(c: &mut Criterion) {
+    if !kernel_assets_available() {
+        eprintln!(
+            "bench_ltembed_kernel_projection_backends: skipping — assets/config.json or assets/tokenizer.json not found"
+        );
+        return;
+    }
+    let cases = match kernel_benchmark_cases() {
+        Ok(cases) => cases,
+        Err(err) => {
+            eprintln!("bench_ltembed_kernel_projection_backends: skipping — {err}");
+            return;
+        }
+    };
+
+    let mut group = c.benchmark_group("bench_ltembed_kernel_projection_backends");
+    for case in &cases {
+        let shapes =
+            projection_kernel_shapes(case.total_tokens, case.hidden_size, case.intermediate_size);
+
+        for shape in shapes {
+            let lhs = patterned_f32(shape.rows * shape.depth);
+            let rhs = patterned_f32(shape.depth * shape.cols);
+            let bias = patterned_f32(shape.cols);
+            let mut out = vec![0.0f32; shape.rows * shape.cols];
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("matrixmultiply_{}", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        run_matrixmultiply_linear_with_bias(
+                            &lhs,
+                            shape.rows,
+                            shape.depth,
+                            &rhs,
+                            &bias,
+                            &mut out,
+                        );
+                        criterion::black_box(&out);
+                    })
+                },
+            );
+
+            #[cfg(all(
+                feature = "vendored-blas",
+                target_arch = "aarch64",
+                target_os = "linux"
+            ))]
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_{}", dense_backend_name(), shape.label),
+                    &case.name,
+                ),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        run_active_linear_with_bias(
+                            &lhs,
+                            shape.rows,
+                            shape.depth,
+                            &rhs,
+                            &bias,
+                            &mut out,
+                        );
+                        criterion::black_box(&out);
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 fn bench_ltembed_kernel_attention_qk(c: &mut Criterion) {
     if !kernel_assets_available() {
         eprintln!(
@@ -575,6 +741,7 @@ criterion_group!(
     bench_ltembed_concurrent,
     bench_ltembed_kernel_projection,
     bench_ltembed_kernel_projection_packing,
+    bench_ltembed_kernel_projection_backends,
     bench_ltembed_kernel_attention_qk,
     bench_ltembed_kernel_attention_sv
 );

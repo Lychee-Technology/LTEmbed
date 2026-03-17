@@ -229,12 +229,16 @@ def scenario_from_name(name: str) -> Scenario:
         raise ValueError(f"unknown scenario: {name}") from exc
 
 
+def cargo_run_prefix(features: str | None) -> list[str]:
+    command = ["cargo", "run", "--quiet", "--release"]
+    if features:
+        command.extend(["--features", features])
+    return command
+
+
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
-    command = [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
+    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", None))
+    command.extend([
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -248,18 +252,14 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
         str(args.iters),
         "--threads",
         str(args.threads),
-    ]
+    ])
     if getattr(args, "scenario", None):
         command.extend(["--scenario", str(args.scenario)])
     return command
 
 
 def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
+    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", None)) + [
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -275,11 +275,7 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 
 
 def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
-    return [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
+    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", None)) + [
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -425,6 +421,14 @@ def resolved_implementation_version(implementation: str, payload: dict[str, Any]
     return str(payload.get("implementation_version", ""))
 
 
+def resolved_notes(implementation: str, payload: dict[str, Any]) -> str:
+    if implementation == "ltembed":
+        backend = str(payload.get("backend", "")).strip()
+        if backend:
+            return f"dense_backend={backend}"
+    return ""
+
+
 def run_json_command(command: list[str]) -> dict[str, Any]:
     completed = subprocess.run(
         command,
@@ -535,7 +539,9 @@ def collect_warm_rows(
                 timed_iters=args.iters,
                 host=host,
             )
-            rows.append(stats_row_from_runner(base_fields=base_fields, stats=entry["stats"]))
+            row = stats_row_from_runner(base_fields=base_fields, stats=entry["stats"])
+            row["notes"] = resolved_notes(implementation, payload)
+            rows.append(row)
     return rows, results
 
 
@@ -569,7 +575,9 @@ def collect_cold_rows(
                 timed_iters=1,
                 host=host,
             )
-            rows.append(stats_row_from_runner(base_fields=base_fields, stats=payload["stats"]))
+            row = stats_row_from_runner(base_fields=base_fields, stats=payload["stats"])
+            row["notes"] = resolved_notes(implementation, payload)
+            rows.append(row)
     return rows, results
 
 
@@ -622,6 +630,7 @@ def collect_correctness_rows(
                     cosine_similarity=average_similarity,
                     threshold=args.correctness_threshold,
                 )
+            row["notes"] = resolved_notes(implementation, payload)
             rows.append(row)
     return rows, payloads
 
@@ -652,6 +661,9 @@ def summary_lines(
             lines.append(f"transformers_version={transformers_version}")
         else:
             lines.append(f"{implementation}_version={version}")
+    ltembed_backend = warm_payloads.get("ltembed", {}).get("backend", "")
+    if ltembed_backend:
+        lines.append(f"ltembed_dense_backend={ltembed_backend}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
     if correctness_payloads is not None:
@@ -672,6 +684,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--ltembed-cargo-features",
+        default="",
+        help="Optional cargo feature list to enable for LTEmbed runs.",
+    )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)

@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "ltembed"
 path = "src/lib.rs"
 
+[features]
+default = []
+vendored-blas = ["dep:cblas", "dep:openblas-src"]
+
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
 matrixmultiply = "0.3.10"
@@ -37,6 +41,10 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+cblas = { version = "0.4", optional = true }
+openblas-src = { version = "0.10.13", default-features = false, features = ["cblas", "static"], optional = true }
 
 [[bench]]
 name = "inference"

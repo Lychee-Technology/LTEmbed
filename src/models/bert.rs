@@ -618,10 +618,6 @@ impl Bert {
             let seq_sq = seq_len * seq_len;
 
             for layer in &self.layers {
-                sc.q[..seq_hidden].fill(0.0);
-                sc.k[..seq_hidden].fill(0.0);
-                sc.v[..seq_hidden].fill(0.0);
-
                 linear_batch_transposed(
                     &x,
                     seq_len,
@@ -715,7 +711,6 @@ impl Bert {
                     }
                 }
 
-                sc.attn_proj[..seq_hidden].fill(0.0);
                 {
                     let src = sc.attn_out.as_ptr();
                     let dst = sc.attn_proj.as_mut_ptr();
@@ -740,7 +735,6 @@ impl Bert {
                     layer.attn_ln_bias.as_f32(),
                 );
 
-                sc.inter[..seq_inter].fill(0.0);
                 linear_batch_transposed(
                     &x,
                     seq_len,
@@ -751,7 +745,6 @@ impl Bert {
                 );
                 gelu(&mut sc.inter[..seq_inter]);
 
-                sc.ffn_out[..seq_hidden].fill(0.0);
                 {
                     let src = sc.inter.as_ptr();
                     let dst = sc.ffn_out.as_mut_ptr();
@@ -857,10 +850,6 @@ impl Bert {
         let mut ffn_out = vec![0.0f32; total_hidden];
 
         for layer in &self.layers {
-            q.fill(0.0);
-            k.fill(0.0);
-            v.fill(0.0);
-
             linear_batch_transposed(
                 &x,
                 total_tokens,
@@ -957,7 +946,6 @@ impl Bert {
                 }
             }
 
-            attn_proj.fill(0.0);
             linear_batch_transposed(
                 &attn_out,
                 total_tokens,
@@ -978,7 +966,6 @@ impl Bert {
                 layer.attn_ln_bias.as_f32(),
             );
 
-            inter.fill(0.0);
             linear_batch_transposed(
                 &x,
                 total_tokens,
@@ -989,7 +976,6 @@ impl Bert {
             );
             gelu(&mut inter);
 
-            ffn_out.fill(0.0);
             linear_batch_transposed(
                 &inter,
                 total_tokens,
@@ -1308,5 +1294,26 @@ mod tests {
                 "actual={actual} expected={expected}"
             );
         }
+    }
+
+    #[test]
+    fn test_linear_batch_transposed_overwrites_dirty_output_buffer() {
+        let x_rows = vec![
+            1.0f32, 2.0, 3.0, //
+            -1.0, 0.5, 4.0,
+        ];
+        let weight = vec![
+            1.0f32, 0.0, 2.0, //
+            -1.0, 3.0, 0.5,
+        ]; // [output=2, input=3]
+        let bias = vec![0.25f32, -0.75];
+        let transposed = transpose_weight(&weight, 2, 3);
+        let mut expected = vec![0.0f32; 4];
+        let mut actual = vec![99.0f32; 4];
+
+        linear_batch_transposed(&x_rows, 2, 3, &transposed, &bias, &mut expected);
+        linear_batch_transposed(&x_rows, 2, 3, &transposed, &bias, &mut actual);
+
+        assert_eq!(actual, expected);
     }
 }

@@ -379,6 +379,48 @@ Conclusion:
 - projection/output scratch reuse was ruled out in its current form
 - the smaller single-sequence win did not justify the batched regression
 
+## Issue 44 Optimization: overwrite-only fill pruning
+
+After ruling out larger layout changes, a narrower cleanup was tested and retained:
+
+- keep the existing GEMM shapes and scratch layout unchanged
+- remove redundant `fill(0.0)` calls before `linear_batch_transposed` on output buffers that are fully overwritten with `beta = 0`
+- apply that pruning to the Q/K/V projections plus the attention-output, intermediate, and FFN-output projection buffers
+
+This is a smaller change than the earlier scratch-reuse attempt because it does not merge buffers or alter call structure; it only removes pre-zeroing that the GEMM already makes unnecessary.
+
+### Local warm A/B vs. merged `main` (`a698064`)
+
+Each scenario was measured twice with the same command shape:
+
+```bash
+cargo run --release --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario <scenario> \
+  --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+  --warmup 5 \
+  --iters 20
+```
+
+Two-run averaged result:
+
+| Scenario | Avg baseline mean ms | Avg current mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 217.582 | 218.102 | `+0.24%` |
+| `batch/medium/8` | 78.746 | 77.963 | `-0.99%` |
+| `batch/medium/16` | 152.552 | 151.322 | `-0.81%` |
+
+Interpretation:
+
+- `single/long` stayed effectively flat within run-to-run noise
+- both batch validation scenarios improved across two runs
+- unlike the earlier projection-scratch-reuse experiment, this change did not introduce a throughput regression on the batched paths
+
+Conclusion:
+
+- overwrite-only fill pruning is worth keeping
+- the gain is modest, but it is the first issue `#44` GEMM-side change that held up across the batch gates without a clear counter-regression
+
 ### Chart: `single/long` after GELU optimization
 
 ```mermaid

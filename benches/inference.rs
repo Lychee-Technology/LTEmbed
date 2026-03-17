@@ -79,7 +79,7 @@ fn bench_ltembed_batch(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("bench_ltembed_batch");
     for &batch_size in &[1usize, 4, 8, 16] {
-        let texts: Vec<&str> = std::iter::repeat(MEDIUM).take(batch_size).collect();
+        let texts: Vec<&str> = std::iter::repeat_n(MEDIUM, batch_size).collect();
         group.bench_with_input(
             BenchmarkId::new("medium", batch_size),
             &batch_size,

@@ -774,3 +774,35 @@ Interpretation:
 - given that result, the experiment was reverted and the branch stayed on the existing `matrixmultiply` implementation
 
 This rules out the simplest "drop-in GEMM backend replacement" hypothesis. The remaining high-value GEMM direction is narrower: focus on reducing repeated packing / setup cost for the existing dense shapes rather than assuming a generic backend swap will win.
+
+## Follow-up: projection packing surrogate micro-benchmark
+
+To test whether the `matrixmultiply::gemm::gemm_loop` hotspot was large enough to justify a packing-focused optimization by itself, I added a packing-surrogate Criterion group. Instead of timing the full GEMM, this group only copies the projection / FFN operands into contiguous scratch buffers, which provides a lower bound for "packing-like" memory movement cost on the same shapes.
+
+Representative results from `bench_ltembed_kernel_projection_packing`:
+
+| Kernel surrogate | `single/long` | `batch/medium/8` | `batch/medium/16` |
+|---|---:|---:|---:|
+| `qkv_triplet` lhs+rhs pack | `58.94 µs` | `52.92 µs` | `55.83 µs` |
+| `attn_out` lhs+rhs pack | `22.11 µs` | `18.16 µs` | `19.24 µs` |
+| `ffn_in` lhs+rhs pack | `63.37 µs` | `60.69 µs` | `67.43 µs` |
+| `ffn_out` lhs+rhs pack | `115.97 µs` | `75.22 µs` | `100.21 µs` |
+
+Compared against the earlier projection GEMM timings on the same machine:
+
+- `single/long` `ffn_in`: `~63 µs` pack surrogate vs `~4046 µs` GEMM
+- `single/long` `ffn_out`: `~116 µs` pack surrogate vs `~4003 µs` GEMM
+- `single/long` `qkv_triplet`: `~59 µs` pack surrogate vs `~2980 µs` GEMM
+- `batch/medium/8` `ffn_in`: `~61 µs` pack surrogate vs `~1814 µs` GEMM
+
+Interpretation:
+
+- a pure copy/pack lower bound is only a few percent of the corresponding projection GEMM time on these shapes
+- that is not enough to make "packing only" the primary optimization target by itself
+- the Linux `perf` signal around `gemm_loop` is real, but the dominant cost still appears to live in the compute kernel rather than in a copy-only lower bound
+
+This narrows the remaining issue-44 space again:
+
+1. do not spend the next pass on a packing-only workaround
+2. treat current pure-Rust dense GEMM throughput as the larger ceiling
+3. if issue #44 continues, the next meaningful experiment should be a more structural change than scratch-copy reduction alone

@@ -19,6 +19,15 @@ pub struct LatencyStats {
     pub max_ms: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionKernelShape {
+    pub label: &'static str,
+    pub rows: usize,
+    pub depth: usize,
+    pub cols: usize,
+    pub repeats: usize,
+}
+
 pub const SHORT_TEXT: &str = "query: Hello, world!";
 pub const MEDIUM_TEXT: &str =
     "query: What is the impact of large language models on software engineering productivity?";
@@ -134,6 +143,57 @@ pub fn scenario_token_lengths<T: Tokenizer>(
 
 pub fn padded_seq_len(token_lengths: &[usize]) -> usize {
     token_lengths.iter().copied().max().unwrap_or(0)
+}
+
+pub fn projection_kernel_shapes(
+    total_tokens: usize,
+    hidden: usize,
+    intermediate: usize,
+) -> [ProjectionKernelShape; 4] {
+    [
+        ProjectionKernelShape {
+            label: "qkv_triplet",
+            rows: total_tokens,
+            depth: hidden,
+            cols: hidden,
+            repeats: 3,
+        },
+        ProjectionKernelShape {
+            label: "attn_out",
+            rows: total_tokens,
+            depth: hidden,
+            cols: hidden,
+            repeats: 1,
+        },
+        ProjectionKernelShape {
+            label: "ffn_in",
+            rows: total_tokens,
+            depth: hidden,
+            cols: intermediate,
+            repeats: 1,
+        },
+        ProjectionKernelShape {
+            label: "ffn_out",
+            rows: total_tokens,
+            depth: intermediate,
+            cols: hidden,
+            repeats: 1,
+        },
+    ]
+}
+
+impl ProjectionKernelShape {
+    pub fn lhs_pack_bytes(&self) -> usize {
+        self.repeats * self.rows * self.depth * std::mem::size_of::<f32>()
+    }
+
+    pub fn rhs_pack_bytes(&self) -> usize {
+        self.repeats * self.depth * self.cols * std::mem::size_of::<f32>()
+    }
+
+    pub fn output_bytes(&self) -> usize {
+        self.repeats * self.rows * self.cols * std::mem::size_of::<f32>()
+    }
 }
 
 pub fn long_text() -> String {

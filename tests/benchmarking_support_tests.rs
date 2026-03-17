@@ -1,7 +1,7 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
-    benchmark_scenarios, gemm_microbenchmark_scenarios, padded_seq_len, scenario_by_name,
-    scenario_texts, scenario_token_lengths, selected_scenarios, LatencyStats,
+    benchmark_scenarios, gemm_microbenchmark_scenarios, padded_seq_len, projection_kernel_shapes,
+    scenario_by_name, scenario_texts, scenario_token_lengths, selected_scenarios, LatencyStats,
 };
 use ltembed::error::LTEmbedError;
 use ltembed::traits::tokenizer::{Tokenizer, TokenizerOutput};
@@ -131,4 +131,25 @@ fn test_scenario_token_lengths_preserve_mixed_padding_shape() {
     assert_eq!(lengths.len(), 8);
     assert!(lengths.iter().any(|&length| length != lengths[0]));
     assert_eq!(padded_seq_len(&lengths), *lengths.iter().max().unwrap());
+}
+
+#[test]
+fn test_projection_kernel_shapes_match_expected_dense_work_units() {
+    let shapes = projection_kernel_shapes(304, 384, 1536);
+
+    assert_eq!(shapes[0].label, "qkv_triplet");
+    assert_eq!(shapes[0].repeats, 3);
+    assert_eq!(shapes[0].lhs_pack_bytes(), 3 * 304 * 384 * 4);
+    assert_eq!(shapes[0].rhs_pack_bytes(), 3 * 384 * 384 * 4);
+
+    assert_eq!(shapes[2].label, "ffn_in");
+    assert_eq!(shapes[2].rows, 304);
+    assert_eq!(shapes[2].depth, 384);
+    assert_eq!(shapes[2].cols, 1536);
+    assert_eq!(shapes[2].rhs_pack_bytes(), 384 * 1536 * 4);
+
+    assert_eq!(shapes[3].label, "ffn_out");
+    assert_eq!(shapes[3].depth, 1536);
+    assert_eq!(shapes[3].cols, 384);
+    assert_eq!(shapes[3].output_bytes(), 304 * 384 * 4);
 }

@@ -215,7 +215,7 @@ def scenario_from_name(name: str) -> Scenario:
 
 
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
-    return [
+    command = [
         "cargo",
         "run",
         "--quiet",
@@ -234,6 +234,9 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
         "--threads",
         str(args.threads),
     ]
+    if getattr(args, "scenario", None):
+        command.extend(["--scenario", str(args.scenario)])
+    return command
 
 
 def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:

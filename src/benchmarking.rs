@@ -69,6 +69,17 @@ pub fn scenario_by_name(name: &str) -> Option<&'static BenchmarkScenario> {
         .find(|scenario| scenario.name == name)
 }
 
+pub fn selected_scenarios(
+    name: Option<&str>,
+) -> Result<Vec<&'static BenchmarkScenario>, String> {
+    match name {
+        Some(name) => scenario_by_name(name)
+            .map(|scenario| vec![scenario])
+            .ok_or_else(|| format!("unknown scenario: {name}")),
+        None => Ok(benchmark_scenarios().iter().collect()),
+    }
+}
+
 pub fn scenario_texts(scenario: &BenchmarkScenario) -> Vec<String> {
     match scenario.name {
         "single/short" => vec![SHORT_TEXT.to_string()],

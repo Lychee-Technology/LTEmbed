@@ -1,4 +1,6 @@
-use ltembed::benchmarking::{benchmark_scenarios, scenario_by_name, scenario_texts, LatencyStats};
+use ltembed::benchmarking::{
+    scenario_by_name, scenario_texts, selected_scenarios, LatencyStats,
+};
 use ltembed::engine::ZeroVecEngine;
 use ltembed::error::LTEmbedError;
 use ltembed::traits::pooling::MeanPooling;
@@ -52,7 +54,11 @@ struct ColdPayload {
     stats: LatencyStats,
 }
 
-fn parse_args() -> Result<Args, String> {
+fn parse_args_from<I, S>(args: I) -> Result<Args, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let mut mode = None;
     let mut scenario = None;
     let mut model_dir = None;
@@ -60,7 +66,8 @@ fn parse_args() -> Result<Args, String> {
     let mut iters = 100usize;
     let mut threads = 1usize;
 
-    let mut iter = env::args().skip(1);
+    let mut iter = args.into_iter().map(Into::into);
+    let _program_name = iter.next();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--mode" => mode = iter.next(),
@@ -99,6 +106,10 @@ fn parse_args() -> Result<Args, String> {
         iters,
         threads,
     })
+}
+
+fn parse_args() -> Result<Args, String> {
+    parse_args_from(env::args())
 }
 
 fn git_sha() -> String {
@@ -179,7 +190,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "warm" => {
             let engine = engine_from_model_dir(&args.model_dir)?;
             let mut results = Vec::new();
-            for scenario in benchmark_scenarios() {
+            let scenarios = selected_scenarios(args.scenario.as_deref())
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+            for scenario in scenarios {
                 let stats = measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
                 results.push(StatsEntry {
                     scenario: scenario.name.to_string(),
@@ -213,7 +226,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "correctness" => {
             let engine = engine_from_model_dir(&args.model_dir)?;
             let mut results = Vec::new();
-            for scenario in benchmark_scenarios() {
+            let scenarios = selected_scenarios(args.scenario.as_deref())
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+            for scenario in scenarios {
                 let embeddings = run_scenario(&engine, scenario.name)?;
                 results.push(EmbeddingsEntry {
                     scenario: scenario.name.to_string(),
@@ -239,4 +254,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_args_accepts_optional_scenario_for_warm_mode() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--scenario",
+            "single/medium",
+            "--model-dir",
+            "assets",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, "warm");
+        assert_eq!(args.scenario.as_deref(), Some("single/medium"));
+        assert_eq!(args.model_dir, PathBuf::from("assets"));
+    }
 }

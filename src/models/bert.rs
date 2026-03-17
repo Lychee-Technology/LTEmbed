@@ -264,6 +264,7 @@ fn gelu(x: &mut [f32]) {
 }
 
 /// Softmax in-place over a slice.
+#[cfg(test)]
 fn softmax(x: &mut [f32]) {
     let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;
@@ -273,6 +274,36 @@ fn softmax(x: &mut [f32]) {
     }
     for v in x.iter_mut() {
         *v /= sum;
+    }
+}
+
+/// Softmax in-place over a slice while zeroing masked positions.
+fn masked_softmax(x: &mut [f32], attention_mask: &[u32]) {
+    debug_assert_eq!(x.len(), attention_mask.len());
+
+    let mut max = f32::NEG_INFINITY;
+    for (&value, &mask) in x.iter().zip(attention_mask.iter()) {
+        if mask != 0 {
+            max = max.max(value);
+        }
+    }
+
+    let mut sum = 0.0f32;
+    for (value, &mask) in x.iter_mut().zip(attention_mask.iter()) {
+        if mask == 0 {
+            *value = 0.0;
+        } else {
+            *value = (*value - max).exp();
+            sum += *value;
+        }
+    }
+
+    if sum != 0.0 {
+        for (value, &mask) in x.iter_mut().zip(attention_mask.iter()) {
+            if mask != 0 {
+                *value /= sum;
+            }
+        }
     }
 }
 
@@ -502,16 +533,11 @@ impl Bert {
                         );
                     }
 
-                    for (j, &m) in attention_mask.iter().enumerate() {
-                        if m == 0 {
-                            for i in 0..seq_len {
-                                sc.scores[i * seq_len + j] += -10000.0;
-                            }
-                        }
-                    }
-
                     for i in 0..seq_len {
-                        softmax(&mut sc.scores[i * seq_len..(i + 1) * seq_len]);
+                        masked_softmax(
+                            &mut sc.scores[i * seq_len..(i + 1) * seq_len],
+                            attention_mask,
+                        );
                     }
 
                     unsafe {
@@ -735,16 +761,8 @@ impl Bert {
                         );
                     }
 
-                    for (j, &m) in batch_mask.iter().enumerate() {
-                        if m == 0 {
-                            for i in 0..seq_len {
-                                scores[i * seq_len + j] += -10000.0;
-                            }
-                        }
-                    }
-
                     for i in 0..seq_len {
-                        softmax(&mut scores[i * seq_len..(i + 1) * seq_len]);
+                        masked_softmax(&mut scores[i * seq_len..(i + 1) * seq_len], batch_mask);
                     }
 
                     unsafe {
@@ -972,6 +990,33 @@ mod tests {
         softmax(&mut x);
         let sum: f32 = x.iter().sum();
         assert!((sum - 1.0).abs() < 1e-6, "softmax sum={sum}");
+    }
+
+    #[test]
+    fn test_masked_softmax_zeroes_masked_positions() {
+        let mut x = vec![1.0f32, 2.0, 3.0, 4.0];
+        let mask = vec![1u32, 0, 1, 0];
+        masked_softmax(&mut x, &mask);
+        assert_eq!(x[1], 0.0);
+        assert_eq!(x[3], 0.0);
+    }
+
+    #[test]
+    fn test_masked_softmax_normalizes_unmasked_positions() {
+        let mut x = vec![1.0f32, 2.0, 3.0];
+        let mask = vec![1u32, 0, 1];
+        masked_softmax(&mut x, &mask);
+        let sum: f32 = x.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "sum={sum}");
+    }
+
+    #[test]
+    fn test_masked_softmax_ignores_large_masked_scores() {
+        let mut x = vec![1.0f32, 1000.0, 2.0];
+        let mask = vec![1u32, 0, 1];
+        masked_softmax(&mut x, &mask);
+        assert_eq!(x[1], 0.0);
+        assert!(x[2] > x[0]);
     }
 
     #[test]

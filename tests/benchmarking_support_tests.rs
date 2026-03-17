@@ -1,5 +1,7 @@
 use approx::assert_relative_eq;
-use ltembed::benchmarking::{benchmark_scenarios, scenario_by_name, LatencyStats};
+use ltembed::benchmarking::{
+    benchmark_scenarios, scenario_by_name, selected_scenarios, LatencyStats,
+};
 
 #[test]
 fn test_benchmark_scenarios_match_issue_38_plan() {
@@ -43,4 +45,17 @@ fn test_latency_stats_uses_expected_percentiles() {
 fn test_latency_stats_rejects_empty_samples() {
     let err = LatencyStats::from_samples_ms(&[]).unwrap_err();
     assert!(err.contains("empty"));
+}
+
+#[test]
+fn test_selected_scenarios_returns_requested_scenario() {
+    let selected = selected_scenarios(Some("batch/medium/8")).unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].name, "batch/medium/8");
+}
+
+#[test]
+fn test_selected_scenarios_rejects_unknown_name() {
+    let err = selected_scenarios(Some("missing/scenario")).unwrap_err();
+    assert!(err.contains("unknown scenario"));
 }

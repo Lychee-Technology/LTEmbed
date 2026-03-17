@@ -75,6 +75,23 @@ version = "0.8.4"
         self.assertEqual(command[:5], ["cargo", "run", "--quiet", "--release", "--example"])
         self.assertEqual(command[5], "benchmark_candle")
 
+    def test_ltembed_warm_command_includes_optional_scenario(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("assets"),
+                "warmup": 5,
+                "iters": 10,
+                "threads": 1,
+                "scenario": "single/medium",
+            },
+        )
+        command = bench.ltembed_warm_command(args)
+        self.assertIn("--scenario", command)
+        self.assertIn("single/medium", command)
+
 
 if __name__ == "__main__":
     unittest.main()

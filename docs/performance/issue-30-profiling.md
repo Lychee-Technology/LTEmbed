@@ -421,6 +421,78 @@ Conclusion:
 - overwrite-only fill pruning is worth keeping
 - the gain is modest, but it is the first issue `#44` GEMM-side change that held up across the batch gates without a clear counter-regression
 
+## Issue 44 Profiling Refresh: after overwrite-only fill pruning
+
+After retaining the fill-pruning change, `single/long` was profiled again on the current branch (`cba9da7`) to check whether the visible hotspot mix had materially shifted.
+
+### `xctrace` Time Profiler
+
+Record:
+
+```bash
+xcrun xctrace record \
+  --template 'Time Profiler' \
+  --output /tmp/issue44-fillprune-single-long-extended.trace \
+  --time-limit 20s \
+  --launch -- \
+  /Users/ruoshi/code/github/LTEmbed/.worktrees/issue-44-gemm/target/release/benchmark_ltembed \
+    --mode warm \
+    --scenario single/long \
+    --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+    --warmup 1 \
+    --iters 120
+```
+
+Export:
+
+```bash
+xcrun xctrace export \
+  --input /tmp/issue44-fillprune-single-long-extended.trace \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' \
+  --output /tmp/issue44-fillprune-single-long-extended-time-profile.xml
+```
+
+Artifacts:
+
+- trace bundle: `/tmp/issue44-fillprune-single-long-extended.trace`
+- exported XML: `/tmp/issue44-fillprune-single-long-extended-time-profile.xml`
+
+### Forward-only summary
+
+`forward`-only rows (`152` samples total):
+
+| Family | Samples | Share |
+|---|---:|---:|
+| `Bert::forward internal` | 140 | 92.1% |
+| `sgemm` | 5 | 3.3% |
+| `softmax-expf` | 5 | 3.3% |
+| `layer-norm` | 1 | 0.7% |
+| `other` | 1 | 0.7% |
+
+Top visible leaf hotspots:
+
+| Rank | Leaf hotspot | Samples |
+|---|---|---:|
+| 1 | `Bert::forward` internal loop bodies | 140 |
+| 2 | `matrixmultiply::sgemm_kernel::kernel_target_neon` | 4 |
+| 3 | `expf` | 3 |
+| 4 | `DYLD-STUB$$expf` | 2 |
+| 5 | `matrixmultiply::gemm::gemm_loop` | 1 |
+| 6 | `layer_norm_rows` | 1 |
+
+Interpretation:
+
+- Instruments is now attributing most hot samples to inlined `Bert::forward` loop bodies instead of splitting them cleanly into child symbols
+- among the samples that do split out, the visible non-internal hotspots remain `sgemm` and softmax-related `expf`
+- `layer_norm_rows` is still present but very small
+- `tanhf` no longer appears, which is consistent with the earlier GELU optimization
+
+Practical takeaway:
+
+- the fill-pruning change did not reveal a new dominant hotspot family
+- the remaining externally visible scalar hotspot is still the softmax `expf` path
+- the remaining total time still appears to be dominated by GEMM plus code that Instruments keeps collapsed into `Bert::forward`
+
 ### Chart: `single/long` after GELU optimization
 
 ```mermaid

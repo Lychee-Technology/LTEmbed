@@ -643,3 +643,54 @@ The optimization landed in [`src/models/bert.rs`](/Users/ruoshi/code/github/LTEm
 - reused the helper in both `Bert::forward` and `Bert::forward_batch`
 
 This reduces passes over the attention score rows and is the code change associated with the `single/long` improvement above.
+
+## Follow-up: targeted GEMM micro-benchmarks
+
+`xctrace` remained useful for broad family attribution, but after the fill-pruning pass it no longer separated the dominant `Bert::forward` samples cleanly enough to guide the next GEMM experiment. To get more stable evidence, I added a targeted Criterion micro-benchmark group in [`benches/inference.rs`](/Users/ruoshi/code/github/LTEmbed/.worktrees/issue-44-gemm/benches/inference.rs) that runs the main GEMM shapes directly, using the real tokenizer-derived sequence lengths for the benchmark scenarios.
+
+The new helper path in [`src/benchmarking.rs`](/Users/ruoshi/code/github/LTEmbed/.worktrees/issue-44-gemm/src/benchmarking.rs) identifies the micro-benchmark anchor scenarios as:
+
+- `single/long`
+- `batch/medium/8`
+- `batch/medium/16`
+
+On this asset set, the actual tokenized lengths are:
+
+- `single/long`: `304` tokens
+- `batch/medium/8`: `17` tokens per row, `136` total padded tokens
+- `batch/medium/16`: `17` tokens per row, `272` total padded tokens
+
+### Projection / output GEMM timings
+
+These benches directly time the dense `matrixmultiply::sgemm` calls used by the encoder projections:
+
+| Kernel bench | `single/long` (`seq304`) | `batch/medium/8` (`seq17`, `tokens136`) | `batch/medium/16` (`seq17`, `tokens272`) |
+|---|---:|---:|---:|
+| `qkv` triplet (`304x384x384`-class) | `2.980 ms` | `1.339 ms` | `2.678 ms` |
+| `attn_out` (`tokens x 384 x 384`) | `0.997 ms` | `0.447 ms` | `0.887 ms` |
+| `ffn_in` (`tokens x 384 x 1536`) | `4.046 ms` | `1.814 ms` | `3.611 ms` |
+| `ffn_out` (`tokens x 1536 x 384`) | `4.003 ms` | `1.798 ms` | `3.585 ms` |
+
+### Attention GEMM timings
+
+These benches time the two head-loop attention matmul families directly:
+
+| Kernel bench | `single/long` (`seq304`) | `batch/medium/8` (`seq17`) | `batch/medium/16` (`seq17`) |
+|---|---:|---:|---:|
+| `qk` score matmul | `0.867 ms` | `0.066 ms` | `0.132 ms` |
+| `sv` score-value matmul | `0.959 ms` | `0.043 ms` | `0.086 ms` |
+
+### Interpretation
+
+- The micro-benchmarks confirm that the biggest remaining dense work is still in the encoder projections, especially `ffn_in` and `ffn_out`.
+- `attn_out` is materially cheaper than the FFN projection pair in all three anchor scenarios.
+- The attention `qk` and `sv` matmuls are real costs on `single/long`, but they stay well below the FFN projection pair on this model shape.
+- At fixed `seq_len = 17`, both projection and attention micro-benchmarks scale close to linearly from `batch/medium/8` to `batch/medium/16`, which argues against a hidden batching cliff in these specific call shapes.
+
+### Resulting priority for issue #44
+
+This micro-benchmark pass shifts the next optimization priority toward the larger dense projection work units, not the attention scratch layout:
+
+1. keep looking at projection / FFN GEMM paths first
+2. treat attention matmul layout changes as secondary unless Linux `perf` shows a different ranking
+3. use Linux ARM64 `perf` as the next evidence source if we need to distinguish backend/kernel behavior inside the projection-heavy GEMMs

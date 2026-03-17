@@ -1,7 +1,31 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
-    benchmark_scenarios, scenario_by_name, scenario_texts, selected_scenarios, LatencyStats,
+    benchmark_scenarios, gemm_microbenchmark_scenarios, padded_seq_len, scenario_by_name,
+    scenario_texts, scenario_token_lengths, selected_scenarios, LatencyStats,
 };
+use ltembed::error::LTEmbedError;
+use ltembed::traits::tokenizer::{Tokenizer, TokenizerOutput};
+
+#[derive(Debug)]
+struct CountingTokenizer;
+
+impl Tokenizer for CountingTokenizer {
+    fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError> {
+        let tokens = text.split_whitespace().count() + 2;
+        if tokens > max_length {
+            return Err(LTEmbedError::InputTooLong {
+                tokens,
+                max: max_length,
+            });
+        }
+
+        Ok(TokenizerOutput {
+            input_ids: vec![1; tokens],
+            attention_mask: vec![1; tokens],
+            token_type_ids: vec![0; tokens],
+        })
+    }
+}
 
 #[test]
 fn test_benchmark_scenarios_match_issue_38_plan() {
@@ -29,6 +53,19 @@ fn test_benchmark_scenarios_match_issue_38_plan() {
         "long"
     );
     assert!(scenario_by_name("missing/scenario").is_none());
+}
+
+#[test]
+fn test_gemm_microbenchmark_scenarios_target_expected_workloads() {
+    let scenario_names: Vec<_> = gemm_microbenchmark_scenarios()
+        .into_iter()
+        .map(|scenario| scenario.name)
+        .collect();
+
+    assert_eq!(
+        scenario_names,
+        vec!["single/long", "batch/medium/8", "batch/medium/16"]
+    );
 }
 
 #[test]
@@ -70,4 +107,28 @@ fn test_batch_mixed_scenario_uses_variable_length_texts() {
     assert_eq!(texts.len(), 8);
     assert!(lengths.iter().any(|&len| len == lengths[0]));
     assert!(lengths.iter().any(|&len| len != lengths[0]));
+}
+
+#[test]
+fn test_scenario_token_lengths_follow_tokenizer_outputs() {
+    let tokenizer = CountingTokenizer;
+    let scenario = scenario_by_name("batch/medium/8").expect("scenario should exist");
+
+    let lengths = scenario_token_lengths(&tokenizer, scenario, 512).unwrap();
+
+    assert_eq!(lengths.len(), 8);
+    assert!(lengths.iter().all(|&length| length == lengths[0]));
+    assert_eq!(padded_seq_len(&lengths), lengths[0]);
+}
+
+#[test]
+fn test_scenario_token_lengths_preserve_mixed_padding_shape() {
+    let tokenizer = CountingTokenizer;
+    let scenario = scenario_by_name("batch/mixed/8").expect("scenario should exist");
+
+    let lengths = scenario_token_lengths(&tokenizer, scenario, 512).unwrap();
+
+    assert_eq!(lengths.len(), 8);
+    assert!(lengths.iter().any(|&length| length != lengths[0]));
+    assert_eq!(padded_seq_len(&lengths), *lengths.iter().max().unwrap());
 }

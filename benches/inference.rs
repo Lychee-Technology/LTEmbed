@@ -12,7 +12,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use ltembed::{
     benchmarking::{
-        gemm_microbenchmark_scenarios, padded_seq_len, scenario_token_lengths, BENCHMARK_MAX_LENGTH,
+        gemm_microbenchmark_scenarios, padded_seq_len, projection_kernel_shapes,
+        scenario_token_lengths, BENCHMARK_MAX_LENGTH,
     },
     engine::ZeroVecEngine,
     traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
@@ -86,6 +87,13 @@ fn patterned_f32(len: usize) -> Vec<f32> {
     (0..len)
         .map(|i| ((i % 251) as f32 - 125.0) / 125.0)
         .collect()
+}
+
+fn repeat_copy(src: &[f32], dst: &mut [f32], repeats: usize) {
+    for _ in 0..repeats {
+        dst.copy_from_slice(src);
+        criterion::black_box(&mut *dst);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -357,6 +365,67 @@ fn bench_ltembed_kernel_projection(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ltembed_kernel_projection_packing(c: &mut Criterion) {
+    if !kernel_assets_available() {
+        eprintln!(
+            "bench_ltembed_kernel_projection_packing: skipping — assets/config.json or assets/tokenizer.json not found"
+        );
+        return;
+    }
+    let cases = match kernel_benchmark_cases() {
+        Ok(cases) => cases,
+        Err(err) => {
+            eprintln!("bench_ltembed_kernel_projection_packing: skipping — {err}");
+            return;
+        }
+    };
+
+    let mut group = c.benchmark_group("bench_ltembed_kernel_projection_packing");
+    for case in &cases {
+        let shapes =
+            projection_kernel_shapes(case.total_tokens, case.hidden_size, case.intermediate_size);
+
+        for shape in shapes {
+            let lhs = patterned_f32(shape.rows * shape.depth);
+            let rhs = patterned_f32(shape.depth * shape.cols);
+            let mut lhs_pack = vec![0.0f32; lhs.len()];
+            let mut rhs_pack = vec![0.0f32; rhs.len()];
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_lhs_pack", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        repeat_copy(&lhs, &mut lhs_pack, shape.repeats);
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_rhs_pack", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        repeat_copy(&rhs, &mut rhs_pack, shape.repeats);
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_lhs_rhs_pack", shape.label), &case.name),
+                case,
+                |b, _case| {
+                    b.iter(|| {
+                        repeat_copy(&lhs, &mut lhs_pack, shape.repeats);
+                        repeat_copy(&rhs, &mut rhs_pack, shape.repeats);
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 fn bench_ltembed_kernel_attention_qk(c: &mut Criterion) {
     if !kernel_assets_available() {
         eprintln!(
@@ -474,6 +543,7 @@ criterion_group!(
     bench_ltembed_batch,
     bench_ltembed_concurrent,
     bench_ltembed_kernel_projection,
+    bench_ltembed_kernel_projection_packing,
     bench_ltembed_kernel_attention_qk,
     bench_ltembed_kernel_attention_sv
 );

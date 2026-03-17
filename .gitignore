@@ -21,6 +21,7 @@ target
 #.idea/
 
 .claude/
+.worktrees/
 
 # Distribution directory — contains build artifacts and deployment zips
 dist/

@@ -97,8 +97,12 @@ These cover both latency-sensitive single inference and a throughput-oriented ba
 Expected profiling outputs:
 
 - a documented command path for macOS ARM64
+- at least one flame graph or equivalent hotspot chart for a representative scenario
+- a compact top-hot-functions summary table with self-time or sample share
 - captured hotspot summary identifying top self-time functions
 - enough detail to compare pre- and post-optimization runs
+
+The flame graph or chart is important because it makes the issue evidence easier to review than raw profiler text alone. A text summary is still useful, but it should be paired with a visual artifact when available.
 
 ### Hotspot Optimization
 
@@ -145,6 +149,12 @@ Required verification:
 - targeted Rust tests for the changed helper and affected model code
 - release benchmark comparison for at least one representative scenario before and after the optimization
 - profiling evidence captured on macOS ARM64
+
+Preferred profiling evidence package:
+
+- flame graph or equivalent hotspot visualization
+- top-functions table extracted from the profiler output
+- short note explaining which hotspot was selected and why
 
 ## Deliverables
 

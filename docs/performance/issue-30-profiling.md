@@ -258,6 +258,47 @@ Interpretation:
 - after eliminating GELU’s libm call, `softmax-expf` becomes more visible as the next scalar attention hotspot
 - dense GEMM remains the dominant cost center overall
 
+## Issue 44 Experiment: packed QKV projection
+
+As a first GEMM-focused follow-up after issue `#30`, a packed QKV projection path was prototyped:
+
+- replace three independent Q/K/V dense projections with one larger packed projection
+- replace separate `q`, `k`, and `v` scratch buffers with one packed `qkv` buffer
+- read Q/K/V as strided views into the packed output during attention matmuls
+
+The implementation was kept internal-only and validated for correctness, but it was not retained because local A/B numbers did not show a clear win.
+
+### Local warm A/B vs. merged `main` (`a698064`)
+
+Command shape used for both baseline and experimental worktrees:
+
+```bash
+cargo run --release --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario <scenario> \
+  --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+  --warmup 5 \
+  --iters 20
+```
+
+| Scenario | Baseline mean ms | Packed-QKV mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 214.890 | 215.104 | `+0.10%` |
+| `batch/medium/8` | 76.555 | 76.188 | `-0.48%` |
+| `batch/medium/16` | 148.953 | 149.213 | `+0.17%` |
+
+Interpretation:
+
+- `single/long` stayed effectively flat
+- `batch/medium/8` improved slightly, but not enough to establish a clear throughput win
+- `batch/medium/16` drifted back to a small regression
+
+Conclusion:
+
+- packed QKV projection was ruled out for now
+- the extra packing and strided access pattern did not pay for itself on this machine
+- issue `#44` should move to the next GEMM hypothesis instead of landing this change
+
 ### Chart: `single/long` after GELU optimization
 
 ```mermaid

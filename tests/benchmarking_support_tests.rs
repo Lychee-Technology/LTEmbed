@@ -152,4 +152,8 @@ fn test_projection_kernel_shapes_match_expected_dense_work_units() {
     assert_eq!(shapes[3].depth, 1536);
     assert_eq!(shapes[3].cols, 384);
     assert_eq!(shapes[3].output_bytes(), 304 * 384 * 4);
+    assert_eq!(
+        shapes[3].setup_bytes(),
+        (304 * 1536 * 4) + (1536 * 384 * 4) + (304 * 384 * 4)
+    );
 }

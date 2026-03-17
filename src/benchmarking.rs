@@ -194,6 +194,10 @@ impl ProjectionKernelShape {
     pub fn output_bytes(&self) -> usize {
         self.repeats * self.rows * self.cols * std::mem::size_of::<f32>()
     }
+
+    pub fn setup_bytes(&self) -> usize {
+        self.lhs_pack_bytes() + self.rhs_pack_bytes() + self.output_bytes()
+    }
 }
 
 pub fn long_text() -> String {

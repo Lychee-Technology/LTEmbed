@@ -74,9 +74,7 @@ pub fn scenario_by_name(name: &str) -> Option<&'static BenchmarkScenario> {
         .find(|scenario| scenario.name == name)
 }
 
-pub fn selected_scenarios(
-    name: Option<&str>,
-) -> Result<Vec<&'static BenchmarkScenario>, String> {
+pub fn selected_scenarios(name: Option<&str>) -> Result<Vec<&'static BenchmarkScenario>, String> {
     match name {
         Some(name) => scenario_by_name(name)
             .map(|scenario| vec![scenario])

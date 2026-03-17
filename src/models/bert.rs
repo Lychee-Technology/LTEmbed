@@ -932,10 +932,7 @@ impl Bert {
                         }
                     } else {
                         for i in 0..seq_len {
-                            masked_softmax(
-                                &mut scores[i * seq_len..(i + 1) * seq_len],
-                                batch_mask,
-                            );
+                            masked_softmax(&mut scores[i * seq_len..(i + 1) * seq_len], batch_mask);
                         }
                     }
 

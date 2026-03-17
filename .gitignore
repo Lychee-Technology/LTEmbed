@@ -24,6 +24,9 @@ target
 
 # Distribution directory — contains build artifacts and deployment zips
 dist/
+artifacts/
+__pycache__/
+*.pyc
 
 # Large BERT weight file — download separately, do not commit
 assets/model.safetensors

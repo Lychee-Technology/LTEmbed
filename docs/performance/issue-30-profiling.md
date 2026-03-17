@@ -56,30 +56,41 @@ sample "$pid" 5 -mayDie -file /tmp/issue30-sample.txt
 wait "$pid"
 ```
 
-The `sample` output is a good fallback when Instruments export is unstable inside the current machine configuration.
+The `sample` output remains a useful fallback for longer runs and for text-first hotspot inspection.
 
-### macOS trace artifact attempt
+### macOS `xctrace` trace artifact
 
-Attempted:
+Successful record:
 
 ```bash
 xcrun xctrace record \
   --template 'Time Profiler' \
-  --output /tmp/issue30-single-long.trace \
-  --time-limit 8s \
+  --output /tmp/issue30-single-medium.trace \
+  --time-limit 5s \
   --launch -- \
   target/release/benchmark_ltembed \
     --mode warm \
-    --scenario single/long \
+    --scenario single/medium \
     --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
     --warmup 1 \
-    --iters 30
+    --iters 10
 ```
 
-Result on this machine: `xctrace` crashed in an Instruments plugin before writing a `.trace` bundle. Because of that toolchain instability, the fallback evidence for this run is:
+Successful export:
 
-- `sample` text profile at `/tmp/issue30-sample.txt`
-- scenario benchmark JSON at `/tmp/issue30-bench.json`
+```bash
+xcrun xctrace export \
+  --input /tmp/issue30-single-medium.trace \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' \
+  --output /tmp/issue30-single-medium-time-profile.xml
+```
+
+Artifacts:
+
+- trace bundle: `/tmp/issue30-single-medium.trace`
+- exported time-profile XML: `/tmp/issue30-single-medium-time-profile.xml`
+- long-run `sample` fallback: `/tmp/issue30-sample.txt`
+- long-run benchmark JSON: `/tmp/issue30-bench.json`
 
 ## Current Benchmark Evidence
 
@@ -97,6 +108,51 @@ Interpretation:
 - the shorter and batched scenarios were noisier on this machine and should be re-measured on a quieter runner before making stronger claims
 
 ## Hotspot Summary
+
+### `xctrace` export: `single/medium`
+
+The `issue30-single-medium.trace` export was aggregated twice:
+
+- all trace samples
+- `forward`-only samples whose stack contains `ltembed::models::bert::Bert::forward`
+
+The `forward`-only view is the one that maps best to issue `#30`.
+
+| Rank | Leaf hotspot | Samples | Share of `forward` samples | Interpretation |
+|---|---|---:|---:|---|
+| 1 | `matrixmultiply::gemm::gemm_loop` | 118 | 40.3% | dense projection and attention/value matmul orchestration |
+| 2 | `matrixmultiply::sgemm_kernel::kernel_target_neon` | 83 | 28.3% | NEON micro-kernel compute |
+| 3 | `matrixmultiply::gemm::masked_kernel` | 49 | 16.7% | matrixmultiply internal masked tail handling |
+| 4 | `tanhf` | 34 | 11.6% | GELU scalar activation cost |
+| 5 | `ltembed::models::bert::layer_norm_rows` | 4 | 1.4% | remaining row-wise scalar normalization |
+
+Family summary for the `forward`-only export (`293` samples total):
+
+| Family | Samples | Share |
+|---|---:|---:|
+| `sgemm` | 251 | 85.7% |
+| `tanhf` | 36 | 12.3% |
+| `layer-norm` | 4 | 1.4% |
+| `other` | 2 | 0.7% |
+
+Interpretation:
+
+- on the `single/medium` trace, the dominant cost is still dense GEMM work, not scalar softmax
+- `tanhf` is the clearest remaining scalar hotspot in this shorter scenario
+- `layer_norm_rows` still appears, but at much lower weight
+- the fused masked-softmax path does not surface as a top leaf in this medium-length trace, which is consistent with the expectation that scalar attention overhead is easier to see on longer sequences
+
+### Chart: `xctrace` forward-only families
+
+```mermaid
+xychart-beta
+    title "Issue 30 Hotspot Families (xctrace export, single/medium, forward-only)"
+    x-axis ["sgemm", "tanhf", "layer-norm", "other"]
+    y-axis "Sample count" 0 --> 260
+    bar [251, 36, 4, 2]
+```
+
+### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:
 

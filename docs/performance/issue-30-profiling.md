@@ -306,6 +306,29 @@ Validation notes:
 - the new unit tests assert that far-tail softmax values are explicitly zeroed in both masked and unmasked paths
 - a short `xctrace` spot check after the change stayed GEMM-dominated, but its sample size was too small to use as the main quantitative proof; the benchmark deltas above are the stronger evidence
 
+## Follow-up: pretranspose hot dense weights for GEMM
+
+Profiling after the scalar work showed that the long-sequence path was still dominated by dense GEMM calls around the layer Q/K/V projections, attention output projection, and FFN up/down projections. In the existing implementation, `linear_batch` fed `matrixmultiply` a transpose view of the safetensors weight matrix on every call. This pass changed those hot dense weights to a pretransposed `[input_size, output_size]` layout at load time and switched the batched linear path to consume that contiguous layout directly.
+
+For `single/long`, the benchmark tokenizer length is `304` tokens, so the heaviest dense shapes are primarily:
+
+- `304 x 384 x 384`
+- `304 x 384 x 1536`
+- `304 x 1536 x 384`
+
+### Benchmark comparison vs. previous commit (`57aa013`)
+
+| Scenario | Before mean ms | After mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 219.720 | 210.958 | `-3.99%` |
+| `batch/mixed/8` | 1639.123 | 1624.746 | `-0.88%` |
+
+Interpretation:
+
+- the strongest gain appears on the long single-input path where the repeated dense projections dominate
+- the mixed-length batched scenario was roughly neutral to slightly improved
+- this is a data-layout win around the dense layers, not an attention-score / softmax win
+
 ### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:

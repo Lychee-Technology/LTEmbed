@@ -82,19 +82,19 @@ fn with_thread_local_scratch<R>(
 // ── Weight structs ────────────────────────────────────────────────────────────
 
 struct LayerWeights {
-    q_weight: TensorData,
+    q_weight_t: Vec<f32>,
     q_bias: TensorData,
-    k_weight: TensorData,
+    k_weight_t: Vec<f32>,
     k_bias: TensorData,
-    v_weight: TensorData,
+    v_weight_t: Vec<f32>,
     v_bias: TensorData,
-    attn_out_weight: TensorData,
+    attn_out_weight_t: Vec<f32>,
     attn_out_bias: TensorData,
     attn_ln_weight: TensorData,
     attn_ln_bias: TensorData,
-    inter_weight: TensorData,
+    inter_weight_t: Vec<f32>,
     inter_bias: TensorData,
-    out_weight: TensorData,
+    out_weight_t: Vec<f32>,
     out_bias: TensorData,
     out_ln_weight: TensorData,
     out_ln_bias: TensorData,
@@ -188,6 +188,7 @@ fn linear(x: &[f32], weight: &[f32], bias: &[f32], output: &mut [f32]) {
 /// x_rows: [batch, input_size] row-major
 /// weight: [output_size, input_size] row-major
 /// out: [batch, output_size] row-major
+#[cfg(test)]
 fn linear_batch(
     x_rows: &[f32],
     batch: usize,
@@ -232,6 +233,55 @@ fn linear_batch(
             out[offset + j] += b;
         }
     }
+}
+
+fn linear_batch_transposed(
+    x_rows: &[f32],
+    batch: usize,
+    input_size: usize,
+    weight_t: &[f32],
+    bias: &[f32],
+    out: &mut [f32],
+) {
+    let output_size = bias.len();
+    debug_assert_eq!(x_rows.len(), batch * input_size);
+    debug_assert_eq!(out.len(), batch * output_size);
+    debug_assert_eq!(weight_t.len(), input_size * output_size);
+
+    unsafe {
+        matrixmultiply::sgemm(
+            batch,
+            input_size,
+            output_size,
+            1.0,
+            x_rows.as_ptr(),
+            input_size as isize,
+            1,
+            weight_t.as_ptr(),
+            output_size as isize,
+            1,
+            0.0,
+            out.as_mut_ptr(),
+            output_size as isize,
+            1,
+        );
+    }
+    for row in 0..batch {
+        let offset = row * output_size;
+        for (j, b) in bias.iter().enumerate() {
+            out[offset + j] += b;
+        }
+    }
+}
+
+fn transpose_weight(weight: &[f32], output_size: usize, input_size: usize) -> Vec<f32> {
+    let mut transposed = vec![0.0f32; weight.len()];
+    for out_idx in 0..output_size {
+        for in_idx in 0..input_size {
+            transposed[in_idx * output_size + out_idx] = weight[out_idx * input_size + in_idx];
+        }
+    }
+    transposed
 }
 
 /// Layer norm in-place: (x - mean) / sqrt(var + eps) * weight + bias
@@ -432,25 +482,33 @@ impl Bert {
         for i in 0..config.num_hidden_layers {
             let p = format!("encoder.layer.{i}");
             let layer = LayerWeights {
-                q_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.attention.self.query.weight"),
-                )?,
+                q_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.weight"))?
+                        .as_f32(),
+                    config.hidden_size,
+                    config.hidden_size,
+                ),
                 q_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.bias"))?,
-                k_weight: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.weight"))?,
+                k_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.weight"))?
+                        .as_f32(),
+                    config.hidden_size,
+                    config.hidden_size,
+                ),
                 k_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.bias"))?,
-                v_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.attention.self.value.weight"),
-                )?,
+                v_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.weight"))?
+                        .as_f32(),
+                    config.hidden_size,
+                    config.hidden_size,
+                ),
                 v_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.bias"))?,
-                attn_out_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.attention.output.dense.weight"),
-                )?,
+                attn_out_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.attention.output.dense.weight"))?
+                        .as_f32(),
+                    config.hidden_size,
+                    config.hidden_size,
+                ),
                 attn_out_bias: load_tensor_data(
                     &st,
                     &mmap,
@@ -466,13 +524,18 @@ impl Bert {
                     &mmap,
                     &format!("{p}.attention.output.LayerNorm.bias"),
                 )?,
-                inter_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.intermediate.dense.weight"),
-                )?,
+                inter_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.intermediate.dense.weight"))?
+                        .as_f32(),
+                    config.intermediate_size,
+                    config.hidden_size,
+                ),
                 inter_bias: load_tensor_data(&st, &mmap, &format!("{p}.intermediate.dense.bias"))?,
-                out_weight: load_tensor_data(&st, &mmap, &format!("{p}.output.dense.weight"))?,
+                out_weight_t: transpose_weight(
+                    load_tensor_data(&st, &mmap, &format!("{p}.output.dense.weight"))?.as_f32(),
+                    config.hidden_size,
+                    config.intermediate_size,
+                ),
                 out_bias: load_tensor_data(&st, &mmap, &format!("{p}.output.dense.bias"))?,
                 out_ln_weight: load_tensor_data(
                     &st,
@@ -559,27 +622,27 @@ impl Bert {
                 sc.k[..seq_hidden].fill(0.0);
                 sc.v[..seq_hidden].fill(0.0);
 
-                linear_batch(
+                linear_batch_transposed(
                     &x,
                     seq_len,
                     hidden,
-                    layer.q_weight.as_f32(),
+                    &layer.q_weight_t,
                     layer.q_bias.as_f32(),
                     &mut sc.q[..seq_hidden],
                 );
-                linear_batch(
+                linear_batch_transposed(
                     &x,
                     seq_len,
                     hidden,
-                    layer.k_weight.as_f32(),
+                    &layer.k_weight_t,
                     layer.k_bias.as_f32(),
                     &mut sc.k[..seq_hidden],
                 );
-                linear_batch(
+                linear_batch_transposed(
                     &x,
                     seq_len,
                     hidden,
-                    layer.v_weight.as_f32(),
+                    &layer.v_weight_t,
                     layer.v_bias.as_f32(),
                     &mut sc.v[..seq_hidden],
                 );
@@ -656,11 +719,11 @@ impl Bert {
                 {
                     let src = sc.attn_out.as_ptr();
                     let dst = sc.attn_proj.as_mut_ptr();
-                    linear_batch(
+                    linear_batch_transposed(
                         unsafe { std::slice::from_raw_parts(src, seq_hidden) },
                         seq_len,
                         hidden,
-                        layer.attn_out_weight.as_f32(),
+                        &layer.attn_out_weight_t,
                         layer.attn_out_bias.as_f32(),
                         unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
                     );
@@ -678,11 +741,11 @@ impl Bert {
                 );
 
                 sc.inter[..seq_inter].fill(0.0);
-                linear_batch(
+                linear_batch_transposed(
                     &x,
                     seq_len,
                     hidden,
-                    layer.inter_weight.as_f32(),
+                    &layer.inter_weight_t,
                     layer.inter_bias.as_f32(),
                     &mut sc.inter[..seq_inter],
                 );
@@ -692,11 +755,11 @@ impl Bert {
                 {
                     let src = sc.inter.as_ptr();
                     let dst = sc.ffn_out.as_mut_ptr();
-                    linear_batch(
+                    linear_batch_transposed(
                         unsafe { std::slice::from_raw_parts(src, seq_inter) },
                         seq_len,
                         intermediate,
-                        layer.out_weight.as_f32(),
+                        &layer.out_weight_t,
                         layer.out_bias.as_f32(),
                         unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
                     );
@@ -798,27 +861,27 @@ impl Bert {
             k.fill(0.0);
             v.fill(0.0);
 
-            linear_batch(
+            linear_batch_transposed(
                 &x,
                 total_tokens,
                 hidden,
-                layer.q_weight.as_f32(),
+                &layer.q_weight_t,
                 layer.q_bias.as_f32(),
                 &mut q,
             );
-            linear_batch(
+            linear_batch_transposed(
                 &x,
                 total_tokens,
                 hidden,
-                layer.k_weight.as_f32(),
+                &layer.k_weight_t,
                 layer.k_bias.as_f32(),
                 &mut k,
             );
-            linear_batch(
+            linear_batch_transposed(
                 &x,
                 total_tokens,
                 hidden,
-                layer.v_weight.as_f32(),
+                &layer.v_weight_t,
                 layer.v_bias.as_f32(),
                 &mut v,
             );
@@ -898,11 +961,11 @@ impl Bert {
             }
 
             attn_proj.fill(0.0);
-            linear_batch(
+            linear_batch_transposed(
                 &attn_out,
                 total_tokens,
                 hidden,
-                layer.attn_out_weight.as_f32(),
+                &layer.attn_out_weight_t,
                 layer.attn_out_bias.as_f32(),
                 &mut attn_proj,
             );
@@ -919,22 +982,22 @@ impl Bert {
             );
 
             inter.fill(0.0);
-            linear_batch(
+            linear_batch_transposed(
                 &x,
                 total_tokens,
                 hidden,
-                layer.inter_weight.as_f32(),
+                &layer.inter_weight_t,
                 layer.inter_bias.as_f32(),
                 &mut inter,
             );
             gelu(&mut inter);
 
             ffn_out.fill(0.0);
-            linear_batch(
+            linear_batch_transposed(
                 &inter,
                 total_tokens,
                 intermediate,
-                layer.out_weight.as_f32(),
+                &layer.out_weight_t,
                 layer.out_bias.as_f32(),
                 &mut ffn_out,
             );
@@ -1221,5 +1284,32 @@ mod tests {
         let mut out = vec![0.0f32; 2];
         linear(&x, &weight, &bias, &mut out);
         assert_eq!(out, vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_linear_batch_transposed_weight_matches_row_major_weight() {
+        let x_rows = vec![
+            1.0f32, 2.0, 3.0, //
+            -1.0, 0.5, 4.0,
+        ];
+        let weight = vec![
+            1.0f32, 0.0, 2.0, //
+            -1.0, 3.0, 0.5,
+        ]; // [output=2, input=3]
+        let bias = vec![0.25f32, -0.75];
+        let mut expected = vec![0.0f32; 4];
+        let mut actual = vec![0.0f32; 4];
+
+        linear_batch(&x_rows, 2, 3, &weight, &bias, &mut expected);
+
+        let transposed = transpose_weight(&weight, 2, 3);
+        linear_batch_transposed(&x_rows, 2, 3, &transposed, &bias, &mut actual);
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "actual={actual} expected={expected}"
+            );
+        }
     }
 }

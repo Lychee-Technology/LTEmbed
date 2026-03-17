@@ -32,6 +32,11 @@ SCENARIOS: dict[str, dict[str, object]] = {
     "batch/medium/1": {"batch_size": 1, "text_profile": "medium", "texts": [MEDIUM]},
     "batch/medium/4": {"batch_size": 4, "text_profile": "medium", "texts": [MEDIUM] * 4},
     "batch/medium/8": {"batch_size": 8, "text_profile": "medium", "texts": [MEDIUM] * 8},
+    "batch/mixed/8": {
+        "batch_size": 8,
+        "text_profile": "mixed",
+        "texts": [SHORT, MEDIUM, LONG, SHORT, MEDIUM, LONG, SHORT, MEDIUM],
+    },
     "batch/medium/16": {"batch_size": 16, "text_profile": "medium", "texts": [MEDIUM] * 16},
 }
 

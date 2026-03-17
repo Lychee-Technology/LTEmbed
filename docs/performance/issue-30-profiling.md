@@ -339,6 +339,46 @@ Conclusion:
 - head-major attention scratch was ruled out
 - issue `#44` should continue with a different GEMM hypothesis rather than keeping this layout change
 
+## Issue 44 Experiment: projection/output scratch reuse
+
+The next GEMM-focused hypothesis was to reduce projection/output scratch churn:
+
+- replace separate `attn_proj` and `ffn_out` hidden-size buffers with one reusable hidden scratch
+- route the attention output projection and FFN output projection through that shared scratch
+- remove pre-zeroing before `linear_batch_transposed` calls that overwrite their outputs with `beta = 0`
+
+The change validated correctly but did not produce a clear enough benchmark win to keep.
+
+### Local warm A/B vs. merged `main` (`a698064`)
+
+Command shape used for both baseline and experimental worktrees:
+
+```bash
+cargo run --release --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario <scenario> \
+  --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+  --warmup 5 \
+  --iters 20
+```
+
+| Scenario | Baseline mean ms | Projection-reuse mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 216.469 | 214.616 | `-0.86%` |
+| `batch/medium/8` | 76.174 | 79.956 | `+4.96%` |
+| `batch/medium/16` | 148.759 | 148.977 | `+0.15%` |
+
+Interpretation:
+
+- `single/long` improved modestly
+- `batch/medium/8` regressed materially and showed wider spread than the baseline run
+- `batch/medium/16` stayed roughly flat
+
+Conclusion:
+
+- projection/output scratch reuse was ruled out in its current form
+- the smaller single-sequence win did not justify the batched regression
+
 ### Chart: `single/long` after GELU optimization
 
 ```mermaid

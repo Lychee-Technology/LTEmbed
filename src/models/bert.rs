@@ -284,11 +284,22 @@ fn gelu(x: &mut [f32]) {
 }
 
 /// Softmax in-place over a slice.
+const SOFTMAX_EXP_CUTOFF: f32 = -12.0;
+
+#[inline]
+fn softmax_exp(shifted: f32) -> f32 {
+    if shifted <= SOFTMAX_EXP_CUTOFF {
+        0.0
+    } else {
+        shifted.exp()
+    }
+}
+
 fn softmax_unmasked(x: &mut [f32]) {
     let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;
     for v in x.iter_mut() {
-        *v = (*v - max).exp();
+        *v = softmax_exp(*v - max);
         sum += *v;
     }
     for v in x.iter_mut() {
@@ -317,7 +328,7 @@ fn masked_softmax(x: &mut [f32], attention_mask: &[u32]) {
         if mask == 0 {
             *value = 0.0;
         } else {
-            *value = (*value - max).exp();
+            *value = softmax_exp(*value - max);
             sum += *value;
         }
     }
@@ -359,7 +370,7 @@ fn masked_softmax_active_prefix(x: &mut [f32], active_len: usize) {
     let mut sum = 0.0f32;
 
     for value in active.iter_mut() {
-        *value = (*value - max).exp();
+        *value = softmax_exp(*value - max);
         sum += *value;
     }
 
@@ -1125,6 +1136,15 @@ mod tests {
     }
 
     #[test]
+    fn test_softmax_zeroes_far_tail_values() {
+        let mut x = vec![0.0f32, -20.0, -30.0];
+        softmax(&mut x);
+        assert_eq!(x[1], 0.0);
+        assert_eq!(x[2], 0.0);
+        assert!((x[0] - 1.0).abs() < 1e-6, "head={}", x[0]);
+    }
+
+    #[test]
     fn test_masked_softmax_zeroes_masked_positions() {
         let mut x = vec![1.0f32, 2.0, 3.0, 4.0];
         let mask = vec![1u32, 0, 1, 0];
@@ -1149,6 +1169,17 @@ mod tests {
         masked_softmax(&mut x, &mask);
         assert_eq!(x[1], 0.0);
         assert!(x[2] > x[0]);
+    }
+
+    #[test]
+    fn test_masked_softmax_zeroes_far_tail_values() {
+        let mut x = vec![0.0f32, -20.0, -30.0, 1000.0];
+        let mask = vec![1u32, 1, 1, 0];
+        masked_softmax(&mut x, &mask);
+        assert_eq!(x[1], 0.0);
+        assert_eq!(x[2], 0.0);
+        assert_eq!(x[3], 0.0);
+        assert!((x[0] - 1.0).abs() < 1e-6, "head={}", x[0]);
     }
 
     #[test]

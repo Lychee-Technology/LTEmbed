@@ -289,6 +289,23 @@ Notes:
 - `single/medium` and `single/long` stayed roughly neutral in local runs, which is expected because those scenarios do not contain suffix padding
 - the mixed-length batched case is the one that meaningfully exercises the new fast path
 
+## Follow-up: softmax `expf` cutoff
+
+The next pass targeted the remaining `expf` hotspot directly. Instead of introducing a full approximate `exp`, softmax now skips exponentiation for far-tail values where `score - max <= -12.0` and writes those entries as zero. This preserves the dominant mass while cutting unnecessary `expf` calls in the long-sequence attention rows.
+
+### Benchmark comparison vs. previous commit (`f62b39f`)
+
+| Scenario | Before mean ms | After mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 248.441 | 220.602 | `-11.21%` |
+| `batch/mixed/8` | 1704.536 | 1629.298 | `-4.41%` |
+
+Validation notes:
+
+- `cargo test` remained fully green, including the golden parity cosine threshold in `tests/integration_tests.rs`
+- the new unit tests assert that far-tail softmax values are explicitly zeroed in both masked and unmasked paths
+- a short `xctrace` spot check after the change stayed GEMM-dominated, but its sample size was too small to use as the main quantitative proof; the benchmark deltas above are the stronger evidence
+
 ### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:

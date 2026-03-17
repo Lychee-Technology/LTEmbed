@@ -27,10 +27,12 @@ class BenchPyTorchTests(unittest.TestCase):
                 "batch/medium/1",
                 "batch/medium/4",
                 "batch/medium/8",
+                "batch/mixed/8",
                 "batch/medium/16",
             ],
         )
         self.assertEqual(bench.SCENARIOS["batch/medium/16"]["batch_size"], 16)
+        self.assertEqual(bench.SCENARIOS["batch/mixed/8"]["text_profile"], "mixed")
 
     def test_compute_stats_uses_fixed_keys(self):
         bench = load_module()

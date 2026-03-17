@@ -18,6 +18,14 @@ def load_module():
 
 
 class BenchmarkOrchestratorTests(unittest.TestCase):
+    def test_scenarios_include_batch_mixed_profile(self):
+        bench = load_module()
+        scenario = bench.scenario_from_name("batch/mixed/8")
+
+        self.assertEqual(scenario.name, "batch/mixed/8")
+        self.assertEqual(scenario.batch_size, 8)
+        self.assertEqual(scenario.text_profile, "mixed")
+
     def test_extract_cargo_lock_version(self):
         bench = load_module()
         lock_text = """

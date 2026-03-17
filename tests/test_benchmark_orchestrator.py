@@ -92,6 +92,39 @@ version = "0.8.4"
         self.assertIn("--scenario", command)
         self.assertIn("single/medium", command)
 
+    def test_ltembed_commands_include_optional_cargo_features(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("assets"),
+                "warmup": 5,
+                "iters": 10,
+                "threads": 1,
+                "scenario": None,
+                "ltembed_cargo_features": "vendored-blas",
+            },
+        )
+
+        warm_command = bench.ltembed_warm_command(args)
+        cold_command = bench.ltembed_cold_command(args, "single/long")
+        correctness_command = bench.ltembed_correctness_command(args)
+
+        for command in (warm_command, cold_command, correctness_command):
+            self.assertEqual(
+                command[:6],
+                ["cargo", "run", "--quiet", "--release", "--features", "vendored-blas"],
+            )
+
+    def test_resolved_notes_reports_ltembed_dense_backend(self):
+        bench = load_module()
+        self.assertEqual(
+            bench.resolved_notes("ltembed", {"backend": "openblas-cblas"}),
+            "dense_backend=openblas-cblas",
+        )
+        self.assertEqual(bench.resolved_notes("candle", {"backend": "ignored"}), "")
+
 
 if __name__ == "__main__":
     unittest.main()

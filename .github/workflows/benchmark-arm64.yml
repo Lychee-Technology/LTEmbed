@@ -15,6 +15,10 @@ on:
         description: CPU threads per implementation
         required: false
         default: "1"
+      ltembed_cargo_features:
+        description: Optional cargo features for LTEmbed benchmark runs
+        required: false
+        default: "vendored-blas"
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -116,6 +120,7 @@ jobs:
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
+            --ltembed-cargo-features "${{ inputs.ltembed_cargo_features }}" \
             --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
             --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
             $EXTRA_ARGS

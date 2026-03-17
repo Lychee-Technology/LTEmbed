@@ -843,3 +843,32 @@ This rules out a second narrow hypothesis:
 
 1. output-buffer setup is not large enough to justify a dedicated optimization pass by itself
 2. the remaining issue-44 ceiling is still dominated by dense GEMM throughput, not by copy-only setup work
+
+## Issue 44: vendored dense backend implementation landing
+
+The next structural experiment is now implemented behind an opt-in cargo feature:
+
+- feature: `vendored-blas`
+- target backend: vendored static `openblas-src` + `cblas`
+- platform scope: `linux/aarch64` only
+- fallback elsewhere: existing `matrixmultiply` path
+
+Implementation notes:
+
+- `linear_batch_transposed` now routes through an internal dense-backend abstraction in `src/gemm.rs`
+- the active backend name is exported into `benchmark_ltembed` JSON payloads as `backend`
+- `scripts/run_embedding_benchmarks.py` now accepts `--ltembed-cargo-features` and writes `dense_backend=...` into CSV notes plus `ltembed_dense_backend=...` into the text summary
+- `.github/workflows/benchmark-arm64.yml` now defaults `ltembed_cargo_features` to `vendored-blas`
+
+Representative local command to exercise the new path on Linux ARM64:
+
+```bash
+cargo run --release --features vendored-blas --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario single/long \
+  --model-dir assets \
+  --warmup 10 \
+  --iters 30
+```
+
+This change does not yet claim a keep/revert decision for issue `#44`; the benchmark verdict still depends on a fresh Linux ARM64 before/after run against merged `main`.

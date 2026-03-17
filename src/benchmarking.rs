@@ -1,4 +1,5 @@
 use crate::error::LTEmbedError;
+use crate::gemm;
 use crate::traits::tokenizer::Tokenizer;
 use serde::Serialize;
 
@@ -180,6 +181,10 @@ pub fn projection_kernel_shapes(
             repeats: 1,
         },
     ]
+}
+
+pub fn dense_backend_name() -> &'static str {
+    gemm::dense_backend_name()
 }
 
 impl ProjectionKernelShape {

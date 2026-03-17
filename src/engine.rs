@@ -126,6 +126,8 @@ mod tests {
     use approx::assert_relative_eq;
     use static_assertions::assert_impl_all;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::thread;
 
     // Compile-time guard: ZeroVecEngine must be Send + Sync to be stored in a
     // `static OnceLock<Result<ZeroVecEngine, String>>`.
@@ -221,5 +223,30 @@ mod tests {
         let second = engine.embed(texts[1]).unwrap();
         assert_eq!(batch[0], first);
         assert_eq!(batch[1], second);
+    }
+
+    #[test]
+    fn test_embed_is_thread_safe_across_threads() {
+        if !assets_available() {
+            eprintln!("Skipping: model assets not found");
+            return;
+        }
+        let engine = Arc::new(make_engine());
+        let texts = ["query: alpha", "query: beta"];
+        let handles: Vec<_> = texts
+            .into_iter()
+            .map(|text| {
+                let engine = Arc::clone(&engine);
+                thread::spawn(move || engine.embed(text).unwrap())
+            })
+            .collect();
+
+        let outputs: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].len(), 384);
+        assert_eq!(outputs[1].len(), 384);
     }
 }

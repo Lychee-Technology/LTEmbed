@@ -40,21 +40,82 @@ impl ZeroVecEngine {
     /// Full inference pipeline: text → L2-normalized 384-dim embedding.
     pub fn embed(&self, text: &str) -> Result<Vec<f32>, LTEmbedError> {
         let encoded = self.tokenizer.encode(text, MAX_LENGTH)?;
+        let seq_len = encoded.input_ids.len();
         let last_hidden_state = self.bert.forward(
             &encoded.input_ids,
             &encoded.token_type_ids,
             &encoded.attention_mask,
         )?;
-        let mut pooled = self
-            .pooling
-            .pool(&last_hidden_state, &encoded.attention_mask)?;
+        let mut pooled = self.pooling.pool(
+            &last_hidden_state,
+            seq_len,
+            self.bert.hidden_size(),
+            &encoded.attention_mask,
+        )?;
         l2_normalize_inplace(&mut pooled);
         Ok(pooled)
     }
 
     /// Embed a batch of texts. Returns one vector per input.
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LTEmbedError> {
-        texts.iter().map(|t| self.embed(t)).collect()
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        if texts.len() == 1 {
+            return self.embed(texts[0]).map(|embedding| vec![embedding]);
+        }
+
+        let encoded: Vec<_> = texts
+            .iter()
+            .map(|text| self.tokenizer.encode(text, MAX_LENGTH))
+            .collect::<Result<_, _>>()?;
+        let batch_size = encoded.len();
+        let seq_len = encoded
+            .iter()
+            .map(|item| item.input_ids.len())
+            .max()
+            .unwrap_or(0);
+        let total_tokens = batch_size * seq_len;
+        let pad_token_id = self.bert.pad_token_id();
+
+        let mut input_ids = vec![pad_token_id; total_tokens];
+        let mut token_type_ids = vec![0u32; total_tokens];
+        let mut attention_mask = vec![0u32; total_tokens];
+
+        for (batch_idx, item) in encoded.iter().enumerate() {
+            let row_start = batch_idx * seq_len;
+            let row_end = row_start + item.input_ids.len();
+            input_ids[row_start..row_end].copy_from_slice(&item.input_ids);
+            token_type_ids[row_start..row_end].copy_from_slice(&item.token_type_ids);
+            attention_mask[row_start..row_end].copy_from_slice(&item.attention_mask);
+        }
+
+        let last_hidden_state = self.bert.forward_batch(
+            &input_ids,
+            &token_type_ids,
+            &attention_mask,
+            batch_size,
+            seq_len,
+        )?;
+        let hidden_size = self.bert.hidden_size();
+
+        let mut embeddings = Vec::with_capacity(batch_size);
+        for batch_idx in 0..batch_size {
+            let state_start = batch_idx * seq_len * hidden_size;
+            let state_end = state_start + seq_len * hidden_size;
+            let mask_start = batch_idx * seq_len;
+            let mask_end = mask_start + seq_len;
+            let mut pooled = self.pooling.pool(
+                &last_hidden_state[state_start..state_end],
+                seq_len,
+                hidden_size,
+                &attention_mask[mask_start..mask_end],
+            )?;
+            l2_normalize_inplace(&mut pooled);
+            embeddings.push(pooled);
+        }
+
+        Ok(embeddings)
     }
 }
 
@@ -142,5 +203,23 @@ mod tests {
         let batch = engine.embed_batch(&texts).unwrap();
         let individual = engine.embed(texts[0]).unwrap();
         assert_eq!(batch[0], individual);
+    }
+
+    #[test]
+    fn test_embed_batch_mixed_lengths_matches_individual() {
+        if !assets_available() {
+            eprintln!("Skipping: model assets not found");
+            return;
+        }
+        let engine = make_engine();
+        let texts = vec![
+            "query: short",
+            "query: this is a somewhat longer sentence used to exercise padding behavior",
+        ];
+        let batch = engine.embed_batch(&texts).unwrap();
+        let first = engine.embed(texts[0]).unwrap();
+        let second = engine.embed(texts[1]).unwrap();
+        assert_eq!(batch[0], first);
+        assert_eq!(batch[1], second);
     }
 }

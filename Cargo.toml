@@ -42,6 +42,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 name = "inference"
 harness = false
 
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
 [profile.bench]
 opt-level = 3
 lto = "thin"

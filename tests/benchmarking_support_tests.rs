@@ -1,6 +1,6 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
-    benchmark_scenarios, scenario_by_name, selected_scenarios, LatencyStats,
+    benchmark_scenarios, scenario_by_name, scenario_texts, selected_scenarios, LatencyStats,
 };
 
 #[test]
@@ -18,6 +18,7 @@ fn test_benchmark_scenarios_match_issue_38_plan() {
             "batch/medium/1",
             "batch/medium/4",
             "batch/medium/8",
+            "batch/mixed/8",
             "batch/medium/16",
         ]
     );
@@ -58,4 +59,15 @@ fn test_selected_scenarios_returns_requested_scenario() {
 fn test_selected_scenarios_rejects_unknown_name() {
     let err = selected_scenarios(Some("missing/scenario")).unwrap_err();
     assert!(err.contains("unknown scenario"));
+}
+
+#[test]
+fn test_batch_mixed_scenario_uses_variable_length_texts() {
+    let scenario = scenario_by_name("batch/mixed/8").expect("scenario should exist");
+    let texts = scenario_texts(scenario);
+    let lengths: Vec<_> = texts.iter().map(|text| text.len()).collect();
+
+    assert_eq!(texts.len(), 8);
+    assert!(lengths.iter().any(|&len| len == lengths[0]));
+    assert!(lengths.iter().any(|&len| len != lengths[0]));
 }

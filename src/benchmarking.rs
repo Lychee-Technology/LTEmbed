@@ -21,7 +21,7 @@ pub const SHORT_TEXT: &str = "query: Hello, world!";
 pub const MEDIUM_TEXT: &str =
     "query: What is the impact of large language models on software engineering productivity?";
 
-const BENCHMARK_SCENARIOS: [BenchmarkScenario; 7] = [
+const BENCHMARK_SCENARIOS: [BenchmarkScenario; 8] = [
     BenchmarkScenario {
         name: "single/short",
         batch_size: 1,
@@ -51,6 +51,11 @@ const BENCHMARK_SCENARIOS: [BenchmarkScenario; 7] = [
         name: "batch/medium/8",
         batch_size: 8,
         text_profile: "medium",
+    },
+    BenchmarkScenario {
+        name: "batch/mixed/8",
+        batch_size: 8,
+        text_profile: "mixed",
     },
     BenchmarkScenario {
         name: "batch/medium/16",
@@ -88,6 +93,16 @@ pub fn scenario_texts(scenario: &BenchmarkScenario) -> Vec<String> {
         "batch/medium/1" | "batch/medium/4" | "batch/medium/8" | "batch/medium/16" => {
             std::iter::repeat_n(MEDIUM_TEXT.to_string(), scenario.batch_size).collect()
         }
+        "batch/mixed/8" => vec![
+            SHORT_TEXT.to_string(),
+            MEDIUM_TEXT.to_string(),
+            long_text(),
+            SHORT_TEXT.to_string(),
+            MEDIUM_TEXT.to_string(),
+            long_text(),
+            SHORT_TEXT.to_string(),
+            MEDIUM_TEXT.to_string(),
+        ],
         _ => Vec::new(),
     }
 }

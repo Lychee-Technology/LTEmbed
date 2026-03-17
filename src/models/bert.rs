@@ -284,8 +284,7 @@ fn gelu(x: &mut [f32]) {
 }
 
 /// Softmax in-place over a slice.
-#[cfg(test)]
-fn softmax(x: &mut [f32]) {
+fn softmax_unmasked(x: &mut [f32]) {
     let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;
     for v in x.iter_mut() {
@@ -295,6 +294,11 @@ fn softmax(x: &mut [f32]) {
     for v in x.iter_mut() {
         *v /= sum;
     }
+}
+
+#[cfg(test)]
+fn softmax(x: &mut [f32]) {
+    softmax_unmasked(x);
 }
 
 /// Softmax in-place over a slice while zeroing masked positions.
@@ -325,6 +329,47 @@ fn masked_softmax(x: &mut [f32], attention_mask: &[u32]) {
             }
         }
     }
+}
+
+/// Returns the active prefix length when the mask is a contiguous `1*0*` layout.
+fn mask_active_prefix_len(attention_mask: &[u32]) -> Option<usize> {
+    let active_len = attention_mask
+        .iter()
+        .position(|&mask| mask == 0)
+        .unwrap_or(attention_mask.len());
+
+    if attention_mask[active_len..].iter().all(|&mask| mask == 0) {
+        Some(active_len)
+    } else {
+        None
+    }
+}
+
+/// Softmax in-place over the active prefix while zeroing the padded suffix.
+fn masked_softmax_active_prefix(x: &mut [f32], active_len: usize) {
+    debug_assert!(active_len <= x.len());
+
+    if active_len == 0 {
+        x.fill(0.0);
+        return;
+    }
+
+    let (active, padded) = x.split_at_mut(active_len);
+    let max = active.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut sum = 0.0f32;
+
+    for value in active.iter_mut() {
+        *value = (*value - max).exp();
+        sum += *value;
+    }
+
+    if sum != 0.0 {
+        for value in active.iter_mut() {
+            *value /= sum;
+        }
+    }
+
+    padded.fill(0.0);
 }
 
 /// Embedding lookup: copy embedding row for each token id into output.
@@ -457,6 +502,7 @@ impl Bert {
         let num_heads = self.config.num_attention_heads;
         let head_dim = hidden / num_heads;
         let intermediate = self.config.intermediate_size;
+        let attention_prefix_len = mask_active_prefix_len(attention_mask);
 
         // ── 1. Embeddings ──────────────────────────────────────────────────────
         // x[seq × hidden] = word_emb + pos_emb + type_emb
@@ -553,11 +599,26 @@ impl Bert {
                         );
                     }
 
-                    for i in 0..seq_len {
-                        masked_softmax(
-                            &mut sc.scores[i * seq_len..(i + 1) * seq_len],
-                            attention_mask,
-                        );
+                    if let Some(active_len) = attention_prefix_len {
+                        if active_len == seq_len {
+                            for i in 0..seq_len {
+                                softmax_unmasked(&mut sc.scores[i * seq_len..(i + 1) * seq_len]);
+                            }
+                        } else {
+                            for i in 0..seq_len {
+                                masked_softmax_active_prefix(
+                                    &mut sc.scores[i * seq_len..(i + 1) * seq_len],
+                                    active_len,
+                                );
+                            }
+                        }
+                    } else {
+                        for i in 0..seq_len {
+                            masked_softmax(
+                                &mut sc.scores[i * seq_len..(i + 1) * seq_len],
+                                attention_mask,
+                            );
+                        }
                     }
 
                     unsafe {
@@ -758,6 +819,7 @@ impl Bert {
                 let token_offset = batch_idx * seq_len;
                 let hidden_offset = batch_idx * seq_hidden;
                 let batch_mask = &attention_mask[token_offset..token_offset + seq_len];
+                let batch_mask_prefix_len = mask_active_prefix_len(batch_mask);
 
                 for h in 0..num_heads {
                     scores.fill(0.0);
@@ -781,8 +843,26 @@ impl Bert {
                         );
                     }
 
-                    for i in 0..seq_len {
-                        masked_softmax(&mut scores[i * seq_len..(i + 1) * seq_len], batch_mask);
+                    if let Some(active_len) = batch_mask_prefix_len {
+                        if active_len == seq_len {
+                            for i in 0..seq_len {
+                                softmax_unmasked(&mut scores[i * seq_len..(i + 1) * seq_len]);
+                            }
+                        } else {
+                            for i in 0..seq_len {
+                                masked_softmax_active_prefix(
+                                    &mut scores[i * seq_len..(i + 1) * seq_len],
+                                    active_len,
+                                );
+                            }
+                        }
+                    } else {
+                        for i in 0..seq_len {
+                            masked_softmax(
+                                &mut scores[i * seq_len..(i + 1) * seq_len],
+                                batch_mask,
+                            );
+                        }
                     }
 
                     unsafe {
@@ -1069,6 +1149,36 @@ mod tests {
         masked_softmax(&mut x, &mask);
         assert_eq!(x[1], 0.0);
         assert!(x[2] > x[0]);
+    }
+
+    #[test]
+    fn test_mask_active_prefix_len_accepts_suffix_padding() {
+        assert_eq!(mask_active_prefix_len(&[1u32, 1, 1]), Some(3));
+        assert_eq!(mask_active_prefix_len(&[1u32, 1, 0, 0]), Some(2));
+        assert_eq!(mask_active_prefix_len(&[0u32, 0, 0]), Some(0));
+    }
+
+    #[test]
+    fn test_mask_active_prefix_len_rejects_non_contiguous_mask() {
+        assert_eq!(mask_active_prefix_len(&[1u32, 0, 1]), None);
+        assert_eq!(mask_active_prefix_len(&[0u32, 1, 1]), None);
+    }
+
+    #[test]
+    fn test_masked_softmax_active_prefix_matches_generic_mask() {
+        let mut expected = vec![2.0f32, 1.0, 100.0, -50.0];
+        let mut actual = expected.clone();
+        let mask = vec![1u32, 1, 0, 0];
+
+        masked_softmax(&mut expected, &mask);
+        masked_softmax_active_prefix(&mut actual, 2);
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "actual={actual} expected={expected}"
+            );
+        }
     }
 
     #[test]

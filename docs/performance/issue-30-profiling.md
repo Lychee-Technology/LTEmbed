@@ -41,6 +41,19 @@ cargo run --release --bin benchmark_ltembed -- \
 
 This single-scenario mode is the new profiling-oriented entrypoint added in this change.
 
+### Warm benchmark, mixed-length padded batch
+
+```bash
+cargo run --release --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario batch/mixed/8 \
+  --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+  --warmup 5 \
+  --iters 20
+```
+
+This scenario intentionally mixes short, medium, and long texts in one batch so the engine has to exercise suffix-padding attention masks.
+
 ### Text hotspot summary with `sample`
 
 ```bash
@@ -254,6 +267,27 @@ xychart-beta
     y-axis "Sample count" 0 --> 5600
     bar [5423, 624, 171, 1070]
 ```
+
+## Follow-up: suffix-padding softmax fast path
+
+After the GELU work, the next scalar optimization pass targeted the common BERT padding layout where `attention_mask` is a contiguous `1*0*` prefix. The new logic classifies the mask once per input or batch row and then:
+
+- uses plain softmax for the all-active case
+- uses an active-prefix softmax for suffix-padded rows
+- falls back to the generic masked path for non-contiguous masks
+
+### Benchmark comparison vs. previous commit (`3e98e69`)
+
+The relevant benchmark for this change is a new mixed-length batch scenario that actually produces suffix padding inside `forward_batch`.
+
+| Scenario | Before mean ms | After mean ms | Delta |
+|---|---:|---:|---:|
+| `batch/mixed/8` | 1835.336 | 1720.750 | `-6.24%` |
+
+Notes:
+
+- `single/medium` and `single/long` stayed roughly neutral in local runs, which is expected because those scenarios do not contain suffix padding
+- the mixed-length batched case is the one that meaningfully exercises the new fast path
 
 ### `sample` fallback: `single/long`
 

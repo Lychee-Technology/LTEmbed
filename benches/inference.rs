@@ -13,6 +13,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use ltembed::{engine::ZeroVecEngine, traits::pooling::MeanPooling};
 use once_cell::sync::Lazy;
 use std::path::Path;
+use std::thread;
 
 // ── Test inputs ───────────────────────────────────────────────────────────────
 
@@ -89,5 +90,32 @@ fn bench_ltembed_batch(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_ltembed_single, bench_ltembed_batch);
+fn bench_ltembed_concurrent(c: &mut Criterion) {
+    if !assets_available() {
+        eprintln!("bench_ltembed_concurrent: skipping — assets/model.safetensors not found");
+        return;
+    }
+    let engine = &*ENGINE;
+
+    let mut group = c.benchmark_group("bench_ltembed_concurrent");
+    for &workers in &[2usize, 4] {
+        group.bench_with_input(BenchmarkId::new("medium", workers), &workers, |b, &n| {
+            b.iter(|| {
+                thread::scope(|scope| {
+                    for _ in 0..n {
+                        scope.spawn(|| engine.embed(criterion::black_box(MEDIUM)).unwrap());
+                    }
+                });
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_ltembed_single,
+    bench_ltembed_batch,
+    bench_ltembed_concurrent
+);
 criterion_main!(benches);

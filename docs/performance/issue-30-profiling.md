@@ -299,6 +299,46 @@ Conclusion:
 - the extra packing and strided access pattern did not pay for itself on this machine
 - issue `#44` should move to the next GEMM hypothesis instead of landing this change
 
+## Issue 44 Experiment: head-major attention scratch
+
+The next GEMM-focused hypothesis was to keep the projection path unchanged but repack the attention inputs into a head-major scratch layout before the two attention matmuls:
+
+- convert Q/K/V from token-major `[seq][hidden]` to head-major `[head][seq][head_dim]`
+- run the `Q * K^T` and `scores * V` GEMMs over contiguous per-head slices
+- unpack the attention output back to token-major before the output projection
+
+This also validated correctly, but local A/B again showed no clear win, so the implementation was reverted.
+
+### Local warm A/B vs. merged `main` (`a698064`)
+
+Command shape used for both baseline and experimental worktrees:
+
+```bash
+cargo run --release --bin benchmark_ltembed -- \
+  --mode warm \
+  --scenario <scenario> \
+  --model-dir /Users/ruoshi/code/github/LTEmbed/assets \
+  --warmup 5 \
+  --iters 20
+```
+
+| Scenario | Baseline mean ms | Head-major mean ms | Delta |
+|---|---:|---:|---:|
+| `single/long` | 214.272 | 214.384 | `+0.05%` |
+| `batch/medium/8` | 76.376 | 76.768 | `+0.51%` |
+| `batch/medium/16` | 149.602 | 149.919 | `+0.21%` |
+
+Interpretation:
+
+- the long-sequence anchor stayed flat
+- both batch scenarios drifted into small regressions
+- the extra pack/unpack passes outweighed any gain from the more contiguous head-local GEMM inputs
+
+Conclusion:
+
+- head-major attention scratch was ruled out
+- issue `#44` should continue with a different GEMM hypothesis rather than keeping this layout change
+
 ### Chart: `single/long` after GELU optimization
 
 ```mermaid

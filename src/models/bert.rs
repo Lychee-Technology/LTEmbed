@@ -4,9 +4,10 @@
 // No candle dependency.
 
 use crate::error::LTEmbedError;
+use memmap2::Mmap;
 use safetensors::SafeTensors;
-use std::fs;
-use std::sync::Mutex;
+use std::fs::File;
+use std::sync::{Arc, Mutex};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ struct BertConfig {
     num_attention_heads: usize,
     intermediate_size: usize,
     max_position_embeddings: usize,
+    #[serde(default)]
+    pad_token_id: u32,
 }
 
 // ── Scratch buffers ───────────────────────────────────────────────────────────
@@ -35,44 +38,69 @@ struct Scratch {
 // ── Weight structs ────────────────────────────────────────────────────────────
 
 struct LayerWeights {
-    q_weight: Vec<f32>,
-    q_bias: Vec<f32>,
-    k_weight: Vec<f32>,
-    k_bias: Vec<f32>,
-    v_weight: Vec<f32>,
-    v_bias: Vec<f32>,
-    attn_out_weight: Vec<f32>,
-    attn_out_bias: Vec<f32>,
-    attn_ln_weight: Vec<f32>,
-    attn_ln_bias: Vec<f32>,
-    inter_weight: Vec<f32>,
-    inter_bias: Vec<f32>,
-    out_weight: Vec<f32>,
-    out_bias: Vec<f32>,
-    out_ln_weight: Vec<f32>,
-    out_ln_bias: Vec<f32>,
+    q_weight: TensorData,
+    q_bias: TensorData,
+    k_weight: TensorData,
+    k_bias: TensorData,
+    v_weight: TensorData,
+    v_bias: TensorData,
+    attn_out_weight: TensorData,
+    attn_out_bias: TensorData,
+    attn_ln_weight: TensorData,
+    attn_ln_bias: TensorData,
+    inter_weight: TensorData,
+    inter_bias: TensorData,
+    out_weight: TensorData,
+    out_bias: TensorData,
+    out_ln_weight: TensorData,
+    out_ln_bias: TensorData,
 }
 
 pub struct Bert {
     config: BertConfig,
-    word_emb: Vec<f32>,
-    pos_emb: Vec<f32>,
-    type_emb: Vec<f32>,
-    emb_ln_weight: Vec<f32>,
-    emb_ln_bias: Vec<f32>,
+    word_emb: TensorData,
+    pos_emb: TensorData,
+    type_emb: TensorData,
+    emb_ln_weight: TensorData,
+    emb_ln_bias: TensorData,
     layers: Vec<LayerWeights>,
     scratch: Mutex<Scratch>,
 }
 
-// ── Helper: load tensor from SafeTensors into owned Vec<f32> ─────────────────
+#[derive(Clone)]
+struct TensorData {
+    mmap: Arc<Mmap>,
+    offset: usize,
+    len_bytes: usize,
+}
 
-fn load_tensor(st: &SafeTensors, name: &str) -> Result<Vec<f32>, LTEmbedError> {
+impl TensorData {
+    fn as_f32(&self) -> &[f32] {
+        bytemuck::cast_slice(&self.mmap[self.offset..self.offset + self.len_bytes])
+    }
+}
+
+// ── Helper: load tensor from SafeTensors into mmap-backed view ───────────────
+
+fn load_tensor_data(
+    st: &SafeTensors,
+    mmap: &Arc<Mmap>,
+    name: &str,
+) -> Result<TensorData, LTEmbedError> {
     let view = st
         .tensor(name)
         .map_err(|e| LTEmbedError::ModelLoad(format!("Missing tensor '{name}': {e}")))?;
     let data_u8 = view.data();
-    let data_f32: &[f32] = bytemuck::cast_slice(data_u8);
-    Ok(data_f32.to_vec())
+    let base_ptr = mmap.as_ptr() as usize;
+    let data_ptr = data_u8.as_ptr() as usize;
+    let offset = data_ptr
+        .checked_sub(base_ptr)
+        .ok_or_else(|| LTEmbedError::ModelLoad(format!("Tensor '{name}' is not in mmap")))?;
+    Ok(TensorData {
+        mmap: Arc::clone(mmap),
+        offset,
+        len_bytes: data_u8.len(),
+    })
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
@@ -219,48 +247,89 @@ fn embed(ids: &[u32], weight: &[f32], hidden_size: usize, output: &mut [f32]) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 impl Bert {
+    pub fn hidden_size(&self) -> usize {
+        self.config.hidden_size
+    }
+
+    pub fn pad_token_id(&self) -> u32 {
+        self.config.pad_token_id
+    }
+
     /// Load from `.safetensors` weights and a `config.json` string.
     pub fn from_files(safetensors_path: &str, config_json: &str) -> Result<Self, LTEmbedError> {
         let config: BertConfig = serde_json::from_str(config_json)
             .map_err(|e| LTEmbedError::ModelLoad(format!("Bad config JSON: {e}")))?;
 
-        let file_bytes = fs::read(safetensors_path)
-            .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to read model file: {e}")))?;
+        let file = File::open(safetensors_path)
+            .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to open model file: {e}")))?;
+        let mmap = Arc::new(unsafe {
+            Mmap::map(&file)
+                .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to mmap model file: {e}")))?
+        });
 
-        let st = SafeTensors::deserialize(&file_bytes)
+        let st = SafeTensors::deserialize(&mmap)
             .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to parse safetensors: {e}")))?;
 
         // Embeddings
-        let word_emb = load_tensor(&st, "embeddings.word_embeddings.weight")?;
-        let pos_emb = load_tensor(&st, "embeddings.position_embeddings.weight")?;
-        let type_emb = load_tensor(&st, "embeddings.token_type_embeddings.weight")?;
-        let emb_ln_weight = load_tensor(&st, "embeddings.LayerNorm.weight")?;
-        let emb_ln_bias = load_tensor(&st, "embeddings.LayerNorm.bias")?;
+        let word_emb = load_tensor_data(&st, &mmap, "embeddings.word_embeddings.weight")?;
+        let pos_emb = load_tensor_data(&st, &mmap, "embeddings.position_embeddings.weight")?;
+        let type_emb = load_tensor_data(&st, &mmap, "embeddings.token_type_embeddings.weight")?;
+        let emb_ln_weight = load_tensor_data(&st, &mmap, "embeddings.LayerNorm.weight")?;
+        let emb_ln_bias = load_tensor_data(&st, &mmap, "embeddings.LayerNorm.bias")?;
 
         // Encoder layers
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
             let p = format!("encoder.layer.{i}");
             let layer = LayerWeights {
-                q_weight: load_tensor(&st, &format!("{p}.attention.self.query.weight"))?,
-                q_bias: load_tensor(&st, &format!("{p}.attention.self.query.bias"))?,
-                k_weight: load_tensor(&st, &format!("{p}.attention.self.key.weight"))?,
-                k_bias: load_tensor(&st, &format!("{p}.attention.self.key.bias"))?,
-                v_weight: load_tensor(&st, &format!("{p}.attention.self.value.weight"))?,
-                v_bias: load_tensor(&st, &format!("{p}.attention.self.value.bias"))?,
-                attn_out_weight: load_tensor(&st, &format!("{p}.attention.output.dense.weight"))?,
-                attn_out_bias: load_tensor(&st, &format!("{p}.attention.output.dense.bias"))?,
-                attn_ln_weight: load_tensor(
+                q_weight: load_tensor_data(
                     &st,
+                    &mmap,
+                    &format!("{p}.attention.self.query.weight"),
+                )?,
+                q_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.bias"))?,
+                k_weight: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.weight"))?,
+                k_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.bias"))?,
+                v_weight: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.attention.self.value.weight"),
+                )?,
+                v_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.bias"))?,
+                attn_out_weight: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.attention.output.dense.weight"),
+                )?,
+                attn_out_bias: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.attention.output.dense.bias"),
+                )?,
+                attn_ln_weight: load_tensor_data(
+                    &st,
+                    &mmap,
                     &format!("{p}.attention.output.LayerNorm.weight"),
                 )?,
-                attn_ln_bias: load_tensor(&st, &format!("{p}.attention.output.LayerNorm.bias"))?,
-                inter_weight: load_tensor(&st, &format!("{p}.intermediate.dense.weight"))?,
-                inter_bias: load_tensor(&st, &format!("{p}.intermediate.dense.bias"))?,
-                out_weight: load_tensor(&st, &format!("{p}.output.dense.weight"))?,
-                out_bias: load_tensor(&st, &format!("{p}.output.dense.bias"))?,
-                out_ln_weight: load_tensor(&st, &format!("{p}.output.LayerNorm.weight"))?,
-                out_ln_bias: load_tensor(&st, &format!("{p}.output.LayerNorm.bias"))?,
+                attn_ln_bias: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.attention.output.LayerNorm.bias"),
+                )?,
+                inter_weight: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.intermediate.dense.weight"),
+                )?,
+                inter_bias: load_tensor_data(&st, &mmap, &format!("{p}.intermediate.dense.bias"))?,
+                out_weight: load_tensor_data(&st, &mmap, &format!("{p}.output.dense.weight"))?,
+                out_bias: load_tensor_data(&st, &mmap, &format!("{p}.output.dense.bias"))?,
+                out_ln_weight: load_tensor_data(
+                    &st,
+                    &mmap,
+                    &format!("{p}.output.LayerNorm.weight"),
+                )?,
+                out_ln_bias: load_tensor_data(&st, &mmap, &format!("{p}.output.LayerNorm.bias"))?,
             };
             layers.push(layer);
         }
@@ -290,13 +359,13 @@ impl Bert {
         })
     }
 
-    /// Forward pass. Returns last_hidden_state as [seq_len][hidden_size].
+    /// Forward pass. Returns last_hidden_state as a flat [seq_len * hidden_size] row-major buffer.
     pub fn forward(
         &self,
         input_ids: &[u32],
         token_type_ids: &[u32],
         attention_mask: &[u32],
-    ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+    ) -> Result<Vec<f32>, LTEmbedError> {
         let seq_len = input_ids.len();
         let hidden = self.config.hidden_size;
         let num_heads = self.config.num_attention_heads;
@@ -308,13 +377,13 @@ impl Bert {
         let mut x = vec![0.0f32; seq_len * hidden];
 
         // word embeddings
-        embed(input_ids, &self.word_emb, hidden, &mut x);
+        embed(input_ids, self.word_emb.as_f32(), hidden, &mut x);
 
         // add positional embeddings
         for (i, pos_row) in x.chunks_mut(hidden).enumerate() {
             let pos_start = i * hidden;
             for (j, v) in pos_row.iter_mut().enumerate() {
-                *v += self.pos_emb[pos_start + j];
+                *v += self.pos_emb.as_f32()[pos_start + j];
             }
         }
 
@@ -323,7 +392,7 @@ impl Bert {
             let type_id = token_type_ids[i] as usize;
             let type_start = type_id * hidden;
             for (j, v) in type_row.iter_mut().enumerate() {
-                *v += self.type_emb[type_start + j];
+                *v += self.type_emb.as_f32()[type_start + j];
             }
         }
 
@@ -332,8 +401,8 @@ impl Bert {
             &mut x,
             seq_len,
             hidden,
-            &self.emb_ln_weight,
-            &self.emb_ln_bias,
+            self.emb_ln_weight.as_f32(),
+            self.emb_ln_bias.as_f32(),
         );
 
         // ── 2. Encoder layers ──────────────────────────────────────────────────
@@ -354,24 +423,24 @@ impl Bert {
                 &x,
                 seq_len,
                 hidden,
-                &layer.q_weight,
-                &layer.q_bias,
+                layer.q_weight.as_f32(),
+                layer.q_bias.as_f32(),
                 &mut sc.q[..seq_hidden],
             );
             linear_batch(
                 &x,
                 seq_len,
                 hidden,
-                &layer.k_weight,
-                &layer.k_bias,
+                layer.k_weight.as_f32(),
+                layer.k_bias.as_f32(),
                 &mut sc.k[..seq_hidden],
             );
             linear_batch(
                 &x,
                 seq_len,
                 hidden,
-                &layer.v_weight,
-                &layer.v_bias,
+                layer.v_weight.as_f32(),
+                layer.v_bias.as_f32(),
                 &mut sc.v[..seq_hidden],
             );
 
@@ -461,8 +530,8 @@ impl Bert {
                     unsafe { std::slice::from_raw_parts(src, seq_hidden) },
                     seq_len,
                     hidden,
-                    &layer.attn_out_weight,
-                    &layer.attn_out_bias,
+                    layer.attn_out_weight.as_f32(),
+                    layer.attn_out_bias.as_f32(),
                     unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
                 );
             }
@@ -475,8 +544,8 @@ impl Bert {
                 &mut x,
                 seq_len,
                 hidden,
-                &layer.attn_ln_weight,
-                &layer.attn_ln_bias,
+                layer.attn_ln_weight.as_f32(),
+                layer.attn_ln_bias.as_f32(),
             );
 
             // ── b. FFN ─────────────────────────────────────────────────────────
@@ -487,8 +556,8 @@ impl Bert {
                 &x,
                 seq_len,
                 hidden,
-                &layer.inter_weight,
-                &layer.inter_bias,
+                layer.inter_weight.as_f32(),
+                layer.inter_bias.as_f32(),
                 &mut sc.inter[..seq_inter],
             );
 
@@ -506,8 +575,8 @@ impl Bert {
                     unsafe { std::slice::from_raw_parts(src, seq_inter) },
                     seq_len,
                     intermediate,
-                    &layer.out_weight,
-                    &layer.out_bias,
+                    layer.out_weight.as_f32(),
+                    layer.out_bias.as_f32(),
                     unsafe { std::slice::from_raw_parts_mut(dst, seq_hidden) },
                 );
             }
@@ -520,15 +589,231 @@ impl Bert {
                 &mut x,
                 seq_len,
                 hidden,
-                &layer.out_ln_weight,
-                &layer.out_ln_bias,
+                layer.out_ln_weight.as_f32(),
+                layer.out_ln_bias.as_f32(),
             );
         }
 
-        // ── 3. Convert flat buffer to Vec<Vec<f32>> ────────────────────────────
-        let result = x.chunks(hidden).map(|row| row.to_vec()).collect();
+        Ok(x)
+    }
 
-        Ok(result)
+    /// Batched forward pass over a padded [batch_size * seq_len] token layout.
+    pub fn forward_batch(
+        &self,
+        input_ids: &[u32],
+        token_type_ids: &[u32],
+        attention_mask: &[u32],
+        batch_size: usize,
+        seq_len: usize,
+    ) -> Result<Vec<f32>, LTEmbedError> {
+        let total_tokens = batch_size
+            .checked_mul(seq_len)
+            .ok_or_else(|| LTEmbedError::Inference("Batch shape overflow".to_string()))?;
+        if input_ids.len() != total_tokens
+            || token_type_ids.len() != total_tokens
+            || attention_mask.len() != total_tokens
+        {
+            return Err(LTEmbedError::Inference(
+                "Batched inputs do not match batch_size * seq_len".to_string(),
+            ));
+        }
+        if batch_size == 0 || seq_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let hidden = self.config.hidden_size;
+        let num_heads = self.config.num_attention_heads;
+        let head_dim = hidden / num_heads;
+        let intermediate = self.config.intermediate_size;
+        let seq_hidden = seq_len * hidden;
+        let total_hidden = total_tokens * hidden;
+        let total_inter = total_tokens * intermediate;
+        let seq_sq = seq_len * seq_len;
+
+        let mut x = vec![0.0f32; total_hidden];
+        embed(input_ids, self.word_emb.as_f32(), hidden, &mut x);
+
+        let pos_emb = self.pos_emb.as_f32();
+        let type_emb = self.type_emb.as_f32();
+        for batch_idx in 0..batch_size {
+            let batch_start = batch_idx * seq_hidden;
+            let batch_end = batch_start + seq_hidden;
+            for (pos, token_row) in x[batch_start..batch_end].chunks_mut(hidden).enumerate() {
+                let pos_start = pos * hidden;
+                let type_id = token_type_ids[batch_idx * seq_len + pos] as usize;
+                let type_start = type_id * hidden;
+                for (j, v) in token_row.iter_mut().enumerate() {
+                    *v += pos_emb[pos_start + j];
+                    *v += type_emb[type_start + j];
+                }
+            }
+        }
+
+        layer_norm_rows(
+            &mut x,
+            total_tokens,
+            hidden,
+            self.emb_ln_weight.as_f32(),
+            self.emb_ln_bias.as_f32(),
+        );
+
+        let mut q = vec![0.0f32; total_hidden];
+        let mut k = vec![0.0f32; total_hidden];
+        let mut v = vec![0.0f32; total_hidden];
+        let mut attn_out = vec![0.0f32; total_hidden];
+        let mut attn_proj = vec![0.0f32; total_hidden];
+        let mut scores = vec![0.0f32; seq_sq];
+        let mut inter = vec![0.0f32; total_inter];
+        let mut ffn_out = vec![0.0f32; total_hidden];
+
+        for layer in &self.layers {
+            q.fill(0.0);
+            k.fill(0.0);
+            v.fill(0.0);
+
+            linear_batch(
+                &x,
+                total_tokens,
+                hidden,
+                layer.q_weight.as_f32(),
+                layer.q_bias.as_f32(),
+                &mut q,
+            );
+            linear_batch(
+                &x,
+                total_tokens,
+                hidden,
+                layer.k_weight.as_f32(),
+                layer.k_bias.as_f32(),
+                &mut k,
+            );
+            linear_batch(
+                &x,
+                total_tokens,
+                hidden,
+                layer.v_weight.as_f32(),
+                layer.v_bias.as_f32(),
+                &mut v,
+            );
+
+            let scale = 1.0 / (head_dim as f32).sqrt();
+            attn_out.fill(0.0);
+
+            for batch_idx in 0..batch_size {
+                let token_offset = batch_idx * seq_len;
+                let hidden_offset = batch_idx * seq_hidden;
+                let batch_mask = &attention_mask[token_offset..token_offset + seq_len];
+
+                for h in 0..num_heads {
+                    scores.fill(0.0);
+
+                    unsafe {
+                        matrixmultiply::sgemm(
+                            seq_len,
+                            head_dim,
+                            seq_len,
+                            scale,
+                            q.as_ptr().add(hidden_offset + h * head_dim),
+                            hidden as isize,
+                            1,
+                            k.as_ptr().add(hidden_offset + h * head_dim),
+                            1,
+                            hidden as isize,
+                            0.0f32,
+                            scores.as_mut_ptr(),
+                            seq_len as isize,
+                            1,
+                        );
+                    }
+
+                    for (j, &m) in batch_mask.iter().enumerate() {
+                        if m == 0 {
+                            for i in 0..seq_len {
+                                scores[i * seq_len + j] += -10000.0;
+                            }
+                        }
+                    }
+
+                    for i in 0..seq_len {
+                        softmax(&mut scores[i * seq_len..(i + 1) * seq_len]);
+                    }
+
+                    unsafe {
+                        matrixmultiply::sgemm(
+                            seq_len,
+                            seq_len,
+                            head_dim,
+                            1.0f32,
+                            scores.as_ptr(),
+                            seq_len as isize,
+                            1,
+                            v.as_ptr().add(hidden_offset + h * head_dim),
+                            hidden as isize,
+                            1,
+                            0.0f32,
+                            attn_out.as_mut_ptr().add(hidden_offset + h * head_dim),
+                            hidden as isize,
+                            1,
+                        );
+                    }
+                }
+            }
+
+            attn_proj.fill(0.0);
+            linear_batch(
+                &attn_out,
+                total_tokens,
+                hidden,
+                layer.attn_out_weight.as_f32(),
+                layer.attn_out_bias.as_f32(),
+                &mut attn_proj,
+            );
+
+            for (xi, ai) in x.iter_mut().zip(attn_proj.iter()) {
+                *xi += ai;
+            }
+            layer_norm_rows(
+                &mut x,
+                total_tokens,
+                hidden,
+                layer.attn_ln_weight.as_f32(),
+                layer.attn_ln_bias.as_f32(),
+            );
+
+            inter.fill(0.0);
+            linear_batch(
+                &x,
+                total_tokens,
+                hidden,
+                layer.inter_weight.as_f32(),
+                layer.inter_bias.as_f32(),
+                &mut inter,
+            );
+            gelu(&mut inter);
+
+            ffn_out.fill(0.0);
+            linear_batch(
+                &inter,
+                total_tokens,
+                intermediate,
+                layer.out_weight.as_f32(),
+                layer.out_bias.as_f32(),
+                &mut ffn_out,
+            );
+
+            for (xi, fi) in x.iter_mut().zip(ffn_out.iter()) {
+                *xi += fi;
+            }
+            layer_norm_rows(
+                &mut x,
+                total_tokens,
+                hidden,
+                layer.out_ln_weight.as_f32(),
+                layer.out_ln_bias.as_f32(),
+            );
+        }
+
+        Ok(x)
     }
 }
 
@@ -537,7 +822,15 @@ impl Bert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use safetensors::{
+        serialize_to_file,
+        tensor::{Dtype, TensorView},
+    };
+    use std::collections::HashMap;
+    use std::fs::File;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const SAFETENSORS_PATH: &str = "assets/model.safetensors";
     const CONFIG_PATH: &str = "assets/config.json";
@@ -588,8 +881,53 @@ mod tests {
         let output = bert
             .forward(&input_ids, &token_type_ids, &attention_mask)
             .unwrap();
-        assert_eq!(output.len(), 3);
-        assert_eq!(output[0].len(), 384);
+        assert_eq!(output.len(), 3 * 384);
+    }
+
+    #[test]
+    fn test_forward_batch_output_shape() {
+        if !assets_available() {
+            eprintln!("Skipping: model assets not found in assets/");
+            return;
+        }
+        let config_str = std::fs::read_to_string(CONFIG_PATH).unwrap();
+        let bert = Bert::from_files(SAFETENSORS_PATH, &config_str).unwrap();
+
+        let input_ids = vec![101u32, 7592, 102, 101, 2088, 102];
+        let token_type_ids = vec![0u32; 6];
+        let attention_mask = vec![1u32; 6];
+
+        let output = bert
+            .forward_batch(&input_ids, &token_type_ids, &attention_mask, 2, 3)
+            .unwrap();
+        assert_eq!(output.len(), 2 * 3 * 384);
+    }
+
+    #[test]
+    fn test_load_tensor_data_reads_from_mmap() {
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        let tensor =
+            TensorView::new(Dtype::F32, vec![2, 2], bytemuck::cast_slice(&values)).unwrap();
+        let tensors = HashMap::from([("foo".to_string(), tensor)]);
+        let filename = format!(
+            "ltembed-test-{}.safetensors",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(filename);
+
+        serialize_to_file(&tensors, None, &path).unwrap();
+
+        let file = File::open(&path).unwrap();
+        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).unwrap() });
+        let st = SafeTensors::deserialize(&mmap).unwrap();
+
+        let data = load_tensor_data(&st, &mmap, "foo").unwrap();
+        assert_eq!(data.as_f32(), &values);
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

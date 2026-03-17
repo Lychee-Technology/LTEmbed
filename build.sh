@@ -15,6 +15,7 @@ TARGET="aarch64-unknown-linux-gnu"
 OUTPUT_DIR="dist"
 
 echo "==> Cross-compiling for $TARGET ..."
+export RUSTFLAGS="-C target-cpu=neoverse-n1"
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-unknown-linux-gnu-gcc \
   cargo build --release --target "$TARGET"
 

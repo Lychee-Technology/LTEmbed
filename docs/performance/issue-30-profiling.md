@@ -329,6 +329,52 @@ Interpretation:
 - the mixed-length batched scenario was roughly neutral to slightly improved
 - this is a data-layout win around the dense layers, not an attention-score / softmax win
 
+## Follow-up: isolate the remaining scalar work inside `Bert::forward`
+
+After the GEMM layout change, I re-recorded `single/long` with a debuginfo-enabled release binary and mapped the remaining `Bert::forward` leaf samples back to function offsets with `atos` plus `llvm-objdump`.
+
+Artifacts:
+
+- trace: [`/tmp/issue43-single-long.trace`](/tmp/issue43-single-long.trace)
+- exported XML: [`/tmp/issue43-single-long-time-profile.xml`](/tmp/issue43-single-long-time-profile.xml)
+
+### What the previously "unsplit" `Bert::forward` samples actually are
+
+Among the `83` leaf samples that still showed up as `Bert::forward` instead of a more specific symbol, the large majority fell into already-known math kernels that are now inlined into the caller:
+
+| Bucket | Representative offsets | Leaf samples | Interpretation |
+|---|---|---:|---|
+| Inlined softmax row work | `+0x15a0` to `+0x1a40` | 39 | row max scan, `expf` tail handling, and row normalization/writeback in the fused softmax paths |
+| Inlined GELU work | `+0x2660` to `+0x27c0` | 17 | the vectorized GELU approximation loop after replacing libm `tanhf` |
+| Embedding / layer-norm setup | `+0x0300` to `+0x04a0` | 6 | embedding add / early setup work around embedding-layer normalization |
+| Other scattered `Bert::forward` offsets | mixed | 21 | small one-off control-flow and setup samples, not a coherent new hotspot |
+
+Representative address mapping from the trace:
+
+| Runtime address | `Bert::forward` offset | Mapped block |
+|---|---:|---|
+| `0x1006f8a75` | `+0x15a1` | inlined softmax max-reduction loop |
+| `0x1006f8b99` | `+0x16c5` | inlined softmax `expf` / row accumulation block |
+| `0x1006f9c45` | `+0x2771` | inlined GELU vector approximation loop |
+| `0x1006f796c` | `+0x0498` | post-embedding layer norm / scratch setup boundary |
+| `0x1006f7f54` | `+0x0a80` | early encoder-layer setup / buffer movement |
+
+### Conclusion
+
+This profiling pass did not uncover a new hidden scalar hotspot.
+
+The leftover `Bert::forward` leaf samples are mostly:
+
+- softmax work that is now inlined after the masking / `expf` optimizations
+- GELU work that is now inlined after the `fast_tanh` replacement
+- a small amount of setup / control-flow noise
+
+That means the remaining optimization priorities are still the same:
+
+- dense GEMM dominates overall runtime
+- among scalar work, the visible remainder is still softmax and GELU math, not `layer_norm_rows`
+- there is no new isolated scalar kernel inside `Bert::forward` that clearly deserves a separate pass ahead of larger GEMM-oriented work
+
 ### `sample` fallback: `single/long`
 
 `sample` on `single/long` still shows that the dominant time remains in BERT forward compute, with the biggest families being:

@@ -15,15 +15,15 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-matrixmultiply = "0.3"
+matrixmultiply = "0.3.10"
 bytemuck = "1"
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
-tokenizers = "0.21"
+tokenizers = "0.22.2"
 
 # Model file loading (zero-copy mmap)
-safetensors = "0.4"
-memmap2 = "0.9"
+safetensors = "0.7"
+memmap2 = "0.9.10"
 
 # Config file parsing (config.json → BertConfig)
 serde_json = "1"

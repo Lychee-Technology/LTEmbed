@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-**LTEmbed** is a Rust library for generating L2-normalized vector embeddings from BERT-family models. It exposes a simple, idiomatic Rust API and is optimized for **ARM64 serverless compute** (AWS Graviton), where its minimal binary size and zero-copy model loading make it particularly effective.
+**LTEmbed** is a Rust library for generating L2-normalized vector embeddings from BERT-family models. It exposes a simple, idiomatic Rust API and is optimized for **ARM64** environments, where its minimal binary size and zero-copy model loading make it effective for local tools, services, and benchmarking workflows.
 
 The v1 release targets **e5-small-v2**. Support for additional models (e.g., bge-small-zh) is planned for future releases.
 
@@ -19,7 +19,7 @@ let embedding: Vec<f32> = engine.embed("query: Hello, world!")?;
 // → 384 f32 values, L2-normalized
 ```
 
-LTEmbed is transport-agnostic. It does not depend on any HTTP framework or runtime. Example integrations (AWS Lambda, CLI, gRPC server) are deployment-layer concerns outside the library's scope.
+LTEmbed is transport-agnostic. It does not depend on any HTTP framework or runtime. The repository focuses on the library itself plus direct Rust entry points such as examples and benchmark binaries.
 
 ---
 
@@ -78,11 +78,13 @@ pub enum LTEmbedError {
 
 ```rust
 pub trait Pooling: Send + Sync {
-    /// Collapse [seq_len][hidden_size] last hidden state → [hidden_size] vector.
+    /// Collapse a flattened [seq_len * hidden_size] hidden state into one vector.
     /// `attention_mask`: 1 = real token, 0 = padding.
     fn pool(
         &self,
-        last_hidden_state: &[Vec<f32>],
+        last_hidden_state: &[f32],
+        seq_len: usize,
+        hidden_size: usize,
         attention_mask: &[u32],
     ) -> Result<Vec<f32>, LTEmbedError>;
 }
@@ -126,7 +128,7 @@ $$v_{norm} = \frac{v}{\sqrt{\sum_{i=1}^{n} v_i^2}}$$
 2. `BertModel::load` traverses tensor headers to build the model graph.
 3. **First `embed()` call triggers OS page faults** as weight pages are loaded from disk on demand. For a 130 MB model, this takes ~1–3 s.
 
-The mmap approach achieves the minimum possible initialization overhead: no heap allocation, minimal startup latency. For serverless deployments where cold starts matter, consider calling `engine.embed("warmup")` immediately after `new()` to front-load the page faults before the first real request.
+The mmap approach achieves the minimum possible initialization overhead: no heap allocation, minimal startup latency. If first-call latency matters in your environment, call `engine.embed("warmup")` immediately after `new()` to front-load the page faults before the first real request.
 
 ### Warm Invocations
 
@@ -136,36 +138,40 @@ Subsequent calls to `embed()` run in tens of milliseconds. ARM64 NEON SIMD accel
 RUSTFLAGS="-C target-cpu=neoverse-n1"   # AWS Graviton2
 ```
 
-Without this flag the compiler targets the conservative ARMv8 baseline. See `build.sh`.
+Without this flag the compiler targets the conservative ARMv8 baseline.
 
 ### Batching (v1)
 
-`embed_batch()` processes inputs sequentially. True batched inference (stacking N inputs into a single forward pass) is planned as a future optimization. For the typical serverless payload of 1–10 inputs, sequential processing is appropriate.
+`embed_batch()` processes inputs sequentially. True batched inference (stacking N inputs into a single forward pass) is planned as a future optimization. For typical small request batches, sequential processing is appropriate.
 
-### Deployment Package Size (AWS Lambda)
+### Repository Assets
 
 | Component | Estimated Size |
 |---|---|
 | `model.safetensors` (e5-small-v2) | ~130 MB |
-| `bootstrap` binary (Rust release build) | ~30–60 MB |
 | `tokenizer.json` + `config.json` | ~2 MB |
-| **Total** | **~165–195 MB** |
+| `tests/fixtures/test_fixtures.json` | small |
 
-Lambda's 250 MB unzipped limit accommodates e5-small-v2. Larger models (e.g., bge-base-zh ~400 MB) require a Lambda Layer or Amazon EFS strategy.
+The model weights dominate local disk usage. Larger models such as `bge-base-zh` will require correspondingly more disk and memory.
 
 ---
 
-## 5. Example: AWS Lambda Deployment
+## 5. Example: Rust API Usage
 
-LTEmbed is a library. The repository includes an example Lambda binary (`src/main.rs`) that demonstrates one way to deploy it. The binary:
+LTEmbed is a library. The repository includes a runnable example at `examples/api_usage.rs` that demonstrates direct Rust API usage:
 
-- Wraps the library with `lambda_http`
-- Initializes the engine in a `static OnceLock` (once per container instance, no re-initialization on warm invocations)
-- Accepts `POST` requests with JSON body `{"inputs": ["text1", "text2"]}`
-- Returns `{"embeddings": [[...], ...]}` on success
-- Maps library errors to appropriate HTTP responses (`LTEmbedError::InputTooLong` → 400, others → 500)
+```bash
+cargo run --example api_usage
+```
 
-The library itself has no dependency on `lambda_http`, HTTP, or any async runtime. These are binary-layer concerns only.
+The example:
+
+- reads `assets/config.json`
+- constructs `ZeroVecEngine` with `MeanPooling`
+- embeds a small batch of query strings
+- prints a compact summary showing embedding count, dimension, and a short coordinate preview
+
+The library remains independent of HTTP, async runtimes, and deployment-specific infrastructure.
 
 ---
 
@@ -186,7 +192,11 @@ LTEmbed/
 │   ├── models/
 │   │   ├── mod.rs
 │   │   └── bert.rs          # candle-transformers BertModel wrapper
-│   └── main.rs              # Example: AWS Lambda deployment binary
+│   └── bin/
+│       └── benchmark_ltembed.rs  # Benchmark entry point
+├── examples/
+│   ├── api_usage.rs         # Direct Rust API example
+│   └── benchmark_candle.rs  # Benchmark comparison example
 ├── tests/
 │   ├── integration_tests.rs
 │   └── fixtures/
@@ -195,8 +205,6 @@ LTEmbed/
 │   └── inference.rs         # Criterion warm-invocation benchmarks
 ├── scripts/
 │   └── generate_fixtures.py
-├── build.sh                 # Cross-compile for aarch64-unknown-linux-gnu
-├── Dockerfile               # Amazon Linux 2023 build environment
 └── assets/
     ├── config.json          # BERT architecture config (committed)
     ├── tokenizer.json       # WordPiece vocabulary (committed)

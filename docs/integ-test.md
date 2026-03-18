@@ -13,8 +13,8 @@ The goal of this integration testing phase is to verify that the decoupled libra
 **Out of Scope:**
 
 - Unit testing of individual trait implementations — covered by `cargo test --lib`.
-- Testing the Lambda deployment binary (`src/main.rs`) — that binary is responsible for its own HTTP-level tests.
-- AWS infrastructure (IAM roles, VPC) — covered by infrastructure-as-code tests.
+- End-to-end testing of example and benchmark entry points beyond compile and smoke verification.
+- Deployment infrastructure outside this repository — covered separately where applicable.
 - Sustained load — covered by separate benchmarks (`cargo bench`).
 
 ---

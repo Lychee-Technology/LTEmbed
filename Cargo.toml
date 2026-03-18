@@ -3,11 +3,6 @@ name = "ltembed"
 version = "0.1.0"
 edition = "2021"
 
-# Lambda custom runtime: binary must be named "bootstrap"
-[[bin]]
-name = "bootstrap"
-path = "src/main.rs"
-
 # Library target: exposes internal modules to integration tests in tests/
 [lib]
 name = "ltembed"
@@ -31,16 +26,10 @@ memmap2 = "0.9.10"
 
 # Config file parsing (config.json → BertConfig)
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 
 # Error handling
 thiserror = "2"
-
-# ── Lambda deployment binary only (src/main.rs) ───────────────────────────────
-lambda_http = "0.13"
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
 cblas = { version = "0.5", optional = true }
@@ -49,6 +38,10 @@ openblas-src = { version = "0.10.14", default-features = false, features = ["cbl
 [[bench]]
 name = "inference"
 harness = false
+
+[[example]]
+name = "api_usage"
+path = "examples/api_usage.rs"
 
 [profile.release]
 opt-level = 3

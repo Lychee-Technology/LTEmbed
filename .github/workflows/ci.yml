@@ -38,8 +38,8 @@ jobs:
       - name: Run library unit tests
         run: cargo test --lib
 
-      - name: Run handler unit tests
-        run: cargo test --bin bootstrap
+      - name: Verify Rust API example compiles
+        run: cargo check --example api_usage
 
       - name: Run integration error-handling test (no model assets required)
         run: cargo test --test integration_tests test_missing_model_file_returns_model_load_error

@@ -45,3 +45,8 @@ assets/sentence_bert_config.json
 assets/special_tokens_map.json
 assets/tokenizer_config.json
 assets/vocab.txt
+
+.venv/
+
+perf-results/
+

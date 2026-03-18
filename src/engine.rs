@@ -21,7 +21,7 @@ impl std::fmt::Debug for ZeroVecEngine {
 }
 
 impl ZeroVecEngine {
-    /// Initialize the engine from local file paths. Call this once at Lambda cold start.
+    /// Initialize the engine from local file paths. Call this once at startup and reuse it.
     pub fn new(
         safetensors_path: &str,
         config_json: &str,

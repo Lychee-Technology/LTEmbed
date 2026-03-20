@@ -16,12 +16,15 @@ use ltembed::{
         scenario_token_lengths, BENCHMARK_MAX_LENGTH,
     },
     engine::ZeroVecEngine,
-    traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
+    traits::{engine::EmbeddingEngine, pooling::MeanPooling, tokenizer::HFTokenizer},
 };
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::path::Path;
 use std::thread;
+
+#[cfg(feature = "ggml-backend")]
+use ltembed::engine_llama::LlamaCppEngine;
 
 #[cfg(all(
     feature = "vendored-blas",
@@ -734,6 +737,71 @@ fn bench_ltembed_kernel_attention_sv(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Backend comparison (ggml-backend feature) ────────────────────────────────
+
+#[cfg(feature = "ggml-backend")]
+fn gguf_asset_available() -> bool {
+    Path::new("assets/model.gguf").exists()
+}
+
+#[cfg(feature = "ggml-backend")]
+static LLAMA_ENGINE: Lazy<LlamaCppEngine> = Lazy::new(|| {
+    LlamaCppEngine::new(Path::new("assets/model.gguf"), 1)
+        .expect("Failed to initialize LlamaCppEngine — run scripts/convert_to_gguf.py first")
+});
+
+#[cfg(feature = "ggml-backend")]
+fn bench_backend_comparison(c: &mut Criterion) {
+    if !assets_available() || !gguf_asset_available() {
+        eprintln!(
+            "bench_backend_comparison: skipping — assets/model.safetensors or assets/model.gguf not found"
+        );
+        return;
+    }
+
+    let zerovec: &dyn EmbeddingEngine = &*ENGINE;
+    let llamacpp: &dyn EmbeddingEngine = &*LLAMA_ENGINE;
+
+    let long = long_input();
+    let single_cases: &[(&str, &str)] = &[
+        ("short", SHORT),
+        ("medium", MEDIUM),
+        ("long", long.as_str()),
+    ];
+
+    let mut group = c.benchmark_group("bench_backend_comparison");
+
+    // Single-text embedding
+    for (label, text) in single_cases {
+        group.bench_with_input(BenchmarkId::new("zerovec/single", label), text, |b, t| {
+            b.iter(|| zerovec.embed(criterion::black_box(t)).unwrap())
+        });
+        group.bench_with_input(BenchmarkId::new("llamacpp/single", label), text, |b, t| {
+            b.iter(|| llamacpp.embed(criterion::black_box(t)).unwrap())
+        });
+    }
+
+    // Batch embedding
+    for &batch_size in &[1usize, 4, 16] {
+        let texts: Vec<&str> = std::iter::repeat_n(MEDIUM, batch_size).collect();
+        group.bench_with_input(
+            BenchmarkId::new("zerovec/batch", batch_size),
+            &batch_size,
+            |b, _| b.iter(|| zerovec.embed_batch(criterion::black_box(&texts)).unwrap()),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("llamacpp/batch", batch_size),
+            &batch_size,
+            |b, _| b.iter(|| llamacpp.embed_batch(criterion::black_box(&texts)).unwrap()),
+        );
+    }
+
+    group.finish();
+}
+
+#[cfg(not(feature = "ggml-backend"))]
+fn bench_backend_comparison(_c: &mut Criterion) {}
+
 criterion_group!(
     benches,
     bench_ltembed_single,
@@ -743,6 +811,7 @@ criterion_group!(
     bench_ltembed_kernel_projection_packing,
     bench_ltembed_kernel_projection_backends,
     bench_ltembed_kernel_attention_qk,
-    bench_ltembed_kernel_attention_sv
+    bench_ltembed_kernel_attention_sv,
+    bench_backend_comparison
 );
 criterion_main!(benches);

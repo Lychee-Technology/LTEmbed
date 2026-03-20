@@ -11,6 +11,10 @@ path = "src/lib.rs"
 [features]
 default = []
 vendored-blas = ["dep:cblas", "dep:openblas-src"]
+ggml-backend = []
+
+[build-dependencies]
+cc = "1"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────

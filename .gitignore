@@ -29,8 +29,9 @@ artifacts/
 __pycache__/
 *.pyc
 
-# Large BERT weight file — download separately, do not commit
+# Large model weight files — download/generate separately, do not commit
 assets/model.safetensors
+assets/model.gguf
 
 # Extra HuggingFace snapshot files — only config.json and tokenizer.json are committed
 assets/*.gitattributes

@@ -8,6 +8,7 @@
 use approx::assert_relative_eq;
 use ltembed::engine::ZeroVecEngine;
 use ltembed::error::LTEmbedError;
+use ltembed::traits::engine::EmbeddingEngine;
 use ltembed::traits::pooling::MeanPooling;
 use serde::Deserialize;
 use std::path::Path;
@@ -184,4 +185,42 @@ fn test_output_dimension_is_384() {
     let engine = make_engine();
     let v = engine.embed("query: dimension check").unwrap();
     assert_eq!(v.len(), 384);
+}
+
+// ── Scenario D: LlamaCppEngine accuracy parity ────────────────────────────────
+
+#[cfg(feature = "ggml-backend")]
+#[test]
+fn test_llamacpp_engine_parity_with_zerovec() {
+    use ltembed::engine_llama::LlamaCppEngine;
+
+    const GGUF: &str = "assets/model.gguf";
+    if !assets_available() || !Path::new(GGUF).exists() {
+        eprintln!("Skipping: assets/model.safetensors or assets/model.gguf not found");
+        eprintln!("  Run: python scripts/convert_to_gguf.py");
+        return;
+    }
+
+    let zerovec = make_engine();
+    let llamacpp = LlamaCppEngine::new(Path::new(GGUF), 1).expect("Failed to load LlamaCppEngine");
+
+    let texts = [
+        "query: Hello, world!",
+        "query: What is the capital of France?",
+        "passage: The quick brown fox jumps over the lazy dog.",
+    ];
+
+    for text in &texts {
+        let zv = zerovec.embed(text).unwrap();
+        let lc = llamacpp.embed(text).unwrap();
+
+        assert_eq!(zv.len(), lc.len(), "Dimension mismatch for {text:?}");
+
+        // Cosine similarity of two L2-normalized vectors = dot product
+        let cosine: f32 = zv.iter().zip(lc.iter()).map(|(a, b)| a * b).sum();
+        assert!(
+            cosine >= 0.999,
+            "Parity failure for {text:?}: cosine similarity = {cosine:.6} (expected >= 0.999)"
+        );
+    }
 }

@@ -2,6 +2,7 @@
 
 use crate::error::LTEmbedError;
 use crate::models::bert::Bert;
+use crate::traits::engine::EmbeddingEngine;
 use crate::traits::pooling::Pooling;
 use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
 use crate::utils::l2_normalize_inplace;
@@ -119,9 +120,24 @@ impl ZeroVecEngine {
     }
 }
 
+impl EmbeddingEngine for ZeroVecEngine {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, LTEmbedError> {
+        self.embed(text)
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+        self.embed_batch(texts)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.bert.hidden_size()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::engine::EmbeddingEngine;
     use crate::traits::pooling::MeanPooling;
     use approx::assert_relative_eq;
     use static_assertions::assert_impl_all;
@@ -132,6 +148,7 @@ mod tests {
     // Compile-time guard: ZeroVecEngine must be Send + Sync to be stored in a
     // `static OnceLock<Result<ZeroVecEngine, String>>`.
     assert_impl_all!(ZeroVecEngine: Send, Sync);
+    assert_impl_all!(ZeroVecEngine: EmbeddingEngine);
 
     const SAFETENSORS: &str = "assets/model.safetensors";
     const CONFIG: &str = "assets/config.json";

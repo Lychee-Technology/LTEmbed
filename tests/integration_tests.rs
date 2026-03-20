@@ -8,6 +8,7 @@
 use approx::assert_relative_eq;
 use ltembed::engine::ZeroVecEngine;
 use ltembed::error::LTEmbedError;
+#[cfg(feature = "ggml-backend")]
 use ltembed::traits::engine::EmbeddingEngine;
 use ltembed::traits::pooling::MeanPooling;
 use serde::Deserialize;

@@ -16,7 +16,7 @@ use ltembed::{
         scenario_token_lengths, BENCHMARK_MAX_LENGTH,
     },
     engine::ZeroVecEngine,
-    traits::{engine::EmbeddingEngine, pooling::MeanPooling, tokenizer::HFTokenizer},
+    traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
 };
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -24,7 +24,7 @@ use std::path::Path;
 use std::thread;
 
 #[cfg(feature = "ggml-backend")]
-use ltembed::engine_llama::LlamaCppEngine;
+use ltembed::{engine_llama::LlamaCppEngine, traits::engine::EmbeddingEngine};
 
 #[cfg(all(
     feature = "vendored-blas",

@@ -264,7 +264,7 @@ fn transpose_weight(weight: &[f32], output_size: usize, input_size: usize) -> Ve
 /// Falls back to scalar for other sizes.
 fn layer_norm(x: &mut [f32], weight: &[f32], bias: &[f32], eps: f32) {
     let n = x.len();
-    if n % 4 != 0 {
+    if !n.is_multiple_of(4) {
         // Scalar fallback
         let nf = n as f32;
         let mean: f32 = x.iter().sum::<f32>() / nf;

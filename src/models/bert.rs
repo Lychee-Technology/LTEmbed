@@ -10,6 +10,7 @@ use safetensors::SafeTensors;
 use std::cell::RefCell;
 use std::fs::File;
 use std::sync::Arc;
+use wide::f32x4;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -258,13 +259,55 @@ fn transpose_weight(weight: &[f32], output_size: usize, input_size: usize) -> Ve
 }
 
 /// Layer norm in-place: (x - mean) / sqrt(var + eps) * weight + bias
+///
+/// Uses f32x4 SIMD for the common case where len is divisible by 4 (e.g. hidden=384).
+/// Falls back to scalar for other sizes.
 fn layer_norm(x: &mut [f32], weight: &[f32], bias: &[f32], eps: f32) {
-    let n = x.len() as f32;
-    let mean: f32 = x.iter().sum::<f32>() / n;
-    let var: f32 = x.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
-    let inv_std = 1.0 / (var + eps).sqrt();
-    for (i, v) in x.iter_mut().enumerate() {
-        *v = (*v - mean) * inv_std * weight[i] + bias[i];
+    let n = x.len();
+    if n % 4 != 0 {
+        // Scalar fallback
+        let nf = n as f32;
+        let mean: f32 = x.iter().sum::<f32>() / nf;
+        let var: f32 = x.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / nf;
+        let inv_std = 1.0 / (var + eps).sqrt();
+        for (i, v) in x.iter_mut().enumerate() {
+            *v = (*v - mean) * inv_std * weight[i] + bias[i];
+        }
+        return;
+    }
+    let nf = n as f32;
+
+    // Pass 1: SIMD sum → mean
+    let mut sum_v = f32x4::splat(0.0);
+    for i in (0..n).step_by(4) {
+        let chunk: [f32; 4] = x[i..i + 4].try_into().unwrap();
+        sum_v += f32x4::from(chunk);
+    }
+    let sa: [f32; 4] = sum_v.into();
+    let mean = (sa[0] + sa[1] + sa[2] + sa[3]) / nf;
+    let mean_v = f32x4::splat(mean);
+
+    // Pass 2: SIMD sum of squared deviations → variance
+    let mut var_v = f32x4::splat(0.0);
+    for i in (0..n).step_by(4) {
+        let chunk: [f32; 4] = x[i..i + 4].try_into().unwrap();
+        let d = f32x4::from(chunk) - mean_v;
+        var_v += d * d;
+    }
+    let va: [f32; 4] = var_v.into();
+    let var = (va[0] + va[1] + va[2] + va[3]) / nf;
+    let inv_std_v = f32x4::splat(1.0 / (var + eps).sqrt());
+    let neg_mean_inv_std_v = f32x4::splat(-mean / (var + eps).sqrt());
+
+    // Pass 3: SIMD normalize + affine scale
+    for i in (0..n).step_by(4) {
+        let chunk: [f32; 4] = x[i..i + 4].try_into().unwrap();
+        let w: [f32; 4] = weight[i..i + 4].try_into().unwrap();
+        let b: [f32; 4] = bias[i..i + 4].try_into().unwrap();
+        let result =
+            (f32x4::from(chunk) * inv_std_v + neg_mean_inv_std_v) * f32x4::from(w) + f32x4::from(b);
+        let arr: [f32; 4] = result.into();
+        x[i..i + 4].copy_from_slice(&arr);
     }
 }
 
@@ -320,15 +363,33 @@ fn softmax_exp(shifted: f32) -> f32 {
     }
 }
 
-fn softmax_unmasked(x: &mut [f32]) {
+/// Vectorized exp approximation via range reduction + 5-term Taylor polynomial.
+///
+#[doc(hidden)]
+pub fn softmax_unmasked(x: &mut [f32]) {
+    // Max reduction (scalar — LLVM auto-vectorizes)
     let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    // Exp and accumulate (uses cutoff to avoid denormals for far-shifted values)
     let mut sum = 0.0f32;
     for v in x.iter_mut() {
-        *v = softmax_exp(*v - max);
-        sum += *v;
+        let e = softmax_exp(*v - max);
+        *v = e;
+        sum += e;
     }
-    for v in x.iter_mut() {
-        *v /= sum;
+
+    // Normalize: SIMD multiply by 1/sum
+    let n = x.len();
+    let chunks4 = n / 4;
+    let inv_sum_v = f32x4::splat(1.0 / sum);
+    for i in 0..chunks4 {
+        let chunk: [f32; 4] = x[i * 4..i * 4 + 4].try_into().unwrap();
+        let arr: [f32; 4] = (f32x4::from(chunk) * inv_sum_v).into();
+        x[i * 4..i * 4 + 4].copy_from_slice(&arr);
+    }
+    let inv_sum = 1.0 / sum;
+    for v in &mut x[chunks4 * 4..] {
+        *v *= inv_sum;
     }
 }
 
@@ -392,17 +453,31 @@ fn masked_softmax_active_prefix(x: &mut [f32], active_len: usize) {
     }
 
     let (active, padded) = x.split_at_mut(active_len);
-    let max = active.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut sum = 0.0f32;
 
-    for value in active.iter_mut() {
-        *value = softmax_exp(*value - max);
-        sum += *value;
+    // Max reduction (scalar — LLVM auto-vectorizes)
+    let max = active.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    // Exp and accumulate (uses cutoff to avoid denormals for far-shifted values)
+    let mut sum = 0.0f32;
+    for v in active.iter_mut() {
+        let e = softmax_exp(*v - max);
+        *v = e;
+        sum += e;
     }
 
+    // Normalize: SIMD multiply by 1/sum
     if sum != 0.0 {
-        for value in active.iter_mut() {
-            *value /= sum;
+        let n = active.len();
+        let chunks4 = n / 4;
+        let inv_sum_v = f32x4::splat(1.0 / sum);
+        for i in 0..chunks4 {
+            let chunk: [f32; 4] = active[i * 4..i * 4 + 4].try_into().unwrap();
+            let arr: [f32; 4] = (f32x4::from(chunk) * inv_sum_v).into();
+            active[i * 4..i * 4 + 4].copy_from_slice(&arr);
+        }
+        let inv_sum = 1.0 / sum;
+        for v in &mut active[chunks4 * 4..] {
+            *v *= inv_sum;
         }
     }
 

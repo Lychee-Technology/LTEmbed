@@ -36,10 +36,10 @@ jobs:
       RUSTFLAGS: "-C target-cpu=native"
 
     steps:
-      - name: Checkout (full history so we can switch refs)
+      # Shallow checkout (matches what existing workflows use on this runner).
+      # We fetch main explicitly below so git checkout "$BASE_SHA" works.
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Rust 1.94.0
         uses: dtolnay/rust-toolchain@1.94.0
@@ -93,6 +93,15 @@ jobs:
           mkdir -p assets
           cp "$MODEL_DIR/config.json"    assets/config.json
           cp "$MODEL_DIR/tokenizer.json" assets/tokenizer.json
+
+      # Fetch main so we can check it out by SHA later.
+      # workflow_dispatch may also need to fetch the compare_ref branch.
+      - name: Fetch main and compare ref
+        run: |
+          git fetch origin main
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git fetch origin "${{ inputs.compare_ref }}" || true
+          fi
 
       # ── Resolve refs ───────────────────────────────────────────────────────
       - name: Resolve base and head SHAs

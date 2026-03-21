@@ -16,6 +16,7 @@ vendored-blas = ["dep:cblas", "dep:openblas-src"]
 # ── Library core ──────────────────────────────────────────────────────────────
 matrixmultiply = "0.3.10"
 bytemuck = "1"
+wide = "0.7"
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
 tokenizers = "0.22.2"

@@ -16,7 +16,7 @@ use ltembed::{
         scenario_token_lengths, BENCHMARK_MAX_LENGTH,
     },
     engine::ZeroVecEngine,
-    models::bert::{gelu, layer_norm_rows, masked_softmax},
+    models::bert::{gelu, layer_norm_rows, masked_softmax, softmax_unmasked},
     traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
 };
 use once_cell::sync::Lazy;
@@ -789,11 +789,11 @@ fn bench_ltembed_kernel_elementwise(c: &mut Criterion) {
         group.finish();
     }
 
-    // ── Softmax (single attention head) ───────────────────────────────────────
-    // Shape: [T × T]. Called 12 heads × per layer (attention scores).
-    // Mask is all-active (no padding) for a clean throughput measurement.
+    // ── Softmax: masked path (all-active mask, scalar) ────────────────────────
+    // This exercises masked_softmax() with a dense all-ones mask.
+    // NOT the hot path in production (see softmax_unmasked below).
     {
-        let mut group = c.benchmark_group("elementwise/softmax_head");
+        let mut group = c.benchmark_group("elementwise/softmax_masked");
         for &t in T_VALUES {
             let n = t * t;
             group.throughput(Throughput::Elements(n as u64));
@@ -802,6 +802,25 @@ fn bench_ltembed_kernel_elementwise(c: &mut Criterion) {
                 let mask = vec![1u32; t * t];
                 b.iter(|| {
                     masked_softmax(&mut scores, &mask);
+                    criterion::black_box(&scores);
+                });
+            });
+        }
+        group.finish();
+    }
+
+    // ── Softmax: unmasked path (SIMD, production hot path) ────────────────────
+    // softmax_unmasked is called when all tokens are active (no padding).
+    // This is the dominant path for single-sequence embedding inference.
+    // Each call covers one attention head row: T elements.
+    {
+        let mut group = c.benchmark_group("elementwise/softmax_unmasked");
+        for &t in T_VALUES {
+            group.throughput(Throughput::Elements(t as u64));
+            group.bench_with_input(BenchmarkId::new("T", t), &t, |b, &t| {
+                let mut scores = patterned_f32(t);
+                b.iter(|| {
+                    softmax_unmasked(&mut scores);
                     criterion::black_box(&scores);
                 });
             });

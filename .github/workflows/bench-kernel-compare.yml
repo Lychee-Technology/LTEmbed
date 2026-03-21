@@ -95,32 +95,30 @@ jobs:
           cp "$MODEL_DIR/config.json"    assets/config.json
           cp "$MODEL_DIR/tokenizer.json" assets/tokenizer.json
 
-      # Fetch main so we can check it out by SHA later.
-      # workflow_dispatch may also need to fetch the compare_ref branch.
-      - name: Fetch main and compare ref
+      # Fetch main and the compare branch by name so git checkout can find them.
+      # Shallow (--depth=1) checkout only fetches the PR merge ref; the
+      # individual branch commits aren't present, so SHA-based checkout fails.
+      # Using branch names via origin/<branch> is reliable after an explicit fetch.
+      - name: Fetch main and compare branch
         run: |
-          git fetch origin main
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            git fetch origin "${{ inputs.compare_ref }}" || true
-          fi
-
-      # ── Resolve refs ───────────────────────────────────────────────────────
-      - name: Resolve base and head SHAs
-        run: |
+          git fetch --depth=1 origin main
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "BASE_SHA=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_ENV"
-            echo "HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_ENV"
-            echo "PR_NUMBER=${{ github.event.pull_request.number }}"  >> "$GITHUB_ENV"
+            git fetch --depth=1 origin "${{ github.head_ref }}"
+            echo "COMPARE_REF=origin/${{ github.head_ref }}" >> "$GITHUB_ENV"
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
           else
-            echo "BASE_SHA=origin/main"                   >> "$GITHUB_ENV"
-            echo "HEAD_SHA=${{ inputs.compare_ref }}"     >> "$GITHUB_ENV"
-            echo "PR_NUMBER="                             >> "$GITHUB_ENV"
+            git fetch --depth=1 origin "${{ inputs.compare_ref }}"
+            echo "COMPARE_REF=origin/${{ inputs.compare_ref }}" >> "$GITHUB_ENV"
+            echo "PR_NUMBER=" >> "$GITHUB_ENV"
           fi
 
       # ── Step 1: benchmark main, save as named baseline ─────────────────────
       - name: Benchmark main (save baseline)
         run: |
-          git checkout "$BASE_SHA"
+          git checkout origin/main
+          mkdir -p assets
+          cp "$MODEL_DIR/config.json"    assets/config.json
+          cp "$MODEL_DIR/tokenizer.json" assets/tokenizer.json
           cargo bench --bench inference \
             -- 'kernel|elementwise' --save-baseline main \
             2>&1
@@ -128,12 +126,11 @@ jobs:
       # ── Step 2: benchmark PR, compare against main baseline ─────────────────
       - name: Benchmark PR branch (compare vs main)
         run: |
-          git checkout "$HEAD_SHA"
-          # Copy assets again — git checkout may have reverted them if tracked
+          git checkout "$COMPARE_REF"
+          # Re-copy assets — git checkout may have reverted them if tracked
           mkdir -p assets
           cp "$MODEL_DIR/config.json"    assets/config.json
           cp "$MODEL_DIR/tokenizer.json" assets/tokenizer.json
-
           cargo bench --bench inference \
             -- 'kernel|elementwise' --baseline main \
             2>&1 | tee /tmp/bench_compare.txt

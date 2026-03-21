@@ -269,7 +269,8 @@ fn layer_norm(x: &mut [f32], weight: &[f32], bias: &[f32], eps: f32) {
 }
 
 /// Layer norm applied to each row of a 2D slice [rows × hidden].
-fn layer_norm_rows(x: &mut [f32], rows: usize, hidden: usize, weight: &[f32], bias: &[f32]) {
+#[doc(hidden)]
+pub fn layer_norm_rows(x: &mut [f32], rows: usize, hidden: usize, weight: &[f32], bias: &[f32]) {
     for row in 0..rows {
         let start = row * hidden;
         layer_norm(&mut x[start..start + hidden], weight, bias, 1e-12);
@@ -300,7 +301,8 @@ fn gelu_scalar(x: f32) -> f32 {
 }
 
 /// GELU activation (approximate tanh variant) in-place.
-fn gelu(x: &mut [f32]) {
+#[doc(hidden)]
+pub fn gelu(x: &mut [f32]) {
     for v in x.iter_mut() {
         *v = gelu_scalar(*v);
     }
@@ -336,7 +338,8 @@ fn softmax(x: &mut [f32]) {
 }
 
 /// Softmax in-place over a slice while zeroing masked positions.
-fn masked_softmax(x: &mut [f32], attention_mask: &[u32]) {
+#[doc(hidden)]
+pub fn masked_softmax(x: &mut [f32], attention_mask: &[u32]) {
     debug_assert_eq!(x.len(), attention_mask.len());
 
     let mut max = f32::NEG_INFINITY;

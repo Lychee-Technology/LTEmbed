@@ -9,13 +9,14 @@
 // Requires: assets/model.safetensors (download separately)
 // Skips gracefully if the model file is absent.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ltembed::{
     benchmarking::{
         gemm_microbenchmark_scenarios, padded_seq_len, projection_kernel_shapes,
         scenario_token_lengths, BENCHMARK_MAX_LENGTH,
     },
     engine::ZeroVecEngine,
+    models::bert::{gelu, layer_norm_rows, masked_softmax},
     traits::{pooling::MeanPooling, tokenizer::HFTokenizer},
 };
 use once_cell::sync::Lazy;
@@ -734,6 +735,81 @@ fn bench_ltembed_kernel_attention_sv(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Elementwise op microbenchmarks ────────────────────────────────────────────
+//
+// Measures LayerNorm, GELU, and Softmax in isolation at T=8/25/128/512.
+// These T values match the matrixmultiply microbenchmarks for direct comparison.
+//
+// Shapes match the actual LTEmbed forward pass (e5-small-v2):
+//   hidden=384, intermediate=1536
+//
+// Reporting: Throughput::Elements so Criterion shows elem/s alongside time.
+// Each sub-benchmark measures ONE call (per-layer cost is shown in comments).
+
+fn bench_ltembed_kernel_elementwise(c: &mut Criterion) {
+    const HIDDEN: usize = 384;
+    const INTERMEDIATE: usize = 1536;
+    const T_VALUES: &[usize] = &[8, 25, 128, 512];
+
+    // ── LayerNorm ─────────────────────────────────────────────────────────────
+    // Shape: [T × HIDDEN]. Called 2× per layer (after attention + after FFN).
+    {
+        let mut group = c.benchmark_group("elementwise/layernorm");
+        for &t in T_VALUES {
+            let n = t * HIDDEN;
+            group.throughput(Throughput::Elements(n as u64));
+            group.bench_with_input(BenchmarkId::new("T", t), &t, |b, &t| {
+                let mut x = patterned_f32(t * HIDDEN);
+                let weight = patterned_f32(HIDDEN);
+                let bias = patterned_f32(HIDDEN);
+                b.iter(|| {
+                    layer_norm_rows(&mut x, t, HIDDEN, &weight, &bias);
+                    criterion::black_box(&x);
+                });
+            });
+        }
+        group.finish();
+    }
+
+    // ── GELU ──────────────────────────────────────────────────────────────────
+    // Shape: [T × INTERMEDIATE]. Called 1× per layer (FFN activation).
+    {
+        let mut group = c.benchmark_group("elementwise/gelu");
+        for &t in T_VALUES {
+            let n = t * INTERMEDIATE;
+            group.throughput(Throughput::Elements(n as u64));
+            group.bench_with_input(BenchmarkId::new("T", t), &t, |b, &t| {
+                let mut x = patterned_f32(t * INTERMEDIATE);
+                b.iter(|| {
+                    gelu(&mut x);
+                    criterion::black_box(&x);
+                });
+            });
+        }
+        group.finish();
+    }
+
+    // ── Softmax (single attention head) ───────────────────────────────────────
+    // Shape: [T × T]. Called 12 heads × per layer (attention scores).
+    // Mask is all-active (no padding) for a clean throughput measurement.
+    {
+        let mut group = c.benchmark_group("elementwise/softmax_head");
+        for &t in T_VALUES {
+            let n = t * t;
+            group.throughput(Throughput::Elements(n as u64));
+            group.bench_with_input(BenchmarkId::new("T", t), &t, |b, &t| {
+                let mut scores = patterned_f32(t * t);
+                let mask = vec![1u32; t * t];
+                b.iter(|| {
+                    masked_softmax(&mut scores, &mask);
+                    criterion::black_box(&scores);
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_ltembed_single,
@@ -743,6 +819,7 @@ criterion_group!(
     bench_ltembed_kernel_projection_packing,
     bench_ltembed_kernel_projection_backends,
     bench_ltembed_kernel_attention_qk,
-    bench_ltembed_kernel_attention_sv
+    bench_ltembed_kernel_attention_sv,
+    bench_ltembed_kernel_elementwise
 );
 criterion_main!(benches);

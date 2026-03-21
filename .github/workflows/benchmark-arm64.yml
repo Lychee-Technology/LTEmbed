@@ -104,6 +104,15 @@ jobs:
           )
           PY
 
+      # Compile check with visible errors before handing off to the Python
+      # harness, which swallows Cargo's stderr via capture_output=True.
+      - name: Cargo check (visible errors)
+        run: |
+          FEATURES="${{ inputs.ltembed_cargo_features }}"
+          FEATURES="${FEATURES:-vendored-blas}"
+          RUSTFLAGS="-C target-cpu=native" \
+            cargo check --features "$FEATURES" --bin benchmark_ltembed
+
       - name: Run Unified Benchmark Harness
         run: |
           EXTRA_ARGS=""

@@ -489,13 +489,24 @@ def resolved_notes(
 
 
 def run_json_command(command: list[str]) -> dict[str, Any]:
-    completed = subprocess.run(
-        command,
-        check=True,
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # Surface Cargo build errors and binary stderr that would otherwise be
+        # swallowed by capture_output=True.
+        print(
+            f"\n--- command failed (exit {exc.returncode}): {' '.join(exc.cmd)}\n"
+            f"--- stdout ---\n{exc.stdout}"
+            f"--- stderr ---\n{exc.stderr}",
+            file=sys.stderr,
+        )
+        raise
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:

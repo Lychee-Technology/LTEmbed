@@ -44,6 +44,7 @@ jobs:
       MODEL_ID: intfloat/e5-small-v2
       MODEL_DIR: ${{ github.workspace }}/.cache/models/intfloat-e5-small-v2
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
+      RUSTFLAGS: "-C target-cpu=native"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,7 +122,7 @@ jobs:
       # Compile check with visible errors before handing off to the Python
       # harness, which swallows Cargo's stderr via capture_output=True.
       - name: Cargo check (visible errors)
-        run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
+        run: cargo check --bin benchmark_ltembed
 
       - name: Run Unified Benchmark Harness
         run: |

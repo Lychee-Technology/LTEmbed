@@ -1,51 +1,56 @@
-use wide::f32x4;
-
 pub(crate) fn dense_backend_name() -> &'static str {
-    "matrixmultiply+saxpy"
+    #[cfg(target_arch = "aarch64")]
+    return "matrixmultiply+neon-dot";
+    #[cfg(not(target_arch = "aarch64"))]
+    return "matrixmultiply+dot";
 }
 
-/// Threshold (inclusive) for the SAXPY path. For batch <= this value,
-/// `small_batch_gemm_saxpy` is used instead of `matrixmultiply::sgemm`,
+/// Threshold (inclusive) for the GEMV path. For batch <= this value,
+/// `small_batch_gemm_dot` is used instead of `matrixmultiply::sgemm`,
 /// eliminating packing overhead that dominates for small m (e.g. seq_len ~8–16).
 const GEMV_THRESHOLD: usize = 16;
 
-pub(crate) fn linear_batch_transposed_with_bias(
+/// Compute out[batch × output_size] = x_rows[batch × input_size] × weight^T + bias,
+/// where weight[output_size × input_size] is row-major (natural PyTorch/safetensors layout).
+pub(crate) fn linear_batch_with_bias(
     x_rows: &[f32],
     batch: usize,
     input_size: usize,
-    weight_t: &[f32],
+    weight: &[f32],
     bias: &[f32],
     out: &mut [f32],
 ) {
     let output_size = bias.len();
     debug_assert_eq!(x_rows.len(), batch * input_size);
     debug_assert_eq!(out.len(), batch * output_size);
-    debug_assert_eq!(weight_t.len(), input_size * output_size);
+    debug_assert_eq!(weight.len(), output_size * input_size);
 
     if batch <= GEMV_THRESHOLD {
-        small_batch_gemm_saxpy(x_rows, batch, input_size, weight_t, out);
+        small_batch_gemm_dot(x_rows, batch, input_size, weight, output_size, out);
     } else {
-        matrixmultiply_linear_batch_transposed(x_rows, batch, input_size, weight_t, out);
+        matrixmultiply_linear_batch(x_rows, batch, input_size, weight, out);
     }
 
     for row in 0..batch {
         let offset = row * output_size;
-        for (col, bias_value) in bias.iter().enumerate() {
-            out[offset + col] += bias_value;
+        for (col, &b) in bias.iter().enumerate() {
+            out[offset + col] += b;
         }
     }
 }
 
-pub(crate) fn matrixmultiply_linear_batch_transposed(
+pub(crate) fn matrixmultiply_linear_batch(
     x_rows: &[f32],
     batch: usize,
     input_size: usize,
-    weight_t: &[f32],
+    weight: &[f32],
     out: &mut [f32],
 ) {
     let output_size = out.len() / batch;
-    debug_assert_eq!(weight_t.len(), input_size * output_size);
+    debug_assert_eq!(weight.len(), input_size * output_size);
 
+    // C[batch×output] = A[batch×input] × weight^T[input×output]
+    // weight[output×input] accessed as column-major B: rsb=1, csb=input_size
     unsafe {
         matrixmultiply::sgemm(
             batch,
@@ -53,64 +58,135 @@ pub(crate) fn matrixmultiply_linear_batch_transposed(
             output_size,
             1.0,
             x_rows.as_ptr(),
-            input_size as isize,
-            1,
-            weight_t.as_ptr(),
-            output_size as isize,
-            1,
+            input_size as isize, // rsa
+            1,                   // csa
+            weight.as_ptr(),
+            1,                   // rsb (stride across rows of weight^T = down columns of weight)
+            input_size as isize, // csb (stride across cols of weight^T = across rows of weight)
             0.0,
             out.as_mut_ptr(),
-            output_size as isize,
-            1,
+            output_size as isize, // rsc
+            1,                    // csc
         );
     }
 }
 
-/// SAXPY-based GEMM for small batch (m <= GEMV_THRESHOLD).
+/// DOT-PRODUCT GEMV for small batch (m <= GEMV_THRESHOLD).
 ///
-/// For each batch row, iterates over input dimensions and accumulates
-/// `x[i] * weight_t_row_i` into the output using f32x4 SIMD. The
-/// weight_t rows are contiguous in memory, making this access pattern
-/// cache-friendly.
-///
-/// `out` is zeroed before accumulation; caller applies bias afterwards.
-fn small_batch_gemm_saxpy(
+/// For each batch row computes out[o] = dot(x, weight[o*input_size..]).
+/// Uses NEON on aarch64 (4-row unrolling, 2 accumulators/row to hide FMA latency);
+/// falls back to scalar on other targets.
+fn small_batch_gemm_dot(
     x_rows: &[f32],
     batch: usize,
     input_size: usize,
-    weight_t: &[f32],
+    weight: &[f32],
+    output_size: usize,
     out: &mut [f32],
 ) {
-    let output_size = out.len() / batch;
     for b in 0..batch {
         let x = &x_rows[b * input_size..(b + 1) * input_size];
         let o = &mut out[b * output_size..(b + 1) * output_size];
-        o.fill(0.0);
-        for (i, &xi) in x.iter().enumerate() {
-            saxpy_row(xi, &weight_t[i * output_size..(i + 1) * output_size], o);
-        }
+        gemv(x, weight, output_size, o);
     }
 }
 
-/// `out += xi * weight_row` using f32x4 SIMD.
+#[cfg(target_arch = "aarch64")]
 #[inline]
-fn saxpy_row(xi: f32, weight_row: &[f32], out: &mut [f32]) {
-    let output_size = out.len();
-    debug_assert_eq!(weight_row.len(), output_size);
+fn gemv(x: &[f32], weight: &[f32], output_size: usize, out: &mut [f32]) {
+    unsafe { gemv_neon(x, weight, output_size, out) }
+}
 
-    let xi_v = f32x4::splat(xi);
-    let chunks = output_size / 4;
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn gemv(x: &[f32], weight: &[f32], output_size: usize, out: &mut [f32]) {
+    gemv_scalar(x, weight, output_size, 0, out);
+}
 
-    for c in 0..chunks {
-        let base = c * 4;
-        let w: [f32; 4] = weight_row[base..base + 4].try_into().unwrap();
-        let o: [f32; 4] = out[base..base + 4].try_into().unwrap();
-        let result: [f32; 4] = (f32x4::from(o) + xi_v * f32x4::from(w)).into();
-        out[base..base + 4].copy_from_slice(&result);
+/// NEON DOT-PRODUCT: processes 4 output rows at a time, 2 accumulators per row
+/// to hide the 4-cycle `fmla` latency on Cortex-A57/A72/A55/A78.
+#[cfg(target_arch = "aarch64")]
+unsafe fn gemv_neon(x: &[f32], weight: &[f32], output_size: usize, out: &mut [f32]) {
+    use std::arch::aarch64::*;
+
+    let input_size = x.len();
+    let mut o = 0usize;
+
+    while o + 4 <= output_size {
+        let a0 = weight.as_ptr().add(o * input_size);
+        let a1 = weight.as_ptr().add((o + 1) * input_size);
+        let a2 = weight.as_ptr().add((o + 2) * input_size);
+        let a3 = weight.as_ptr().add((o + 3) * input_size);
+
+        let mut acc0a = vdupq_n_f32(0.0);
+        let mut acc0b = vdupq_n_f32(0.0);
+        let mut acc1a = vdupq_n_f32(0.0);
+        let mut acc1b = vdupq_n_f32(0.0);
+        let mut acc2a = vdupq_n_f32(0.0);
+        let mut acc2b = vdupq_n_f32(0.0);
+        let mut acc3a = vdupq_n_f32(0.0);
+        let mut acc3b = vdupq_n_f32(0.0);
+
+        let mut j = 0usize;
+        // Main 8-element inner loop: load x once, multiply into 4 rows × 2 accumulators
+        while j + 8 <= input_size {
+            let xp = x.as_ptr().add(j);
+            let x0 = vld1q_f32(xp);
+            let x1 = vld1q_f32(xp.add(4));
+
+            acc0a = vmlaq_f32(acc0a, vld1q_f32(a0.add(j)), x0);
+            acc0b = vmlaq_f32(acc0b, vld1q_f32(a0.add(j + 4)), x1);
+            acc1a = vmlaq_f32(acc1a, vld1q_f32(a1.add(j)), x0);
+            acc1b = vmlaq_f32(acc1b, vld1q_f32(a1.add(j + 4)), x1);
+            acc2a = vmlaq_f32(acc2a, vld1q_f32(a2.add(j)), x0);
+            acc2b = vmlaq_f32(acc2b, vld1q_f32(a2.add(j + 4)), x1);
+            acc3a = vmlaq_f32(acc3a, vld1q_f32(a3.add(j)), x0);
+            acc3b = vmlaq_f32(acc3b, vld1q_f32(a3.add(j + 4)), x1);
+            j += 8;
+        }
+
+        // Handle remaining 4-element chunk
+        if j + 4 <= input_size {
+            let x0 = vld1q_f32(x.as_ptr().add(j));
+            acc0a = vmlaq_f32(acc0a, vld1q_f32(a0.add(j)), x0);
+            acc1a = vmlaq_f32(acc1a, vld1q_f32(a1.add(j)), x0);
+            acc2a = vmlaq_f32(acc2a, vld1q_f32(a2.add(j)), x0);
+            acc3a = vmlaq_f32(acc3a, vld1q_f32(a3.add(j)), x0);
+            j += 4;
+        }
+
+        // Reduce accumulators
+        let mut sum0 = vaddvq_f32(vaddq_f32(acc0a, acc0b));
+        let mut sum1 = vaddvq_f32(vaddq_f32(acc1a, acc1b));
+        let mut sum2 = vaddvq_f32(vaddq_f32(acc2a, acc2b));
+        let mut sum3 = vaddvq_f32(vaddq_f32(acc3a, acc3b));
+
+        // Scalar tail for remaining input elements
+        while j < input_size {
+            let xj = *x.get_unchecked(j);
+            sum0 += *a0.add(j) * xj;
+            sum1 += *a1.add(j) * xj;
+            sum2 += *a2.add(j) * xj;
+            sum3 += *a3.add(j) * xj;
+            j += 1;
+        }
+
+        *out.get_unchecked_mut(o) = sum0;
+        *out.get_unchecked_mut(o + 1) = sum1;
+        *out.get_unchecked_mut(o + 2) = sum2;
+        *out.get_unchecked_mut(o + 3) = sum3;
+        o += 4;
     }
 
-    for j in chunks * 4..output_size {
-        out[j] += xi * weight_row[j];
+    // Scalar tail for remaining output rows
+    gemv_scalar(x, weight, output_size, o, out);
+}
+
+fn gemv_scalar(x: &[f32], weight: &[f32], output_size: usize, start: usize, out: &mut [f32]) {
+    let input_size = x.len();
+    for o in start..output_size {
+        let row = &weight[o * input_size..(o + 1) * input_size];
+        out[o] = x.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
     }
 }
 
@@ -129,23 +205,23 @@ mod tests {
 
     fn run_both(batch: usize, input: usize, output: usize) {
         let x = patterned(batch * input);
-        let wt = patterned(input * output);
+        let w = patterned(output * input); // [output × input]
         let bias = patterned(output);
 
-        let mut out_saxpy = vec![0.0f32; batch * output];
+        let mut out_dot = vec![0.0f32; batch * output];
         let mut out_sgemm = vec![0.0f32; batch * output];
 
-        // SAXPY path
-        small_batch_gemm_saxpy(&x, batch, input, &wt, &mut out_saxpy);
+        // DOT-PRODUCT path
+        small_batch_gemm_dot(&x, batch, input, &w, output, &mut out_dot);
         for row in 0..batch {
             let off = row * output;
             for (j, &b) in bias.iter().enumerate() {
-                out_saxpy[off + j] += b;
+                out_dot[off + j] += b;
             }
         }
 
         // matrixmultiply path
-        matrixmultiply_linear_batch_transposed(&x, batch, input, &wt, &mut out_sgemm);
+        matrixmultiply_linear_batch(&x, batch, input, &w, &mut out_sgemm);
         for row in 0..batch {
             let off = row * output;
             for (j, &b) in bias.iter().enumerate() {
@@ -153,16 +229,16 @@ mod tests {
             }
         }
 
-        for (a, b) in out_saxpy.iter().zip(out_sgemm.iter()) {
+        for (a, b) in out_dot.iter().zip(out_sgemm.iter()) {
             assert!(
                 (a - b).abs() < 1e-3,
-                "saxpy vs sgemm mismatch at batch={batch} input={input} output={output}: {a} vs {b}"
+                "dot vs sgemm mismatch at batch={batch} input={input} output={output}: {a} vs {b}"
             );
         }
     }
 
     #[test]
-    fn test_saxpy_matches_matrixmultiply_projection_shapes() {
+    fn test_dot_matches_matrixmultiply_projection_shapes() {
         run_both(1, 384, 384); // single-row QKV projection
         run_both(4, 384, 384); // batch=4 QKV
         run_both(4, 384, 1536); // FFN expansion

@@ -8,10 +8,6 @@ edition = "2021"
 name = "ltembed"
 path = "src/lib.rs"
 
-[features]
-default = []
-vendored-blas = ["dep:cblas", "dep:openblas-src"]
-
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
 matrixmultiply = "0.3.10"
@@ -31,10 +27,6 @@ serde = { version = "1", features = ["derive"] }
 
 # Error handling
 thiserror = "2"
-
-[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
-cblas = { version = "0.5", optional = true }
-openblas-src = { version = "0.10.14", default-features = false, features = ["cblas", "static"], optional = true }
 
 [[bench]]
 name = "inference"

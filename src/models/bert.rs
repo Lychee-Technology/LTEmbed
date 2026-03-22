@@ -1402,19 +1402,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dense_backend_name_matches_platform_selection() {
-        #[cfg(all(
-            feature = "vendored-blas",
-            target_os = "linux",
-            target_arch = "aarch64"
-        ))]
-        assert_eq!(crate::gemm::dense_backend_name(), "openblas-cblas");
-
-        #[cfg(not(all(
-            feature = "vendored-blas",
-            target_os = "linux",
-            target_arch = "aarch64"
-        )))]
+    fn test_dense_backend_name_is_matrixmultiply() {
         assert_eq!(crate::gemm::dense_backend_name(), "matrixmultiply");
     }
 }

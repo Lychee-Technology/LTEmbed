@@ -15,6 +15,7 @@ struct Args {
     mode: String,
     scenario: Option<String>,
     model_dir: PathBuf,
+    model_size: String,
     warmup: usize,
     iters: usize,
     threads: usize,
@@ -65,6 +66,7 @@ where
     let mut mode = None;
     let mut scenario = None;
     let mut model_dir = None;
+    let mut model_size = "fp32".to_string();
     let mut warmup = 10usize;
     let mut iters = 100usize;
     let mut threads = 1usize;
@@ -76,6 +78,17 @@ where
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
             "--model-dir" => model_dir = iter.next().map(PathBuf::from),
+            "--model-size" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| "missing value for --model-size".to_string())?;
+                if v != "fp16" && v != "fp32" {
+                    return Err(format!(
+                        "invalid value for --model-size: '{v}' (expected fp16 or fp32)"
+                    ));
+                }
+                model_size = v;
+            }
             "--warmup" => {
                 warmup = iter
                     .next()
@@ -105,6 +118,7 @@ where
         mode: mode.ok_or_else(|| "missing required --mode".to_string())?,
         scenario,
         model_dir: model_dir.ok_or_else(|| "missing required --model-dir".to_string())?,
+        model_size,
         warmup,
         iters,
         threads,
@@ -131,10 +145,18 @@ fn git_sha() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn engine_from_model_dir(model_dir: &Path) -> Result<ZeroVecEngine, LTEmbedError> {
+fn engine_from_model_dir(
+    model_dir: &Path,
+    model_size: &str,
+) -> Result<ZeroVecEngine, LTEmbedError> {
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
-    let safetensors_path = model_dir.join("model.safetensors");
+    let safetensors_filename = if model_size == "fp16" {
+        "model_fp16.safetensors"
+    } else {
+        "model.safetensors"
+    };
+    let safetensors_path = model_dir.join(safetensors_filename);
     let config = fs::read_to_string(config_path)?;
     ZeroVecEngine::new(
         &safetensors_path.to_string_lossy(),
@@ -175,9 +197,13 @@ fn measure_warm_stats(
     LatencyStats::from_samples_ms(&samples).map_err(LTEmbedError::Inference)
 }
 
-fn measure_cold_stats(model_dir: &Path, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
+fn measure_cold_stats(
+    model_dir: &Path,
+    model_size: &str,
+    scenario_name: &str,
+) -> Result<LatencyStats, LTEmbedError> {
     let start = Instant::now();
-    let engine = engine_from_model_dir(model_dir)?;
+    let engine = engine_from_model_dir(model_dir, model_size)?;
     let _ = run_scenario(&engine, scenario_name)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
         .map_err(LTEmbedError::Inference)
@@ -192,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.mode.as_str() {
         "warm" => {
-            let engine = engine_from_model_dir(&args.model_dir)?;
+            let engine = engine_from_model_dir(&args.model_dir, &args.model_size)?;
             let mut results = Vec::new();
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
@@ -217,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scenario_name = args.scenario.as_deref().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing --scenario")
             })?;
-            let stats = measure_cold_stats(&args.model_dir, scenario_name)?;
+            let stats = measure_cold_stats(&args.model_dir, &args.model_size, scenario_name)?;
             serde_json::to_writer(
                 std::io::stdout(),
                 &ColdPayload {
@@ -230,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         "correctness" => {
-            let engine = engine_from_model_dir(&args.model_dir)?;
+            let engine = engine_from_model_dir(&args.model_dir, &args.model_size)?;
             let mut results = Vec::new();
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;

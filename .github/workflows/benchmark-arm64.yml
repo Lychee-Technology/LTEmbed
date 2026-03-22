@@ -25,6 +25,14 @@ on:
         required: false
         default: true
         type: boolean
+      model_size:
+        description: "Model precision to benchmark (fp32 or fp16)"
+        required: false
+        default: "fp32"
+        type: choice
+        options:
+          - fp32
+          - fp16
 
 jobs:
   benchmark:
@@ -103,6 +111,13 @@ jobs:
           )
           PY
 
+      - name: Convert model to FP16
+        if: inputs.model_size == 'fp16'
+        run: |
+          python3 scripts/convert_to_fp16.py \
+            --input  "$MODEL_DIR/model.safetensors" \
+            --output "$MODEL_DIR/model_fp16.safetensors"
+
       # Compile check with visible errors before handing off to the Python
       # harness, which swallows Cargo's stderr via capture_output=True.
       - name: Cargo check (visible errors)
@@ -121,6 +136,7 @@ jobs:
             --model-dir "$MODEL_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
+            --model-size "${{ inputs.model_size }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

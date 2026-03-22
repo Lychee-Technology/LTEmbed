@@ -1,5 +1,7 @@
 // src/engine.rs
 
+use rayon::prelude::*;
+
 use crate::error::LTEmbedError;
 use crate::models::bert::Bert;
 use crate::traits::pooling::Pooling;
@@ -117,6 +119,23 @@ impl ZeroVecEngine {
 
         Ok(embeddings)
     }
+
+    /// Embed a batch of texts using rayon to process chunks in parallel.
+    ///
+    /// `chunk_size` controls how many texts each worker thread processes at once.
+    /// A value of 8 is a reasonable default; tune based on core count and sequence length.
+    pub fn embed_batch_rayon(
+        &self,
+        texts: &[&str],
+        chunk_size: usize,
+    ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+        let chunk_size = chunk_size.max(1);
+        texts
+            .par_chunks(chunk_size)
+            .map(|chunk| self.embed_batch(chunk))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|vecs| vecs.into_iter().flatten().collect())
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +242,28 @@ mod tests {
         let second = engine.embed(texts[1]).unwrap();
         assert_eq!(batch[0], first);
         assert_eq!(batch[1], second);
+    }
+
+    #[test]
+    fn test_embed_batch_rayon_matches_sequential() {
+        if !assets_available() {
+            eprintln!("Skipping: model assets not found");
+            return;
+        }
+        let engine = make_engine();
+        let texts = vec![
+            "query: alpha",
+            "query: beta",
+            "query: gamma",
+            "query: delta",
+            "query: epsilon",
+        ];
+        let sequential = engine.embed_batch(&texts).unwrap();
+        let parallel = engine.embed_batch_rayon(&texts, 2).unwrap();
+        assert_eq!(sequential.len(), parallel.len());
+        for (s, p) in sequential.iter().zip(parallel.iter()) {
+            assert_eq!(s, p);
+        }
     }
 
     #[test]

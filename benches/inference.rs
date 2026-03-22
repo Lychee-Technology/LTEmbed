@@ -293,6 +293,36 @@ fn bench_ltembed_batch(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ltembed_batch_parallel(c: &mut Criterion) {
+    if !assets_available() {
+        eprintln!("bench_ltembed_batch_parallel: skipping — assets/model.safetensors not found");
+        return;
+    }
+    let engine = &*ENGINE;
+
+    let mut group = c.benchmark_group("bench_ltembed_batch_parallel");
+    // Total batch size fixed at 16; vary chunk_size to show scaling vs thread count.
+    // chunk_size=16 → 1 rayon task (baseline, same as embed_batch)
+    // chunk_size=8  → 2 tasks
+    // chunk_size=4  → 4 tasks
+    // chunk_size=2  → 8 tasks
+    let texts: Vec<&str> = std::iter::repeat_n(MEDIUM, 16).collect();
+    for &chunk_size in &[16usize, 8, 4, 2] {
+        group.bench_with_input(
+            BenchmarkId::new("chunk", chunk_size),
+            &chunk_size,
+            |b, &cs| {
+                b.iter(|| {
+                    engine
+                        .embed_batch_rayon(criterion::black_box(&texts), cs)
+                        .unwrap()
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_ltembed_concurrent(c: &mut Criterion) {
     if !assets_available() {
         eprintln!("bench_ltembed_concurrent: skipping — assets/model.safetensors not found");
@@ -833,6 +863,7 @@ criterion_group!(
     benches,
     bench_ltembed_single,
     bench_ltembed_batch,
+    bench_ltembed_batch_parallel,
     bench_ltembed_concurrent,
     bench_ltembed_kernel_projection,
     bench_ltembed_kernel_projection_packing,

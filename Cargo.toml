@@ -15,6 +15,7 @@ vendored-blas = ["dep:cblas", "dep:openblas-src"]
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
 matrixmultiply = "0.3.10"
+rayon = "1"
 bytemuck = "1"
 wide = "0.7"
 

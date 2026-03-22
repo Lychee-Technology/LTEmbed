@@ -221,8 +221,15 @@ mod tests {
         let batch = engine.embed_batch(&texts).unwrap();
         let first = engine.embed(texts[0]).unwrap();
         let second = engine.embed(texts[1]).unwrap();
-        assert_eq!(batch[0], first);
-        assert_eq!(batch[1], second);
+        // Single-sequence and batch paths may dispatch to different GEMM kernels (SAXPY vs
+        // matrixmultiply) when sequence lengths differ, producing results that are numerically
+        // equivalent but not bit-identical due to floating-point accumulation order.
+        for (a, b) in batch[0].iter().zip(first.iter()) {
+            assert_relative_eq!(a, b, epsilon = 1e-4);
+        }
+        for (a, b) in batch[1].iter().zip(second.iter()) {
+            assert_relative_eq!(a, b, epsilon = 1e-4);
+        }
     }
 
     #[test]

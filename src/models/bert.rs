@@ -1429,6 +1429,6 @@ mod tests {
 
     #[test]
     fn test_dense_backend_name_is_matrixmultiply() {
-        assert_eq!(crate::gemm::dense_backend_name(), "matrixmultiply");
+        assert_eq!(crate::gemm::dense_backend_name(), "matrixmultiply+saxpy");
     }
 }

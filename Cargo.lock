@@ -805,6 +805,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "criterion",
+ "half",
  "matrixmultiply",
  "memmap2",
  "once_cell",

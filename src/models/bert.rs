@@ -29,9 +29,9 @@ struct BertConfig {
 // ── Scratch buffers ───────────────────────────────────────────────────────────
 
 struct Scratch {
-    q: Vec<f32>,
-    k: Vec<f32>,
-    v: Vec<f32>,
+    /// Fused Q/K/V output: row-major [seq_len × 3*hidden].
+    /// Q = cols [0..hidden], K = cols [hidden..2*hidden], V = cols [2*hidden..3*hidden].
+    qkv: Vec<f32>,
     attn_out: Vec<f32>,
     scores: Vec<f32>,
     attn_proj: Vec<f32>,
@@ -42,9 +42,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         Self {
-            q: Vec::new(),
-            k: Vec::new(),
-            v: Vec::new(),
+            qkv: Vec::new(),
             attn_out: Vec::new(),
             scores: Vec::new(),
             attn_proj: Vec::new(),
@@ -54,9 +52,7 @@ impl Scratch {
     }
 
     fn resize_for(&mut self, seq_len: usize, hidden: usize, intermediate: usize) {
-        self.q.resize(seq_len * hidden, 0.0);
-        self.k.resize(seq_len * hidden, 0.0);
-        self.v.resize(seq_len * hidden, 0.0);
+        self.qkv.resize(seq_len * 3 * hidden, 0.0);
         self.attn_out.resize(seq_len * hidden, 0.0);
         self.scores.resize(seq_len * seq_len, 0.0);
         self.attn_proj.resize(seq_len * hidden, 0.0);
@@ -85,12 +81,10 @@ fn with_thread_local_scratch<R>(
 // ── Weight structs ────────────────────────────────────────────────────────────
 
 struct LayerWeights {
-    q_weight: Vec<f32>,
-    q_bias: TensorData,
-    k_weight: Vec<f32>,
-    k_bias: TensorData,
-    v_weight: Vec<f32>,
-    v_bias: TensorData,
+    /// Fused Q/K/V weight: [3*hidden × hidden] (Q rows first, then K, then V).
+    qkv_weight: Vec<f32>,
+    /// Fused Q/K/V bias: length 3*hidden.
+    qkv_bias: Vec<f32>,
     attn_out_weight: Vec<f32>,
     attn_out_bias: TensorData,
     attn_ln_weight: TensorData,
@@ -494,27 +488,27 @@ impl Bert {
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
             let p = format!("encoder.layer.{i}");
+            // Fuse Q, K, V weights and biases into single contiguous allocations.
+            let q_w = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.weight"))?;
+            let k_w = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.weight"))?;
+            let v_w = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.weight"))?;
+            let q_b = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.bias"))?;
+            let k_b = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.bias"))?;
+            let v_b = load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.bias"))?;
+            let mut qkv_weight =
+                Vec::with_capacity(q_w.as_f32().len() + k_w.as_f32().len() + v_w.as_f32().len());
+            qkv_weight.extend_from_slice(q_w.as_f32());
+            qkv_weight.extend_from_slice(k_w.as_f32());
+            qkv_weight.extend_from_slice(v_w.as_f32());
+            let mut qkv_bias =
+                Vec::with_capacity(q_b.as_f32().len() + k_b.as_f32().len() + v_b.as_f32().len());
+            qkv_bias.extend_from_slice(q_b.as_f32());
+            qkv_bias.extend_from_slice(k_b.as_f32());
+            qkv_bias.extend_from_slice(v_b.as_f32());
+
             let layer = LayerWeights {
-                q_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.attention.self.query.weight"),
-                )?
-                .as_f32()
-                .to_vec(),
-                q_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.query.bias"))?,
-                k_weight: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.weight"))?
-                    .as_f32()
-                    .to_vec(),
-                k_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.key.bias"))?,
-                v_weight: load_tensor_data(
-                    &st,
-                    &mmap,
-                    &format!("{p}.attention.self.value.weight"),
-                )?
-                .as_f32()
-                .to_vec(),
-                v_bias: load_tensor_data(&st, &mmap, &format!("{p}.attention.self.value.bias"))?,
+                qkv_weight,
+                qkv_bias,
                 attn_out_weight: load_tensor_data(
                     &st,
                     &mmap,
@@ -631,54 +625,43 @@ impl Bert {
         // ── 2. Encoder layers ──────────────────────────────────────────────────
         with_thread_local_scratch(seq_len, hidden, intermediate, |sc| {
             let seq_hidden = seq_len * hidden;
+            let seq_qkv = seq_len * 3 * hidden;
             let seq_inter = seq_len * intermediate;
             let seq_sq = seq_len * seq_len;
+            let qkv_stride = 3 * hidden; // row stride in the fused QKV buffer
 
             for layer in &self.layers {
+                // Single fused Q/K/V projection: x [seq×hidden] × qkv_weight^T [hidden×3H]
+                // Output qkv [seq×3H]: cols [0..H]=Q, [H..2H]=K, [2H..3H]=V
                 linear_batch(
                     &x,
                     seq_len,
                     hidden,
-                    &layer.q_weight,
-                    layer.q_bias.as_f32(),
-                    &mut sc.q[..seq_hidden],
-                );
-                linear_batch(
-                    &x,
-                    seq_len,
-                    hidden,
-                    &layer.k_weight,
-                    layer.k_bias.as_f32(),
-                    &mut sc.k[..seq_hidden],
-                );
-                linear_batch(
-                    &x,
-                    seq_len,
-                    hidden,
-                    &layer.v_weight,
-                    layer.v_bias.as_f32(),
-                    &mut sc.v[..seq_hidden],
+                    &layer.qkv_weight,
+                    &layer.qkv_bias,
+                    &mut sc.qkv[..seq_qkv],
                 );
 
                 let scale = 1.0 / (head_dim as f32).sqrt();
                 sc.attn_out[..seq_hidden].fill(0.0);
-                sc.scores[..seq_sq].fill(0.0);
 
                 for h in 0..num_heads {
                     sc.scores[..seq_sq].fill(0.0);
 
                     unsafe {
+                        // Q head h: qkv[*, h*head_dim], row stride = qkv_stride
+                        // K head h: qkv[*, hidden + h*head_dim], row stride = qkv_stride
                         matrixmultiply::sgemm(
                             seq_len,
                             head_dim,
                             seq_len,
                             scale,
-                            sc.q.as_ptr().add(h * head_dim),
-                            hidden as isize,
+                            sc.qkv.as_ptr().add(h * head_dim),
+                            qkv_stride as isize,
                             1,
-                            sc.k.as_ptr().add(h * head_dim),
+                            sc.qkv.as_ptr().add(hidden + h * head_dim),
                             1,
-                            hidden as isize,
+                            qkv_stride as isize,
                             0.0f32,
                             sc.scores.as_mut_ptr(),
                             seq_len as isize,
@@ -709,6 +692,7 @@ impl Bert {
                     }
 
                     unsafe {
+                        // V head h: qkv[*, 2*hidden + h*head_dim], row stride = qkv_stride
                         matrixmultiply::sgemm(
                             seq_len,
                             seq_len,
@@ -717,8 +701,8 @@ impl Bert {
                             sc.scores.as_ptr(),
                             seq_len as isize,
                             1,
-                            sc.v.as_ptr().add(h * head_dim),
-                            hidden as isize,
+                            sc.qkv.as_ptr().add(2 * hidden + h * head_dim),
+                            qkv_stride as isize,
                             1,
                             0.0f32,
                             sc.attn_out.as_mut_ptr().add(h * head_dim),
@@ -857,9 +841,8 @@ impl Bert {
             self.emb_ln_bias.as_f32(),
         );
 
-        let mut q = vec![0.0f32; total_hidden];
-        let mut k = vec![0.0f32; total_hidden];
-        let mut v = vec![0.0f32; total_hidden];
+        let qkv_stride = 3 * hidden; // row stride in the fused QKV buffer
+        let mut qkv = vec![0.0f32; total_tokens * 3 * hidden];
         let mut attn_out = vec![0.0f32; total_hidden];
         let mut attn_proj = vec![0.0f32; total_hidden];
         let mut scores = vec![0.0f32; seq_sq];
@@ -867,29 +850,14 @@ impl Bert {
         let mut ffn_out = vec![0.0f32; total_hidden];
 
         for layer in &self.layers {
+            // Single fused Q/K/V projection: x [total_tokens×H] → qkv [total_tokens×3H]
             linear_batch(
                 &x,
                 total_tokens,
                 hidden,
-                &layer.q_weight,
-                layer.q_bias.as_f32(),
-                &mut q,
-            );
-            linear_batch(
-                &x,
-                total_tokens,
-                hidden,
-                &layer.k_weight,
-                layer.k_bias.as_f32(),
-                &mut k,
-            );
-            linear_batch(
-                &x,
-                total_tokens,
-                hidden,
-                &layer.v_weight,
-                layer.v_bias.as_f32(),
-                &mut v,
+                &layer.qkv_weight,
+                &layer.qkv_bias,
+                &mut qkv,
             );
 
             let scale = 1.0 / (head_dim as f32).sqrt();
@@ -897,6 +865,7 @@ impl Bert {
 
             for batch_idx in 0..batch_size {
                 let token_offset = batch_idx * seq_len;
+                let qkv_offset = batch_idx * seq_len * qkv_stride;
                 let hidden_offset = batch_idx * seq_hidden;
                 let batch_mask = &attention_mask[token_offset..token_offset + seq_len];
                 let batch_mask_prefix_len = mask_active_prefix_len(batch_mask);
@@ -905,17 +874,19 @@ impl Bert {
                     scores.fill(0.0);
 
                     unsafe {
+                        // Q head h: qkv[batch_start + *, h*head_dim], row stride = qkv_stride
+                        // K head h: qkv[batch_start + *, hidden + h*head_dim], row stride = qkv_stride
                         matrixmultiply::sgemm(
                             seq_len,
                             head_dim,
                             seq_len,
                             scale,
-                            q.as_ptr().add(hidden_offset + h * head_dim),
-                            hidden as isize,
+                            qkv.as_ptr().add(qkv_offset + h * head_dim),
+                            qkv_stride as isize,
                             1,
-                            k.as_ptr().add(hidden_offset + h * head_dim),
+                            qkv.as_ptr().add(qkv_offset + hidden + h * head_dim),
                             1,
-                            hidden as isize,
+                            qkv_stride as isize,
                             0.0f32,
                             scores.as_mut_ptr(),
                             seq_len as isize,
@@ -943,6 +914,7 @@ impl Bert {
                     }
 
                     unsafe {
+                        // V head h: qkv[batch_start + *, 2*hidden + h*head_dim], row stride = qkv_stride
                         matrixmultiply::sgemm(
                             seq_len,
                             seq_len,
@@ -951,8 +923,8 @@ impl Bert {
                             scores.as_ptr(),
                             seq_len as isize,
                             1,
-                            v.as_ptr().add(hidden_offset + h * head_dim),
-                            hidden as isize,
+                            qkv.as_ptr().add(qkv_offset + 2 * hidden + h * head_dim),
+                            qkv_stride as isize,
                             1,
                             0.0f32,
                             attn_out.as_mut_ptr().add(hidden_offset + h * head_dim),
@@ -1134,9 +1106,7 @@ mod tests {
     #[test]
     fn test_thread_local_scratch_resizes_for_requested_shape() {
         with_thread_local_scratch(3, 4, 6, |scratch| {
-            assert_eq!(scratch.q.len(), 12);
-            assert_eq!(scratch.k.len(), 12);
-            assert_eq!(scratch.v.len(), 12);
+            assert_eq!(scratch.qkv.len(), 36);
             assert_eq!(scratch.attn_out.len(), 12);
             assert_eq!(scratch.scores.len(), 9);
             assert_eq!(scratch.attn_proj.len(), 12);

@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 const SAFETENSORS: &str = "assets/model.safetensors";
+const SAFETENSORS_FP16: &str = "assets/model_fp16.safetensors";
 const CONFIG: &str = "assets/config.json";
 const TOKENIZER: &str = "assets/tokenizer.json";
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
@@ -184,4 +185,36 @@ fn test_output_dimension_is_384() {
     let engine = make_engine();
     let v = engine.embed("query: dimension check").unwrap();
     assert_eq!(v.len(), 384);
+}
+
+#[test]
+fn test_fp16_model_parity_with_fp32() {
+    if !assets_available() {
+        eprintln!("Skipping: model assets not found");
+        return;
+    }
+    if !Path::new(SAFETENSORS_FP16).exists() {
+        eprintln!("Skipping: run scripts/convert_to_fp16.py to generate {SAFETENSORS_FP16}");
+        return;
+    }
+    let config = std::fs::read_to_string(CONFIG).unwrap();
+    let eng32 = ZeroVecEngine::new(SAFETENSORS, &config, TOKENIZER, Box::new(MeanPooling))
+        .expect("Failed to load FP32 model");
+    let eng16 = ZeroVecEngine::new(SAFETENSORS_FP16, &config, TOKENIZER, Box::new(MeanPooling))
+        .expect("Failed to load FP16 model");
+
+    let texts = [
+        "query: Hello, world!",
+        "query: What is machine learning?",
+        "passage: The quick brown fox jumps over the lazy dog.",
+    ];
+    for text in texts {
+        let v32 = eng32.embed(text).unwrap();
+        let v16 = eng16.embed(text).unwrap();
+        let sim = cosine_similarity(&v32, &v16);
+        assert!(
+            sim > 0.999,
+            "FP16/FP32 cosine similarity {sim:.6} < 0.999 for {text:?}"
+        );
+    }
 }

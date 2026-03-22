@@ -6,6 +6,7 @@
 use crate::error::LTEmbedError;
 use crate::gemm;
 use memmap2::Mmap;
+use safetensors::tensor::Dtype;
 use safetensors::SafeTensors;
 use std::cell::RefCell;
 use std::fs::File;
@@ -113,15 +114,27 @@ pub struct Bert {
 }
 
 #[derive(Clone)]
-struct TensorData {
-    mmap: Arc<Mmap>,
-    offset: usize,
-    len_bytes: usize,
+enum TensorData {
+    /// f32 on disk — zero-copy mmap slice.
+    F32 {
+        mmap: Arc<Mmap>,
+        offset: usize,
+        len_bytes: usize,
+    },
+    /// f16 on disk — eagerly upcasted to f32 at load time.
+    F16Upcast(Arc<Vec<f32>>),
 }
 
 impl TensorData {
     fn as_f32(&self) -> &[f32] {
-        bytemuck::cast_slice(&self.mmap[self.offset..self.offset + self.len_bytes])
+        match self {
+            TensorData::F32 {
+                mmap,
+                offset,
+                len_bytes,
+            } => bytemuck::cast_slice(&mmap[*offset..*offset + *len_bytes]),
+            TensorData::F16Upcast(v) => v.as_slice(),
+        }
     }
 }
 
@@ -135,17 +148,30 @@ fn load_tensor_data(
     let view = st
         .tensor(name)
         .map_err(|e| LTEmbedError::ModelLoad(format!("Missing tensor '{name}': {e}")))?;
-    let data_u8 = view.data();
-    let base_ptr = mmap.as_ptr() as usize;
-    let data_ptr = data_u8.as_ptr() as usize;
-    let offset = data_ptr
-        .checked_sub(base_ptr)
-        .ok_or_else(|| LTEmbedError::ModelLoad(format!("Tensor '{name}' is not in mmap")))?;
-    Ok(TensorData {
-        mmap: Arc::clone(mmap),
-        offset,
-        len_bytes: data_u8.len(),
-    })
+    match view.dtype() {
+        Dtype::F32 => {
+            let data_u8 = view.data();
+            let base_ptr = mmap.as_ptr() as usize;
+            let data_ptr = data_u8.as_ptr() as usize;
+            let offset = data_ptr.checked_sub(base_ptr).ok_or_else(|| {
+                LTEmbedError::ModelLoad(format!("Tensor '{name}' is not in mmap"))
+            })?;
+            Ok(TensorData::F32 {
+                mmap: Arc::clone(mmap),
+                offset,
+                len_bytes: data_u8.len(),
+            })
+        }
+        Dtype::F16 => Ok(TensorData::F16Upcast(Arc::new(upcast_f16(view.data())))),
+        other => Err(LTEmbedError::ModelLoad(format!(
+            "Tensor '{name}' has unsupported dtype {other:?}; expected F32 or F16"
+        ))),
+    }
+}
+
+fn upcast_f16(raw: &[u8]) -> Vec<f32> {
+    let halfs: &[half::f16] = bytemuck::cast_slice(raw);
+    halfs.iter().map(|h| h.to_f32()).collect()
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────

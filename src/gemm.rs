@@ -230,9 +230,12 @@ mod tests {
         }
 
         for (a, b) in out_dot.iter().zip(out_sgemm.iter()) {
+            // Allow relative error of 1e-4: for large accumulations (e.g. input=1536,
+            // sum ~700) the dot-product and sgemm paths accumulate in different orders.
+            let tol = 1e-4 * b.abs().max(1.0);
             assert!(
-                (a - b).abs() < 1e-3,
-                "dot vs sgemm mismatch at batch={batch} input={input} output={output}: {a} vs {b}"
+                (a - b).abs() < tol,
+                "dot vs sgemm mismatch at batch={batch} input={input} output={output}: {a} vs {b} (tol={tol})"
             );
         }
     }

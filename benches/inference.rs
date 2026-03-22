@@ -24,19 +24,6 @@ use serde::Deserialize;
 use std::path::Path;
 use std::thread;
 
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-use ltembed::benchmarking::dense_backend_name;
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-use openblas_src as _;
-
 // ── Test inputs ───────────────────────────────────────────────────────────────
 
 const SHORT: &str = "query: Hello, world!";
@@ -138,32 +125,6 @@ fn run_sgemm(
     }
 }
 
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-fn run_cblas_sgemm(m: usize, k: usize, n: usize, alpha: f32, a: &[f32], b: &[f32], c: &mut [f32]) {
-    unsafe {
-        cblas::sgemm(
-            cblas::Layout::RowMajor,
-            cblas::Transpose::None,
-            cblas::Transpose::None,
-            m as i32,
-            n as i32,
-            k as i32,
-            alpha,
-            a,
-            k as i32,
-            b,
-            n as i32,
-            0.0,
-            c,
-            n as i32,
-        );
-    }
-}
-
 fn add_bias_rows(out: &mut [f32], batch: usize, bias: &[f32]) {
     let output_size = bias.len();
     for row in 0..batch {
@@ -197,23 +158,6 @@ fn run_matrixmultiply_linear_with_bias(
         bias.len() as isize,
         1,
     );
-    add_bias_rows(out, batch, bias);
-}
-
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-fn run_active_linear_with_bias(
-    x_rows: &[f32],
-    batch: usize,
-    input_size: usize,
-    weight_t: &[f32],
-    bias: &[f32],
-    out: &mut [f32],
-) {
-    run_cblas_sgemm(batch, input_size, bias.len(), 1.0, x_rows, weight_t, out);
     add_bias_rows(out, batch, bias);
 }
 
@@ -582,32 +526,6 @@ fn bench_ltembed_kernel_projection_backends(c: &mut Criterion) {
                 |b, _case| {
                     b.iter(|| {
                         run_matrixmultiply_linear_with_bias(
-                            &lhs,
-                            shape.rows,
-                            shape.depth,
-                            &rhs,
-                            &bias,
-                            &mut out,
-                        );
-                        criterion::black_box(&out);
-                    })
-                },
-            );
-
-            #[cfg(all(
-                feature = "vendored-blas",
-                target_arch = "aarch64",
-                target_os = "linux"
-            ))]
-            group.bench_with_input(
-                BenchmarkId::new(
-                    format!("{}_{}", dense_backend_name(), shape.label),
-                    &case.name,
-                ),
-                case,
-                |b, _case| {
-                    b.iter(|| {
-                        run_active_linear_with_bias(
                             &lhs,
                             shape.rows,
                             shape.depth,

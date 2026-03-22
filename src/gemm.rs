@@ -1,25 +1,5 @@
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-use openblas_src as _;
-
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-const ACTIVE_BACKEND_NAME: &str = "openblas-cblas";
-#[cfg(not(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-)))]
-const ACTIVE_BACKEND_NAME: &str = "matrixmultiply";
-
 pub(crate) fn dense_backend_name() -> &'static str {
-    ACTIVE_BACKEND_NAME
+    "matrixmultiply"
 }
 
 pub(crate) fn linear_batch_transposed_with_bias(
@@ -35,7 +15,7 @@ pub(crate) fn linear_batch_transposed_with_bias(
     debug_assert_eq!(out.len(), batch * output_size);
     debug_assert_eq!(weight_t.len(), input_size * output_size);
 
-    backend_linear_batch_transposed(x_rows, batch, input_size, weight_t, out);
+    matrixmultiply_linear_batch_transposed(x_rows, batch, input_size, weight_t, out);
 
     for row in 0..batch {
         let offset = row * output_size;
@@ -73,52 +53,4 @@ pub(crate) fn matrixmultiply_linear_batch_transposed(
             1,
         );
     }
-}
-
-#[cfg(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-))]
-fn backend_linear_batch_transposed(
-    x_rows: &[f32],
-    batch: usize,
-    input_size: usize,
-    weight_t: &[f32],
-    out: &mut [f32],
-) {
-    let output_size = out.len() / batch;
-    unsafe {
-        cblas::sgemm(
-            cblas::Layout::RowMajor,
-            cblas::Transpose::None,
-            cblas::Transpose::None,
-            batch as i32,
-            output_size as i32,
-            input_size as i32,
-            1.0,
-            x_rows,
-            input_size as i32,
-            weight_t,
-            output_size as i32,
-            0.0,
-            out,
-            output_size as i32,
-        );
-    }
-}
-
-#[cfg(not(all(
-    feature = "vendored-blas",
-    target_arch = "aarch64",
-    target_os = "linux"
-)))]
-fn backend_linear_batch_transposed(
-    x_rows: &[f32],
-    batch: usize,
-    input_size: usize,
-    weight_t: &[f32],
-    out: &mut [f32],
-) {
-    matrixmultiply_linear_batch_transposed(x_rows, batch, input_size, weight_t, out);
 }

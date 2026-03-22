@@ -263,19 +263,16 @@ def build_patch_config(args: argparse.Namespace) -> str | None:
     return f.name
 
 
-def cargo_run_prefix(features: str | None, patch_config: str | None = None) -> list[str]:
+def cargo_run_prefix(patch_config: str | None = None) -> list[str]:
     command = ["cargo"]
     if patch_config:
         command.extend(["--config", patch_config])
     command.extend(["run", "--quiet", "--release"])
-    if features:
-        command.extend(["--features", features])
     return command
 
 
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
     command = cargo_run_prefix(
-        getattr(args, "ltembed_cargo_features", None),
         getattr(args, "patch_config_path", None),
     )
     command.extend([
@@ -300,7 +297,6 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
 
 def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
     return cargo_run_prefix(
-        getattr(args, "ltembed_cargo_features", None),
         getattr(args, "patch_config_path", None),
     ) + [
         "--bin",
@@ -319,7 +315,6 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 
 def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
     return cargo_run_prefix(
-        getattr(args, "ltembed_cargo_features", None),
         getattr(args, "patch_config_path", None),
     ) + [
         "--bin",
@@ -760,11 +755,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument(
-        "--ltembed-cargo-features",
-        default="",
-        help="Optional cargo feature list to enable for LTEmbed runs.",
-    )
     parser.add_argument(
         "--ltembed-matrixmultiply-source",
         dest="ltembed_matrixmultiply_source",

@@ -363,8 +363,25 @@ fn softmax_exp(shifted: f32) -> f32 {
     }
 }
 
-/// Vectorized exp approximation via range reduction + 5-term Taylor polynomial.
+/// Multiply every element of `x` by `1/sum` using f32x4 SIMD with a scalar tail.
 ///
+/// Shared normalize kernel used by all softmax variants to avoid duplication.
+fn simd_divide_by_sum(x: &mut [f32], sum: f32) {
+    let n = x.len();
+    let chunks4 = n / 4;
+    let inv_v = f32x4::splat(1.0 / sum);
+    for i in 0..chunks4 {
+        let chunk: [f32; 4] = x[i * 4..i * 4 + 4].try_into().unwrap();
+        let arr: [f32; 4] = (f32x4::from(chunk) * inv_v).into();
+        x[i * 4..i * 4 + 4].copy_from_slice(&arr);
+    }
+    let inv = 1.0 / sum;
+    for v in &mut x[chunks4 * 4..] {
+        *v *= inv;
+    }
+}
+
+/// Softmax in-place over a fully-unmasked slice.
 #[doc(hidden)]
 pub fn softmax_unmasked(x: &mut [f32]) {
     // Max reduction (scalar — LLVM auto-vectorizes)
@@ -379,18 +396,7 @@ pub fn softmax_unmasked(x: &mut [f32]) {
     }
 
     // Normalize: SIMD multiply by 1/sum
-    let n = x.len();
-    let chunks4 = n / 4;
-    let inv_sum_v = f32x4::splat(1.0 / sum);
-    for i in 0..chunks4 {
-        let chunk: [f32; 4] = x[i * 4..i * 4 + 4].try_into().unwrap();
-        let arr: [f32; 4] = (f32x4::from(chunk) * inv_sum_v).into();
-        x[i * 4..i * 4 + 4].copy_from_slice(&arr);
-    }
-    let inv_sum = 1.0 / sum;
-    for v in &mut x[chunks4 * 4..] {
-        *v *= inv_sum;
-    }
+    simd_divide_by_sum(x, sum);
 }
 
 #[cfg(test)]
@@ -467,18 +473,7 @@ fn masked_softmax_active_prefix(x: &mut [f32], active_len: usize) {
 
     // Normalize: SIMD multiply by 1/sum
     if sum != 0.0 {
-        let n = active.len();
-        let chunks4 = n / 4;
-        let inv_sum_v = f32x4::splat(1.0 / sum);
-        for i in 0..chunks4 {
-            let chunk: [f32; 4] = active[i * 4..i * 4 + 4].try_into().unwrap();
-            let arr: [f32; 4] = (f32x4::from(chunk) * inv_sum_v).into();
-            active[i * 4..i * 4 + 4].copy_from_slice(&arr);
-        }
-        let inv_sum = 1.0 / sum;
-        for v in &mut active[chunks4 * 4..] {
-            *v *= inv_sum;
-        }
+        simd_divide_by_sum(active, sum);
     }
 
     padded.fill(0.0);
@@ -610,6 +605,11 @@ impl Bert {
     }
 
     /// Forward pass. Returns last_hidden_state as a flat [seq_len * hidden_size] row-major buffer.
+    ///
+    /// NOTE: `forward` and `forward_batch` share ~90% of their logic but are kept as separate
+    /// implementations intentionally. Merging them would require branching in the inner loop over
+    /// matrix layout (single sequence vs. padded batch), adding overhead in the hot path. Changes
+    /// to the transformer logic must be mirrored in both functions.
     pub fn forward(
         &self,
         input_ids: &[u32],

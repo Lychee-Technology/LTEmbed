@@ -1,0 +1,233 @@
+name: profile-arm64
+
+# Builds a release-debug binary and runs perf profiling on ARM64.
+# Produces: per-symbol flamegraph data, full function breakdown,
+#           and hardware counter stats (IPC, cache-miss rates) for
+#           both single/long and single/medium scenarios.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: Timed iterations per scenario (more = better sample count)
+        required: false
+        default: "50"
+      perf_freq:
+        description: perf record sampling frequency (Hz)
+        required: false
+        default: "999"
+
+jobs:
+  profile:
+    runs-on:
+      - self-hosted
+      - Linux
+      - ARM64
+    env:
+      MODEL_ID: intfloat/e5-small-v2
+      MODEL_DIR: ${{ github.workspace }}/.cache/models/intfloat-e5-small-v2
+      RUSTFLAGS: "-C target-cpu=native"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libssl-dev pkg-config linux-perf || sudo apt-get install -y libssl-dev pkg-config linux-tools-generic
+
+      - name: Allow perf for non-root users
+        run: |
+          echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
+          echo 0 | sudo tee /proc/sys/kernel/kptr_restrict
+
+      - name: Install Rust 1.94.0
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-cargo-
+
+      - name: Cache Model
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MODEL_DIR }}
+          key: ${{ runner.os }}-arm64-model-e5-small-v2-v1
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy torch transformers huggingface_hub
+
+      - name: Download Model Snapshot
+        run: |
+          mkdir -p "$MODEL_DIR"
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id=os.environ["MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              local_dir_use_symlinks=False,
+              allow_patterns=[
+                  "config.json", "tokenizer.json", "tokenizer_config.json",
+                  "special_tokens_map.json", "vocab.txt", "model.safetensors",
+              ],
+          )
+          PY
+
+      - name: Build release-debug binary
+        run: cargo build --profile release-debug --bin benchmark_ltembed
+
+      - name: Verify perf is available
+        run: perf --version
+
+      - name: Profile single/long (perf stat — hardware counters)
+        run: |
+          mkdir -p artifacts/profile
+          perf stat \
+            -e cycles,instructions,cache-misses,cache-references,\
+          L1-dcache-load-misses,L1-dcache-loads,\
+          branches,branch-misses \
+            -o artifacts/profile/stat-single-long.txt \
+            -- \
+            ./target/release-debug/benchmark_ltembed \
+              --mode warm \
+              --scenario single/long \
+              --model-dir "$MODEL_DIR" \
+              --warmup 5 \
+              --iters ${{ inputs.iters }}
+
+      - name: Profile single/medium (perf stat — hardware counters)
+        run: |
+          perf stat \
+            -e cycles,instructions,cache-misses,cache-references,\
+          L1-dcache-load-misses,L1-dcache-loads,\
+          branches,branch-misses \
+            -o artifacts/profile/stat-single-medium.txt \
+            -- \
+            ./target/release-debug/benchmark_ltembed \
+              --mode warm \
+              --scenario single/medium \
+              --model-dir "$MODEL_DIR" \
+              --warmup 5 \
+              --iters ${{ inputs.iters }}
+
+      - name: Profile single/long (perf record — full symbol breakdown)
+        run: |
+          perf record \
+            -F ${{ inputs.perf_freq }} \
+            -e cpu-clock \
+            -g --call-graph dwarf \
+            --output artifacts/profile/perf-long.data \
+            -- \
+            ./target/release-debug/benchmark_ltembed \
+              --mode warm \
+              --scenario single/long \
+              --model-dir "$MODEL_DIR" \
+              --warmup 2 \
+              --iters 10
+
+      - name: Generate perf reports (single/long)
+        run: |
+          # Self-contained: overhead per symbol (no call-graph aggregation)
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-long.data \
+            --no-children \
+            --sort overhead,dso,symbol \
+            > artifacts/profile/report-long-self.txt 2>&1 || true
+
+          # Cumulative: aggregated by call-chain
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-long.data \
+            --children \
+            --sort overhead,dso,symbol \
+            > artifacts/profile/report-long-children.txt 2>&1 || true
+
+          # Collapsed by DSO for quick summary
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-long.data \
+            --no-children \
+            --sort overhead,dso \
+            > artifacts/profile/report-long-by-dso.txt 2>&1 || true
+
+      - name: Profile single/medium (perf record — full symbol breakdown)
+        run: |
+          perf record \
+            -F ${{ inputs.perf_freq }} \
+            -e cpu-clock \
+            -g --call-graph dwarf \
+            --output artifacts/profile/perf-medium.data \
+            -- \
+            ./target/release-debug/benchmark_ltembed \
+              --mode warm \
+              --scenario single/medium \
+              --model-dir "$MODEL_DIR" \
+              --warmup 2 \
+              --iters 50
+
+      - name: Generate perf reports (single/medium)
+        run: |
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-medium.data \
+            --no-children \
+            --sort overhead,dso,symbol \
+            > artifacts/profile/report-medium-self.txt 2>&1 || true
+
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-medium.data \
+            --children \
+            --sort overhead,dso,symbol \
+            > artifacts/profile/report-medium-children.txt 2>&1 || true
+
+          perf report \
+            --stdio \
+            --input artifacts/profile/perf-medium.data \
+            --no-children \
+            --sort overhead,dso \
+            > artifacts/profile/report-medium-by-dso.txt 2>&1 || true
+
+      - name: Print top-20 symbols (single/long, self overhead)
+        run: |
+          echo "=== single/long: top 20 by self overhead ==="
+          grep -v "^#" artifacts/profile/report-long-self.txt \
+            | grep -v "^$" \
+            | head -25 || true
+
+      - name: Print top-20 symbols (single/medium, self overhead)
+        run: |
+          echo "=== single/medium: top 20 by self overhead ==="
+          grep -v "^#" artifacts/profile/report-medium-self.txt \
+            | grep -v "^$" \
+            | head -25 || true
+
+      - name: Print hardware counter stats
+        run: |
+          echo "=== perf stat: single/long ==="
+          cat artifacts/profile/stat-single-long.txt
+          echo ""
+          echo "=== perf stat: single/medium ==="
+          cat artifacts/profile/stat-single-medium.txt
+
+      - name: Upload profiling artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-arm64-results
+          retention-days: 7
+          path: artifacts/profile/

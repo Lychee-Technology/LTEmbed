@@ -283,6 +283,8 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
         "warm",
         "--model-dir",
         str(args.model_dir),
+        "--model-size",
+        args.model_size,
         "--warmup",
         str(args.warmup),
         "--iters",
@@ -308,6 +310,8 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
         scenario_name,
         "--model-dir",
         str(args.model_dir),
+        "--model-size",
+        args.model_size,
         "--threads",
         str(args.threads),
     ]
@@ -324,6 +328,8 @@ def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
         "correctness",
         "--model-dir",
         str(args.model_dir),
+        "--model-size",
+        args.model_size,
         "--threads",
         str(args.threads),
     ]
@@ -783,6 +789,13 @@ def parse_args() -> argparse.Namespace:
         dest="ltembed_matrixmultiply_rev",
         default="",
         help="Pinned git revision for matrixmultiply (used with --ltembed-matrixmultiply-source=git).",
+    )
+    parser.add_argument(
+        "--model-size",
+        dest="model_size",
+        choices=["fp32", "fp16"],
+        default="fp32",
+        help="Model precision to benchmark: fp32 (model.safetensors) or fp16 (model_fp16.safetensors).",
     )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)

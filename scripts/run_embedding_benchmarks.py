@@ -86,12 +86,28 @@ class Scenario(dict):
 
 
 SCENARIOS = [
-    Scenario(name="single/short", batch_size=1, text_profile="short", texts=(SHORT_TEXT,)),
-    Scenario(name="single/medium", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)),
+    Scenario(
+        name="single/short", batch_size=1, text_profile="short", texts=(SHORT_TEXT,)
+    ),
+    Scenario(
+        name="single/medium", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)
+    ),
     Scenario(name="single/long", batch_size=1, text_profile="long", texts=(LONG_TEXT,)),
-    Scenario(name="batch/medium/1", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)),
-    Scenario(name="batch/medium/4", batch_size=4, text_profile="medium", texts=(MEDIUM_TEXT,) * 4),
-    Scenario(name="batch/medium/8", batch_size=8, text_profile="medium", texts=(MEDIUM_TEXT,) * 8),
+    Scenario(
+        name="batch/medium/1", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)
+    ),
+    Scenario(
+        name="batch/medium/4",
+        batch_size=4,
+        text_profile="medium",
+        texts=(MEDIUM_TEXT,) * 4,
+    ),
+    Scenario(
+        name="batch/medium/8",
+        batch_size=8,
+        text_profile="medium",
+        texts=(MEDIUM_TEXT,) * 8,
+    ),
     Scenario(
         name="batch/mixed/8",
         batch_size=8,
@@ -150,16 +166,13 @@ def build_correctness_row(
 
 
 def git_sha() -> str:
-    return (
-        subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        .stdout.strip()
-    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def cpu_model() -> str:
@@ -196,16 +209,13 @@ def cargo_lock_text() -> str:
 
 
 def rust_version() -> str:
-    return (
-        subprocess.run(
-            ["rustc", "--version"],
-            check=True,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        .stdout.strip()
-    )
+    return subprocess.run(
+        ["rustc", "--version"],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def python_version() -> str:
@@ -242,7 +252,9 @@ def build_patch_config(args: argparse.Namespace) -> str | None:
     if source == "path":
         path = getattr(args, "ltembed_matrixmultiply_path", None)
         if not path:
-            raise ValueError("--ltembed-matrixmultiply-path is required when source=path")
+            raise ValueError(
+                "--ltembed-matrixmultiply-path is required when source=path"
+            )
         patch_toml = f'[patch.crates-io]\nmatrixmultiply = {{ path = "{path}" }}\n'
     elif source == "git":
         url = getattr(args, "ltembed_matrixmultiply_git", None)
@@ -250,7 +262,9 @@ def build_patch_config(args: argparse.Namespace) -> str | None:
             raise ValueError("--ltembed-matrixmultiply-git is required when source=git")
         rev = getattr(args, "ltembed_matrixmultiply_rev", None) or ""
         rev_clause = f', rev = "{rev}"' if rev else ""
-        patch_toml = f'[patch.crates-io]\nmatrixmultiply = {{ git = "{url}"{rev_clause} }}\n'
+        patch_toml = (
+            f'[patch.crates-io]\nmatrixmultiply = {{ git = "{url}"{rev_clause} }}\n'
+        )
     else:
         raise ValueError(f"unknown matrixmultiply source: {source!r}")
 
@@ -275,23 +289,23 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
     command = cargo_run_prefix(
         getattr(args, "patch_config_path", None),
     )
-    command.extend([
-        "--bin",
-        "benchmark_ltembed",
-        "--",
-        "--mode",
-        "warm",
-        "--model-dir",
-        str(args.model_dir),
-        "--model-size",
-        args.model_size,
-        "--warmup",
-        str(args.warmup),
-        "--iters",
-        str(args.iters),
-        "--threads",
-        str(args.threads),
-    ])
+    command.extend(
+        [
+            "--bin",
+            "benchmark_ltembed",
+            "--",
+            "--mode",
+            "warm",
+            "--model-dir",
+            str(args.model_dir),
+            "--warmup",
+            str(args.warmup),
+            "--iters",
+            str(args.iters),
+            "--threads",
+            str(args.threads),
+        ]
+    )
     if getattr(args, "scenario", None):
         command.extend(["--scenario", str(args.scenario)])
     return command
@@ -310,8 +324,6 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
         scenario_name,
         "--model-dir",
         str(args.model_dir),
-        "--model-size",
-        args.model_size,
         "--threads",
         str(args.threads),
     ]
@@ -328,8 +340,6 @@ def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
         "correctness",
         "--model-dir",
         str(args.model_dir),
-        "--model-size",
-        args.model_size,
         "--threads",
         str(args.threads),
     ]
@@ -451,7 +461,9 @@ RUNNERS = {
         "warm": candle_warm_command,
         "cold": candle_cold_command,
         "correctness": candle_correctness_command,
-        "version": lambda: extract_cargo_lock_version(cargo_lock_text(), "candle-transformers"),
+        "version": lambda: extract_cargo_lock_version(
+            cargo_lock_text(), "candle-transformers"
+        ),
     },
     "pytorch": {
         "warm": pytorch_warm_command,
@@ -462,7 +474,9 @@ RUNNERS = {
 }
 
 
-def resolved_implementation_version(implementation: str, payload: dict[str, Any]) -> str:
+def resolved_implementation_version(
+    implementation: str, payload: dict[str, Any]
+) -> str:
     if implementation in {"ltembed", "candle"}:
         return RUNNERS[implementation]["version"]()
     return str(payload.get("implementation_version", ""))
@@ -625,7 +639,9 @@ def collect_cold_rows(
     git_revision: str,
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
-    results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
+    results: dict[str, dict[str, Any]] = {
+        implementation: {} for implementation in RUNNERS
+    }
     for scenario in SCENARIOS:
         for implementation, runner in RUNNERS.items():
             payload = run_json_command(runner["cold"](args, scenario.name))
@@ -686,14 +702,20 @@ def collect_correctness_rows(
                 host=host,
             )
             if implementation == "pytorch":
-                row = build_correctness_row(base_fields=base_fields, cosine_similarity=1.0, threshold=1.0)
+                row = build_correctness_row(
+                    base_fields=base_fields, cosine_similarity=1.0, threshold=1.0
+                )
             else:
                 reference_entry = next(
-                    item for item in reference["results"] if item["scenario"] == entry["scenario"]
+                    item
+                    for item in reference["results"]
+                    if item["scenario"] == entry["scenario"]
                 )
                 similarities = [
                     cosine_similarity(lhs, rhs)
-                    for lhs, rhs in zip(entry["embeddings"], reference_entry["embeddings"], strict=True)
+                    for lhs, rhs in zip(
+                        entry["embeddings"], reference_entry["embeddings"], strict=True
+                    )
                 ]
                 average_similarity = sum(similarities) / len(similarities)
                 row = build_correctness_row(
@@ -797,9 +819,15 @@ def parse_args() -> argparse.Namespace:
         default="fp32",
         help="Model precision to benchmark: fp32 (model.safetensors) or fp16 (model_fp16.safetensors).",
     )
-    parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
+    parser.add_argument(
+        "--include-cold-start", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--include-correctness", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD
+    )
     parser.add_argument(
         "--output-csv",
         type=Path,
@@ -823,7 +851,13 @@ def main() -> int:
     rows: list[dict[str, str]] = []
 
     try:
-        return _run(args=args, timestamp=timestamp, git_revision=git_revision, host=host, rows=rows)
+        return _run(
+            args=args,
+            timestamp=timestamp,
+            git_revision=git_revision,
+            host=host,
+            rows=rows,
+        )
     finally:
         if args.patch_config_path and os.path.exists(args.patch_config_path):
             os.unlink(args.patch_config_path)

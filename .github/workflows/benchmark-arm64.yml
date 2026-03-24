@@ -15,6 +15,10 @@ on:
         description: CPU threads per implementation
         required: false
         default: "1"
+      matmul_sgemm_kc:
+        description: Optional matrixmultiply SGEMM KC override
+        required: false
+        default: "384"
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -36,6 +40,7 @@ jobs:
       MODEL_ID: intfloat/e5-small-v2
       MODEL_DIR: ${{ github.workspace }}/.cache/models/intfloat-e5-small-v2
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
+      MATMUL_SGEMM_KC: ${{ inputs.matmul_sgemm_kc }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,6 +112,10 @@ jobs:
       # harness, which swallows Cargo's stderr via capture_output=True.
       - name: Cargo check (visible errors)
         run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
+
+      - name: Show matrixmultiply tuning env
+        run: |
+          echo "MATMUL_SGEMM_KC=${MATMUL_SGEMM_KC}"
 
       - name: Run Unified Benchmark Harness
         run: |

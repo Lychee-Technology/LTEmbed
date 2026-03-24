@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-matrixmultiply = "0.3"
+matrixmultiply = { version = "0.3", features = ["constconf"] }
 bytemuck = "1"
 wide = "1"
 

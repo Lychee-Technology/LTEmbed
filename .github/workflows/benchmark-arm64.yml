@@ -19,6 +19,18 @@ on:
         description: Optional matrixmultiply SGEMM KC override
         required: false
         default: "384"
+      ltembed_matrixmultiply_source:
+        description: LTEmbed matrixmultiply dependency source
+        required: false
+        default: "crates-io"
+      ltembed_matrixmultiply_git:
+        description: Git URL for patched matrixmultiply
+        required: false
+        default: ""
+      ltembed_matrixmultiply_rev:
+        description: Git revision or branch for patched matrixmultiply
+        required: false
+        default: ""
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -116,6 +128,9 @@ jobs:
       - name: Show matrixmultiply tuning env
         run: |
           echo "MATMUL_SGEMM_KC=${MATMUL_SGEMM_KC}"
+          echo "LTEMBED_MATRIXMULTIPLY_SOURCE=${{ inputs.ltembed_matrixmultiply_source }}"
+          echo "LTEMBED_MATRIXMULTIPLY_GIT=${{ inputs.ltembed_matrixmultiply_git }}"
+          echo "LTEMBED_MATRIXMULTIPLY_REV=${{ inputs.ltembed_matrixmultiply_rev }}"
 
       - name: Run Unified Benchmark Harness
         run: |
@@ -130,6 +145,9 @@ jobs:
             --model-dir "$MODEL_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
+            --ltembed-matrixmultiply-source "${{ inputs.ltembed_matrixmultiply_source }}" \
+            --ltembed-matrixmultiply-git "${{ inputs.ltembed_matrixmultiply_git }}" \
+            --ltembed-matrixmultiply-rev "${{ inputs.ltembed_matrixmultiply_rev }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

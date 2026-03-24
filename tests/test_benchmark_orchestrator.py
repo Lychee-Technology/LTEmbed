@@ -10,7 +10,9 @@ MODULE_PATH = ROOT / "scripts" / "run_embedding_benchmarks.py"
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("run_embedding_benchmarks", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "run_embedding_benchmarks", MODULE_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -78,9 +80,15 @@ version = "0.8.4"
 
     def test_candle_runner_uses_example_target(self):
         bench = load_module()
-        args = type("Args", (), {"model_dir": Path("assets"), "warmup": 0, "iters": 1, "threads": 1})
+        args = type(
+            "Args",
+            (),
+            {"model_dir": Path("assets"), "warmup": 0, "iters": 1, "threads": 1},
+        )
         command = bench.candle_warm_command(args)
-        self.assertEqual(command[:5], ["cargo", "run", "--quiet", "--release", "--example"])
+        self.assertEqual(
+            command[:5], ["cargo", "run", "--quiet", "--release", "--example"]
+        )
         self.assertEqual(command[5], "benchmark_candle")
 
     def test_ltembed_warm_command_includes_optional_scenario(self):
@@ -100,7 +108,7 @@ version = "0.8.4"
         self.assertIn("--scenario", command)
         self.assertIn("single/medium", command)
 
-    def test_ltembed_commands_include_optional_cargo_features(self):
+    def test_ltembed_commands_include_patch_config_when_present(self):
         bench = load_module()
         args = type(
             "Args",
@@ -111,19 +119,23 @@ version = "0.8.4"
                 "iters": 10,
                 "threads": 1,
                 "scenario": None,
-                "ltembed_cargo_features": "vendored-blas",
+                "patch_config_path": "/tmp/ltembed-patch.toml",
             },
         )
 
-        warm_command = bench.ltembed_warm_command(args)
-        cold_command = bench.ltembed_cold_command(args, "single/long")
-        correctness_command = bench.ltembed_correctness_command(args)
+        command = bench.ltembed_warm_command(args)
 
-        for command in (warm_command, cold_command, correctness_command):
-            self.assertEqual(
-                command[:6],
-                ["cargo", "run", "--quiet", "--release", "--features", "vendored-blas"],
-            )
+        self.assertEqual(
+            command[:6],
+            [
+                "cargo",
+                "--config",
+                "/tmp/ltembed-patch.toml",
+                "run",
+                "--quiet",
+                "--release",
+            ],
+        )
 
     def test_resolved_notes_reports_ltembed_dense_backend(self):
         bench = load_module()

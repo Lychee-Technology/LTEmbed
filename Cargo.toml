@@ -10,19 +10,12 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-matrixmultiply = "0.3"
-bytemuck = "1"
-wide = "1"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
 tokenizers = "0.22"
 
-# Model file loading (zero-copy mmap)
-safetensors = "0.7"
-memmap2 = "0.9"
-
-# Config file parsing (config.json → BertConfig)
+# Structured metadata / fixture parsing
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
@@ -52,4 +45,3 @@ lto = "thin"
 approx = "0.5"
 static_assertions = "1"
 serde = { version = "1", features = ["derive"] }
-once_cell = "1"

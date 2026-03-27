@@ -5,12 +5,12 @@ use crate::error::LTEmbedError;
 /// Output of a tokenization call. All three vecs have the same length.
 #[derive(Debug, Clone)]
 pub struct TokenizerOutput {
-    pub input_ids: Vec<u32>,      // token IDs including [CLS] and [SEP]
+    pub input_ids: Vec<u32>, // token IDs including model-specific special tokens
     pub attention_mask: Vec<u32>, // 1 = real token, 0 = padding
-    pub token_type_ids: Vec<u32>, // all 0 for single-sequence tasks
+    pub token_type_ids: Vec<u32>, // present for models that declare segment IDs
 }
 
-/// Converts raw text into BERT input tensors.
+/// Converts raw text into model input tensors.
 pub trait Tokenizer: Send + Sync {
     fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError>;
 }
@@ -45,7 +45,7 @@ impl Tokenizer for HFTokenizer {
     fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError> {
         let encoding = self
             .inner
-            .encode(text, true) // true = add special tokens ([CLS], [SEP])
+            .encode(text, true) // true = add model-specific special tokens
             .map_err(|e| LTEmbedError::Tokenization(e.to_string()))?;
 
         let input_ids: Vec<u32> = encoding.get_ids().to_vec();

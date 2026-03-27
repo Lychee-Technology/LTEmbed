@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate golden test fixtures from e5-small-v2 via HuggingFace transformers.
+Generate golden test fixtures from jina-embeddings-v5-text-nano-retrieval.
 
 Requirements:
-    pip install transformers torch numpy huggingface_hub
+    pip install transformers torch numpy
 
 Usage:
     python3 scripts/generate_fixtures.py
@@ -11,53 +11,89 @@ Usage:
 Output:
     tests/fixtures/test_fixtures.json
 """
+
 import json
 import os
+
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModel, AutoTokenizer
 
 
-MODEL_NAME = "intfloat/e5-small-v2"
+MODEL_NAME = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 OUTPUT_PATH = "tests/fixtures/test_fixtures.json"
+RAW_DIM = 768
+OUTPUT_DIM = 512
+MAX_LENGTH = 8192
 
 TEST_INPUTS = [
-    "query: Hello, world!",
-    "query: What is machine learning?",
-    "passage: The quick brown fox jumps over the lazy dog.",
-    "query: 人工智能",
+    {"kind": "query", "text": "Hello, world!"},
+    {"kind": "query", "text": "What is machine learning?"},
+    {"kind": "document", "text": "The quick brown fox jumps over the lazy dog."},
+    {"kind": "query", "text": "人工智能"},
 ]
 
 
-def mean_pool(model_output, attention_mask):
-    token_embeddings = model_output.last_hidden_state  # [1, seq, hidden]
-    mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-    return torch.sum(token_embeddings * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
+def prefixed_text(kind: str, text: str) -> str:
+    prefix = "Query: " if kind == "query" else "Document: "
+    return prefix + text
 
 
-def l2_normalize(v: np.ndarray) -> np.ndarray:
-    return v / np.linalg.norm(v)
+def truncate_and_normalize(embeddings: np.ndarray) -> np.ndarray:
+    if embeddings.shape[-1] != RAW_DIM:
+        raise ValueError(f"expected raw dimension {RAW_DIM}, got {embeddings.shape[-1]}")
+    truncated = embeddings[..., :OUTPUT_DIM]
+    norms = np.linalg.norm(truncated, axis=-1, keepdims=True)
+    return truncated / np.maximum(norms, 1e-12)
+
+
+def last_token_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    last_token_index = attention_mask.sum(dim=1) - 1
+    batch_index = torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device)
+    return last_hidden_state[batch_index, last_token_index]
 
 
 def main():
     print(f"Loading {MODEL_NAME} ...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    model = AutoModel.from_pretrained(MODEL_NAME, trust_remote_code=True)
     model.eval()
 
     fixtures = []
     with torch.no_grad():
-        for text in TEST_INPUTS:
-            encoded = tokenizer(text, return_tensors="pt", max_length=512, truncation=True)
+        for item in TEST_INPUTS:
+            encoded = tokenizer(
+                prefixed_text(item["kind"], item["text"]),
+                return_tensors="pt",
+                max_length=MAX_LENGTH,
+                truncation=True,
+            )
             output = model(**encoded)
-            pooled = mean_pool(output, encoded["attention_mask"]).squeeze(0).numpy()
-            normalized = l2_normalize(pooled)
-            fixtures.append({"input": text, "embedding": normalized.tolist()})
-            print(f"  OK: {text[:60]!r}")
+            pooled = last_token_pool(output.last_hidden_state, encoded["attention_mask"])
+            embedding = truncate_and_normalize(pooled.squeeze(0).cpu().numpy())
+            fixtures.append(
+                {
+                    "kind": item["kind"],
+                    "text": item["text"],
+                    "embedding": embedding.tolist(),
+                }
+            )
+            print(f"  OK: {item['kind']} {item['text'][:60]!r}")
 
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump({"model": MODEL_NAME, "dim": 384, "fixtures": fixtures}, f, indent=2)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "model": MODEL_NAME,
+                "raw_dim": RAW_DIM,
+                "dim": OUTPUT_DIM,
+                "max_length": MAX_LENGTH,
+                "fixtures": fixtures,
+            },
+            handle,
+            indent=2,
+            ensure_ascii=False,
+        )
     print(f"\nSaved {len(fixtures)} fixtures → {OUTPUT_PATH}")
 
 

@@ -1,6 +1,4 @@
-use ltembed::benchmarking::{
-    dense_backend_name, scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats,
-};
+use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
 use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine};
 use ltembed::error::LTEmbedError;
 use serde::Serialize;
@@ -34,7 +32,6 @@ struct EmbeddingsEntry {
 struct WarmPayload {
     implementation: &'static str,
     implementation_version: String,
-    backend: &'static str,
     results: Vec<StatsEntry>,
 }
 
@@ -42,7 +39,6 @@ struct WarmPayload {
 struct CorrectnessPayload {
     implementation: &'static str,
     implementation_version: String,
-    backend: &'static str,
     results: Vec<EmbeddingsEntry>,
 }
 
@@ -50,7 +46,6 @@ struct CorrectnessPayload {
 struct ColdPayload {
     implementation: &'static str,
     implementation_version: String,
-    backend: &'static str,
     scenario: String,
     stats: LatencyStats,
 }
@@ -185,7 +180,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
     let _threads = args.threads;
     let implementation_version = git_sha();
-    let backend = dense_backend_name();
 
     match args.mode.as_str() {
         "warm" => {
@@ -205,7 +199,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &WarmPayload {
                     implementation: "ltembed",
                     implementation_version,
-                    backend,
                     results,
                 },
             )?;
@@ -220,7 +213,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &ColdPayload {
                     implementation: "ltembed",
                     implementation_version,
-                    backend,
                     scenario: scenario_name.to_string(),
                     stats,
                 },
@@ -243,7 +235,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &CorrectnessPayload {
                     implementation: "ltembed",
                     implementation_version,
-                    backend,
                     results,
                 },
             )?;

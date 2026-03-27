@@ -1,9 +1,10 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
     benchmark_scenarios, dense_backend_name, gemm_microbenchmark_scenarios, padded_seq_len,
-    projection_kernel_shapes, scenario_by_name, scenario_texts, scenario_token_lengths,
+    projection_kernel_shapes, scenario_by_name, scenario_inputs, scenario_token_lengths,
     selected_scenarios, LatencyStats,
 };
+use ltembed::engine::EmbeddingInputKind;
 use ltembed::error::LTEmbedError;
 use ltembed::traits::tokenizer::{Tokenizer, TokenizerOutput};
 
@@ -102,12 +103,14 @@ fn test_selected_scenarios_rejects_unknown_name() {
 #[test]
 fn test_batch_mixed_scenario_uses_variable_length_texts() {
     let scenario = scenario_by_name("batch/mixed/8").expect("scenario should exist");
-    let texts = scenario_texts(scenario);
-    let lengths: Vec<_> = texts.iter().map(|text| text.len()).collect();
+    let inputs = scenario_inputs(scenario);
+    let lengths: Vec<_> = inputs.iter().map(|input| input.text.len()).collect();
 
-    assert_eq!(texts.len(), 8);
+    assert_eq!(inputs.len(), 8);
     assert!(lengths.iter().any(|&len| len == lengths[0]));
     assert!(lengths.iter().any(|&len| len != lengths[0]));
+    assert_eq!(inputs[0].kind, EmbeddingInputKind::Query);
+    assert_eq!(inputs[2].kind, EmbeddingInputKind::Document);
 }
 
 #[test]

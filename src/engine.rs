@@ -1,252 +1,358 @@
 // src/engine.rs
 
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+use ort::session::Session;
+use ort::value::TensorRef;
+
 use crate::error::LTEmbedError;
-use crate::models::bert::Bert;
-use crate::traits::pooling::Pooling;
-use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
-use crate::utils::l2_normalize_inplace;
+use crate::traits::tokenizer::HFTokenizer;
 
-const MAX_LENGTH: usize = 512;
+pub const RAW_EMBEDDING_DIMENSION: usize = 768;
+pub const EMBEDDING_DIMENSION: usize = 512;
+pub const MAX_LENGTH: usize = 8192;
+pub const QUERY_PREFIX: &str = "Query: ";
+pub const DOCUMENT_PREFIX: &str = "Document: ";
 
-pub struct ZeroVecEngine {
-    bert: Bert,
-    tokenizer: HFTokenizer,
-    pooling: Box<dyn Pooling>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingInputKind {
+    Query,
+    Document,
 }
 
-impl std::fmt::Debug for ZeroVecEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZeroVecEngine").finish_non_exhaustive()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingInput<'a> {
+    pub text: &'a str,
+    pub kind: EmbeddingInputKind,
+}
+
+impl<'a> EmbeddingInput<'a> {
+    pub fn query(text: &'a str) -> Self {
+        Self {
+            text,
+            kind: EmbeddingInputKind::Query,
+        }
+    }
+
+    pub fn document(text: &'a str) -> Self {
+        Self {
+            text,
+            kind: EmbeddingInputKind::Document,
+        }
     }
 }
 
-impl ZeroVecEngine {
-    /// Initialize the engine from local file paths. Call this once at startup and reuse it.
-    pub fn new(
-        safetensors_path: &str,
-        config_json: &str,
-        tokenizer_path: &str,
-        pooling: Box<dyn Pooling>,
-    ) -> Result<Self, LTEmbedError> {
-        let bert = Bert::from_files(safetensors_path, config_json)?;
+#[derive(Debug)]
+struct SessionIo {
+    input_ids: String,
+    attention_mask: String,
+    last_hidden_state: String,
+}
+
+pub struct OnnxEngine {
+    session: Mutex<Session>,
+    tokenizer: HFTokenizer,
+    io: SessionIo,
+}
+
+impl std::fmt::Debug for OnnxEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxEngine").finish_non_exhaustive()
+    }
+}
+
+impl OnnxEngine {
+    pub fn new(model_path: &str, tokenizer_path: &str) -> Result<Self, LTEmbedError> {
+        if !Path::new(model_path).exists() {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "ONNX model file not found: {model_path}"
+            )));
+        }
+        if !Path::new(tokenizer_path).exists() {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "tokenizer file not found: {tokenizer_path}"
+            )));
+        }
+
+        ensure_ort_initialized()?;
         let tokenizer = HFTokenizer::from_file(tokenizer_path)?;
+        let session = Session::builder()
+            .map_err(|err| {
+                LTEmbedError::ModelLoad(format!("Failed to create ORT session builder: {err}"))
+            })?
+            .with_intra_threads(1)
+            .map_err(|err| {
+                LTEmbedError::ModelLoad(format!("Failed to configure ORT session: {err}"))
+            })?
+            .commit_from_file(model_path)
+            .map_err(|err| LTEmbedError::ModelLoad(format!("Failed to load ONNX model: {err}")))?;
+        let io = SessionIo::from_session(&session)?;
+
         Ok(Self {
-            bert,
+            session: Mutex::new(session),
             tokenizer,
-            pooling,
+            io,
         })
     }
 
-    /// Full inference pipeline: text → L2-normalized 384-dim embedding.
-    pub fn embed(&self, text: &str) -> Result<Vec<f32>, LTEmbedError> {
-        let encoded = self.tokenizer.encode(text, MAX_LENGTH)?;
-        let seq_len = encoded.input_ids.len();
-        let last_hidden_state = self.bert.forward(
-            &encoded.input_ids,
-            &encoded.token_type_ids,
-            &encoded.attention_mask,
-        )?;
-        let mut pooled = self.pooling.pool(
-            &last_hidden_state,
-            seq_len,
-            self.bert.hidden_size(),
-            &encoded.attention_mask,
-        )?;
-        l2_normalize_inplace(&mut pooled);
-        Ok(pooled)
+    pub fn embed(&self, input: EmbeddingInput<'_>) -> Result<Vec<f32>, LTEmbedError> {
+        let embeddings = self.embed_batch(&[input])?;
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| LTEmbedError::Inference("expected one embedding".into()))
     }
 
-    /// Embed a batch of texts. Returns one vector per input.
-    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LTEmbedError> {
-        if texts.is_empty() {
+    pub fn embed_batch(
+        &self,
+        inputs: &[EmbeddingInput<'_>],
+    ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+        if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        if texts.len() == 1 {
-            return self.embed(texts[0]).map(|embedding| vec![embedding]);
-        }
 
-        let encoded: Vec<_> = texts
+        let prefixed_inputs = inputs
             .iter()
-            .map(|text| self.tokenizer.encode(text, MAX_LENGTH))
-            .collect::<Result<_, _>>()?;
+            .copied()
+            .map(prefixed_text)
+            .collect::<Vec<_>>();
+        let encoded = self.tokenizer.encode_batch(&prefixed_inputs, MAX_LENGTH)?;
         let batch_size = encoded.len();
         let seq_len = encoded
             .iter()
             .map(|item| item.input_ids.len())
             .max()
             .unwrap_or(0);
-        let total_tokens = batch_size * seq_len;
-        let pad_token_id = self.bert.pad_token_id();
 
-        let mut input_ids = vec![pad_token_id; total_tokens];
-        let mut token_type_ids = vec![0u32; total_tokens];
-        let mut attention_mask = vec![0u32; total_tokens];
+        let mut input_ids = vec![0_i64; batch_size * seq_len];
+        let mut attention_mask = vec![0_i64; batch_size * seq_len];
 
         for (batch_idx, item) in encoded.iter().enumerate() {
-            let row_start = batch_idx * seq_len;
-            let row_end = row_start + item.input_ids.len();
-            input_ids[row_start..row_end].copy_from_slice(&item.input_ids);
-            token_type_ids[row_start..row_end].copy_from_slice(&item.token_type_ids);
-            attention_mask[row_start..row_end].copy_from_slice(&item.attention_mask);
+            for (token_idx, (&token, &mask)) in item
+                .input_ids
+                .iter()
+                .zip(item.attention_mask.iter())
+                .enumerate()
+            {
+                let offset = batch_idx * seq_len + token_idx;
+                input_ids[offset] = token as i64;
+                attention_mask[offset] = mask as i64;
+            }
         }
 
-        let last_hidden_state = self.bert.forward_batch(
-            &input_ids,
-            &token_type_ids,
-            &attention_mask,
-            batch_size,
-            seq_len,
-        )?;
-        let hidden_size = self.bert.hidden_size();
+        let input_ids_tensor = TensorRef::from_array_view(([batch_size, seq_len], &input_ids[..]))
+            .map_err(|err| {
+                LTEmbedError::Inference(format!("Failed to convert input_ids tensor: {err}"))
+            })?;
+        let attention_mask_tensor = TensorRef::from_array_view((
+            [batch_size, seq_len],
+            &attention_mask[..],
+        ))
+        .map_err(|err| {
+            LTEmbedError::Inference(format!("Failed to convert attention_mask tensor: {err}"))
+        })?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| LTEmbedError::Inference("ORT session mutex poisoned".into()))?;
+        let outputs = session
+            .run(ort::inputs! {
+                self.io.input_ids.as_str() => input_ids_tensor,
+                self.io.attention_mask.as_str() => attention_mask_tensor,
+            })
+            .map_err(|err| LTEmbedError::Inference(format!("ORT inference failed: {err}")))?;
+        let (hidden_shape, hidden_data) = outputs[self.io.last_hidden_state.as_str()]
+            .try_extract_tensor::<f32>()
+            .map_err(|err| {
+                LTEmbedError::Inference(format!("Failed to extract ONNX output tensor: {err}"))
+            })?;
+        if hidden_shape.len() != 3 {
+            return Err(LTEmbedError::Inference(format!(
+                "expected rank-3 hidden states, got shape {hidden_shape:?}"
+            )));
+        }
+        if hidden_shape[0] as usize != batch_size || hidden_shape[1] as usize != seq_len {
+            return Err(LTEmbedError::Inference(format!(
+                "unexpected hidden state shape {hidden_shape:?}, expected [{batch_size}, {seq_len}, {RAW_EMBEDDING_DIMENSION}]"
+            )));
+        }
+        if hidden_shape[2] as usize != RAW_EMBEDDING_DIMENSION {
+            return Err(LTEmbedError::Inference(format!(
+                "expected raw embedding dimension {RAW_EMBEDDING_DIMENSION}, got {}",
+                hidden_shape[2]
+            )));
+        }
 
         let mut embeddings = Vec::with_capacity(batch_size);
         for batch_idx in 0..batch_size {
-            let state_start = batch_idx * seq_len * hidden_size;
-            let state_end = state_start + seq_len * hidden_size;
             let mask_start = batch_idx * seq_len;
             let mask_end = mask_start + seq_len;
-            let mut pooled = self.pooling.pool(
-                &last_hidden_state[state_start..state_end],
-                seq_len,
-                hidden_size,
-                &attention_mask[mask_start..mask_end],
-            )?;
-            l2_normalize_inplace(&mut pooled);
-            embeddings.push(pooled);
+            let mask_slice = &attention_mask[mask_start..mask_end];
+            let last_token_idx =
+                mask_slice
+                    .iter()
+                    .rposition(|mask| *mask == 1)
+                    .ok_or_else(|| {
+                        LTEmbedError::Inference("attention mask contains only padding".into())
+                    })?;
+            let hidden_offset = (batch_idx * seq_len + last_token_idx) * RAW_EMBEDDING_DIMENSION;
+            let raw = &hidden_data[hidden_offset..hidden_offset + RAW_EMBEDDING_DIMENSION];
+            embeddings.push(truncate_and_normalize(raw)?);
         }
 
         Ok(embeddings)
     }
 }
 
+fn prefixed_text(input: EmbeddingInput<'_>) -> String {
+    match input.kind {
+        EmbeddingInputKind::Query => format!("{QUERY_PREFIX}{}", input.text),
+        EmbeddingInputKind::Document => format!("{DOCUMENT_PREFIX}{}", input.text),
+    }
+}
+
+fn truncate_and_normalize(raw_embedding: &[f32]) -> Result<Vec<f32>, LTEmbedError> {
+    if raw_embedding.len() != RAW_EMBEDDING_DIMENSION {
+        return Err(LTEmbedError::Inference(format!(
+            "expected raw embedding dimension {RAW_EMBEDDING_DIMENSION}, got {}",
+            raw_embedding.len()
+        )));
+    }
+
+    let mut truncated = raw_embedding[..EMBEDDING_DIMENSION].to_vec();
+    let norm = truncated.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in &mut truncated {
+            *value /= norm;
+        }
+    }
+    Ok(truncated)
+}
+
+fn ensure_ort_initialized() -> Result<(), LTEmbedError> {
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+    INIT.get_or_init(|| match std::env::var("ORT_DYLIB_PATH") {
+        Ok(path) if !path.is_empty() => ort::init_from(path)
+            .map_err(|err| format!("Failed to load ORT dynamic library: {err}"))
+            .map(|builder| {
+                let _ = builder.commit();
+            }),
+        _ => Ok(()),
+    })
+    .clone()
+    .map_err(LTEmbedError::ModelLoad)
+}
+
+impl SessionIo {
+    fn from_session(session: &Session) -> Result<Self, LTEmbedError> {
+        let input_ids = session
+            .inputs()
+            .iter()
+            .find(|input| input.name() == "input_ids")
+            .ok_or_else(|| {
+                LTEmbedError::ModelLoad("ONNX model is missing required input `input_ids`".into())
+            })?;
+        let attention_mask = session
+            .inputs()
+            .iter()
+            .find(|input| input.name() == "attention_mask")
+            .ok_or_else(|| {
+                LTEmbedError::ModelLoad(
+                    "ONNX model is missing required input `attention_mask`".into(),
+                )
+            })?;
+        let last_hidden_state = session
+            .outputs()
+            .iter()
+            .find(|output| output.name() == "last_hidden_state")
+            .ok_or_else(|| {
+                LTEmbedError::ModelLoad(
+                    "ONNX model is missing required output `last_hidden_state`".into(),
+                )
+            })?;
+        let raw_dim = last_hidden_state
+            .dtype()
+            .tensor_shape()
+            .and_then(|shape| shape.last().copied());
+        if raw_dim != Some(RAW_EMBEDDING_DIMENSION as i64) {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "ONNX model output `last_hidden_state` must expose raw embedding dimension {RAW_EMBEDDING_DIMENSION}, got {raw_dim:?}"
+            )));
+        }
+
+        Ok(Self {
+            input_ids: input_ids.name().to_string(),
+            attention_mask: attention_mask.name().to_string(),
+            last_hidden_state: last_hidden_state.name().to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::pooling::MeanPooling;
     use approx::assert_relative_eq;
-    use static_assertions::assert_impl_all;
-    use std::path::Path;
-    use std::sync::Arc;
-    use std::thread;
-
-    // Compile-time guard: ZeroVecEngine must be Send + Sync to be stored in a
-    // `static OnceLock<Result<ZeroVecEngine, String>>`.
-    assert_impl_all!(ZeroVecEngine: Send, Sync);
-
-    const SAFETENSORS: &str = "assets/model.safetensors";
-    const CONFIG: &str = "assets/config.json";
-    const TOKENIZER: &str = "assets/tokenizer.json";
-
-    const DUMMY_CONFIG: &str = r#"{
-        "hidden_size": 384, "num_hidden_layers": 12, "num_attention_heads": 12,
-        "intermediate_size": 1536, "max_position_embeddings": 512,
-        "vocab_size": 30522, "type_vocab_size": 2, "hidden_act": "gelu",
-        "layer_norm_eps": 1e-12,
-        "hidden_dropout_prob": 0.1,
-        "initializer_range": 0.02,
-        "pad_token_id": 0,
-        "classifier_dropout": null
-    }"#;
-
-    fn assets_available() -> bool {
-        Path::new(SAFETENSORS).exists()
-            && Path::new(CONFIG).exists()
-            && Path::new(TOKENIZER).exists()
-    }
-
-    fn make_engine() -> ZeroVecEngine {
-        let config_str = std::fs::read_to_string(CONFIG).unwrap();
-        ZeroVecEngine::new(SAFETENSORS, &config_str, TOKENIZER, Box::new(MeanPooling)).unwrap()
-    }
 
     #[test]
-    fn test_missing_model_file_returns_error() {
-        let result = ZeroVecEngine::new(
-            "/nonexistent/model.safetensors",
-            DUMMY_CONFIG,
-            "/nonexistent/tokenizer.json",
-            Box::new(MeanPooling),
+    fn test_embedding_input_query_constructor() {
+        assert_eq!(
+            EmbeddingInput::query("hello"),
+            EmbeddingInput {
+                text: "hello",
+                kind: EmbeddingInputKind::Query,
+            }
         );
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
     }
 
     #[test]
-    fn test_embed_returns_unit_vector() {
-        if !assets_available() {
-            eprintln!("Skipping: model assets not found");
-            return;
-        }
-        let engine = make_engine();
-        let v = engine.embed("query: Hello, world!").unwrap();
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert_relative_eq!(norm, 1.0, epsilon = 1e-5);
+    fn test_embedding_input_document_constructor() {
+        assert_eq!(
+            EmbeddingInput::document("hello"),
+            EmbeddingInput {
+                text: "hello",
+                kind: EmbeddingInputKind::Document,
+            }
+        );
     }
 
     #[test]
-    fn test_embed_dimension() {
-        if !assets_available() {
-            eprintln!("Skipping: model assets not found");
-            return;
-        }
-        let engine = make_engine();
-        let v = engine.embed("query: test").unwrap();
-        assert_eq!(v.len(), 384);
+    fn test_prefixed_text_applies_query_prefix() {
+        assert_eq!(
+            prefixed_text(EmbeddingInput::query("hello")),
+            "Query: hello"
+        );
     }
 
     #[test]
-    fn test_embed_batch_matches_individual() {
-        if !assets_available() {
-            eprintln!("Skipping: model assets not found");
-            return;
-        }
-        let engine = make_engine();
-        let texts = vec!["query: foo", "query: bar"];
-        let batch = engine.embed_batch(&texts).unwrap();
-        let individual = engine.embed(texts[0]).unwrap();
-        assert_eq!(batch[0], individual);
+    fn test_prefixed_text_applies_document_prefix() {
+        assert_eq!(
+            prefixed_text(EmbeddingInput::document("hello")),
+            "Document: hello"
+        );
     }
 
     #[test]
-    fn test_embed_batch_mixed_lengths_matches_individual() {
-        if !assets_available() {
-            eprintln!("Skipping: model assets not found");
-            return;
-        }
-        let engine = make_engine();
-        let texts = vec![
-            "query: short",
-            "query: this is a somewhat longer sentence used to exercise padding behavior",
-        ];
-        let batch = engine.embed_batch(&texts).unwrap();
-        let first = engine.embed(texts[0]).unwrap();
-        let second = engine.embed(texts[1]).unwrap();
-        assert_eq!(batch[0], first);
-        assert_eq!(batch[1], second);
+    fn test_truncate_and_normalize_returns_512_dim_unit_vector() {
+        let mut raw = vec![0.0; RAW_EMBEDDING_DIMENSION];
+        raw[0] = 3.0;
+        raw[1] = 4.0;
+        raw[600] = 10.0;
+
+        let embedding = truncate_and_normalize(&raw).unwrap();
+
+        assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert_relative_eq!(norm, 1.0, epsilon = 1e-6);
+        assert_eq!(embedding[0], 3.0 / 5.0);
+        assert_eq!(embedding[1], 4.0 / 5.0);
     }
 
     #[test]
-    fn test_embed_is_thread_safe_across_threads() {
-        if !assets_available() {
-            eprintln!("Skipping: model assets not found");
-            return;
-        }
-        let engine = Arc::new(make_engine());
-        let texts = ["query: alpha", "query: beta"];
-        let handles: Vec<_> = texts
-            .into_iter()
-            .map(|text| {
-                let engine = Arc::clone(&engine);
-                thread::spawn(move || engine.embed(text).unwrap())
-            })
-            .collect();
-
-        let outputs: Vec<_> = handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect();
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].len(), 384);
-        assert_eq!(outputs[1].len(), 384);
+    fn test_truncate_and_normalize_rejects_non_768_raw_embedding() {
+        let err = truncate_and_normalize(&vec![0.0; EMBEDDING_DIMENSION]).unwrap_err();
+        assert!(matches!(err, LTEmbedError::Inference(_)));
     }
 }

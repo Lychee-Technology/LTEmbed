@@ -1,3 +1,4 @@
+use crate::engine::{EmbeddingInputKind, DOCUMENT_PREFIX, QUERY_PREFIX};
 use crate::error::LTEmbedError;
 use crate::gemm;
 use crate::traits::tokenizer::Tokenizer;
@@ -29,10 +30,16 @@ pub struct ProjectionKernelShape {
     pub repeats: usize,
 }
 
-pub const SHORT_TEXT: &str = "query: Hello, world!";
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkInput {
+    pub text: String,
+    pub kind: EmbeddingInputKind,
+}
+
+pub const SHORT_TEXT: &str = "Hello, world!";
 pub const MEDIUM_TEXT: &str =
-    "query: What is the impact of large language models on software engineering productivity?";
-pub const BENCHMARK_MAX_LENGTH: usize = 512;
+    "What is the impact of large language models on software engineering productivity?";
+pub const BENCHMARK_MAX_LENGTH: usize = 8192;
 const GEMM_MICROBENCHMARK_SCENARIO_NAMES: [&str; 3] =
     ["single/long", "batch/medium/8", "batch/medium/16"];
 
@@ -105,23 +112,25 @@ pub fn selected_scenarios(name: Option<&str>) -> Result<Vec<&'static BenchmarkSc
     }
 }
 
-pub fn scenario_texts(scenario: &BenchmarkScenario) -> Vec<String> {
+pub fn scenario_inputs(scenario: &BenchmarkScenario) -> Vec<BenchmarkInput> {
     match scenario.name {
-        "single/short" => vec![SHORT_TEXT.to_string()],
-        "single/medium" => vec![MEDIUM_TEXT.to_string()],
-        "single/long" => vec![long_text()],
+        "single/short" => vec![query_input(SHORT_TEXT)],
+        "single/medium" => vec![query_input(MEDIUM_TEXT)],
+        "single/long" => vec![document_input(&long_text())],
         "batch/medium/1" | "batch/medium/4" | "batch/medium/8" | "batch/medium/16" => {
-            std::iter::repeat_n(MEDIUM_TEXT.to_string(), scenario.batch_size).collect()
+            std::iter::repeat_with(|| query_input(MEDIUM_TEXT))
+                .take(scenario.batch_size)
+                .collect()
         }
         "batch/mixed/8" => vec![
-            SHORT_TEXT.to_string(),
-            MEDIUM_TEXT.to_string(),
-            long_text(),
-            SHORT_TEXT.to_string(),
-            MEDIUM_TEXT.to_string(),
-            long_text(),
-            SHORT_TEXT.to_string(),
-            MEDIUM_TEXT.to_string(),
+            query_input(SHORT_TEXT),
+            query_input(MEDIUM_TEXT),
+            document_input(&long_text()),
+            query_input(SHORT_TEXT),
+            query_input(MEDIUM_TEXT),
+            document_input(&long_text()),
+            query_input(SHORT_TEXT),
+            query_input(MEDIUM_TEXT),
         ],
         _ => Vec::new(),
     }
@@ -132,11 +141,11 @@ pub fn scenario_token_lengths<T: Tokenizer>(
     scenario: &BenchmarkScenario,
     max_length: usize,
 ) -> Result<Vec<usize>, LTEmbedError> {
-    scenario_texts(scenario)
+    scenario_inputs(scenario)
         .into_iter()
-        .map(|text| {
+        .map(|input| {
             tokenizer
-                .encode(&text, max_length)
+                .encode(&prefixed_text(&input), max_length)
                 .map(|encoded| encoded.input_ids.len())
         })
         .collect()
@@ -206,7 +215,28 @@ impl ProjectionKernelShape {
 }
 
 pub fn long_text() -> String {
-    "passage: ".to_string() + &"The quick brown fox jumps over the lazy dog. ".repeat(30)
+    "The quick brown fox jumps over the lazy dog. ".repeat(30)
+}
+
+fn query_input(text: &str) -> BenchmarkInput {
+    BenchmarkInput {
+        text: text.to_string(),
+        kind: EmbeddingInputKind::Query,
+    }
+}
+
+fn document_input(text: &str) -> BenchmarkInput {
+    BenchmarkInput {
+        text: text.to_string(),
+        kind: EmbeddingInputKind::Document,
+    }
+}
+
+fn prefixed_text(input: &BenchmarkInput) -> String {
+    match input.kind {
+        EmbeddingInputKind::Query => format!("{QUERY_PREFIX}{}", input.text),
+        EmbeddingInputKind::Document => format!("{DOCUMENT_PREFIX}{}", input.text),
+    }
 }
 
 impl LatencyStats {

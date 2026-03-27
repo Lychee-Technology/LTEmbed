@@ -29,10 +29,6 @@ serde = { version = "1", features = ["derive"] }
 # Error handling
 thiserror = "2"
 
-[[bench]]
-name = "inference"
-harness = false
-
 [[example]]
 name = "api_usage"
 path = "examples/api_usage.rs"
@@ -56,5 +52,4 @@ lto = "thin"
 approx = "0.5"
 static_assertions = "1"
 serde = { version = "1", features = ["derive"] }
-criterion = { version = "0.5", features = ["html_reports"] }
 once_cell = "1"

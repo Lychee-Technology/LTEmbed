@@ -2,7 +2,5 @@
 pub mod benchmarking;
 pub mod engine;
 pub mod error;
-pub(crate) mod gemm;
-pub mod models;
 pub mod traits;
 pub mod utils;

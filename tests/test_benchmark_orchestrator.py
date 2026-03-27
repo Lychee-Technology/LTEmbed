@@ -26,22 +26,6 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertEqual(scenario.batch_size, 8)
         self.assertEqual(scenario.text_profile, "mixed")
 
-    def test_extract_cargo_lock_version(self):
-        bench = load_module()
-        lock_text = """
-[[package]]
-name = "candle-core"
-version = "0.8.4"
-
-[[package]]
-name = "candle-transformers"
-version = "0.8.4"
-"""
-        self.assertEqual(
-            bench.extract_cargo_lock_version(lock_text, "candle-transformers"),
-            "0.8.4",
-        )
-
     def test_write_csv_report_uses_fixed_header_order(self):
         bench = load_module()
         row = {field: "" for field in bench.CSV_FIELDNAMES}
@@ -66,7 +50,7 @@ version = "0.8.4"
         bench = load_module()
         row = bench.build_correctness_row(
             base_fields={
-                "implementation": "candle",
+                "implementation": "ltembed",
                 "scenario": "single/short",
                 "mode": "correctness",
             },
@@ -75,13 +59,6 @@ version = "0.8.4"
         )
         self.assertEqual(row["status"], "fail")
         self.assertEqual(row["cosine_similarity_vs_pytorch"], "0.998000")
-
-    def test_candle_runner_uses_example_target(self):
-        bench = load_module()
-        args = type("Args", (), {"model_dir": Path("assets"), "warmup": 0, "iters": 1, "threads": 1})
-        command = bench.candle_warm_command(args)
-        self.assertEqual(command[:5], ["cargo", "run", "--quiet", "--release", "--example"])
-        self.assertEqual(command[5], "benchmark_candle")
 
     def test_ltembed_warm_command_includes_optional_scenario(self):
         bench = load_module()
@@ -125,13 +102,10 @@ version = "0.8.4"
                 ["cargo", "run", "--quiet", "--release", "--features", "vendored-blas"],
             )
 
-    def test_resolved_notes_reports_ltembed_dense_backend(self):
+    def test_resolved_notes_is_empty_for_current_runners(self):
         bench = load_module()
-        self.assertEqual(
-            bench.resolved_notes("ltembed", {"backend": "openblas-cblas"}),
-            "dense_backend=openblas-cblas",
-        )
-        self.assertEqual(bench.resolved_notes("candle", {"backend": "ignored"}), "")
+        self.assertEqual(bench.resolved_notes("ltembed", {}), "")
+        self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
 
 
 if __name__ == "__main__":

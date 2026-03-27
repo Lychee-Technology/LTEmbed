@@ -227,7 +227,7 @@ def main() -> None:
         "--impl",
         default=None,
         metavar="NAME",
-        help="Filter rows by implementation name (e.g. ltembed, pytorch, candle).",
+        help="Filter rows by implementation name (e.g. ltembed, pytorch).",
     )
     args = parser.parse_args()
 

@@ -28,6 +28,17 @@ impl HFTokenizer {
             .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to load tokenizer: {e}")))?;
         Ok(Self { inner })
     }
+
+    pub fn encode_batch(
+        &self,
+        texts: &[String],
+        max_length: usize,
+    ) -> Result<Vec<TokenizerOutput>, LTEmbedError> {
+        texts
+            .iter()
+            .map(|text| self.encode(text, max_length))
+            .collect()
+    }
 }
 
 impl Tokenizer for HFTokenizer {
@@ -86,7 +97,9 @@ mod tests {
             return;
         }
         let tok = HFTokenizer::from_file(TOKENIZER_PATH).unwrap();
-        let out = tok.encode("query: Hello, world!", 512).unwrap();
+        let out = tok
+            .encode("Query: Hello, world!", crate::engine::MAX_LENGTH)
+            .unwrap();
         assert!(out.input_ids.len() >= 3);
         assert_eq!(out.input_ids.len(), out.attention_mask.len());
         assert_eq!(out.input_ids.len(), out.token_type_ids.len());
@@ -101,8 +114,8 @@ mod tests {
             return;
         }
         let tok = HFTokenizer::from_file(TOKENIZER_PATH).unwrap();
-        let long_text = "hello world ".repeat(5000); // encodes to >> 512 tokens
-        let result = tok.encode(&long_text, 512);
+        let long_text = "hello world ".repeat(12000);
+        let result = tok.encode(&long_text, crate::engine::MAX_LENGTH);
         assert!(result.is_err());
         assert!(
             matches!(result.unwrap_err(), LTEmbedError::InputTooLong { .. }),

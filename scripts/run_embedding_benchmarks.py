@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Orchestrate LTEmbed, Candle, and PyTorch embedding benchmarks.
+Orchestrate LTEmbed and PyTorch embedding benchmarks.
 
 This script runs a unified benchmark suite and writes a normalized CSV report
 covering cold-start latency, warm latency, and correctness comparisons against
@@ -24,17 +24,20 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_ID = "intfloat/e5-small-v2"
+DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 DEFAULT_MODEL_SOURCE = "huggingface"
-DEFAULT_CORRECTNESS_THRESHOLD = 0.999
+DEFAULT_CORRECTNESS_THRESHOLD = 0.98
 RUNNER_LABELS_ENV = "BENCHMARK_RUNNER_LABELS"
 
-SHORT_TEXT = "query: Hello, world!"
-MEDIUM_TEXT = (
-    "query: What is the impact of large language models on software engineering "
-    "productivity?"
-)
-LONG_TEXT = "passage: " + "The quick brown fox jumps over the lazy dog. " * 30
+SHORT_TEXT = {"kind": "query", "text": "Hello, world!"}
+MEDIUM_TEXT = {
+    "kind": "query",
+    "text": "What is the impact of large language models on software engineering productivity?",
+}
+LONG_TEXT = {
+    "kind": "document",
+    "text": "The quick brown fox jumps over the lazy dog. " * 30,
+}
 
 CSV_FIELDNAMES = [
     "run_id",
@@ -81,7 +84,7 @@ class Scenario(dict):
         return self["text_profile"]
 
     @property
-    def texts(self) -> tuple[str, ...]:
+    def texts(self) -> tuple[dict[str, str], ...]:
         return self["texts"]
 
 
@@ -263,17 +266,23 @@ def build_patch_config(args: argparse.Namespace) -> str | None:
     return f.name
 
 
-def cargo_run_prefix(patch_config: str | None = None) -> list[str]:
+def cargo_run_prefix(
+    patch_config: str | None = None,
+    cargo_features: str = "",
+) -> list[str]:
     command = ["cargo"]
     if patch_config:
         command.extend(["--config", patch_config])
     command.extend(["run", "--quiet", "--release"])
+    if cargo_features:
+        command.extend(["--features", cargo_features])
     return command
 
 
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
     command = cargo_run_prefix(
         getattr(args, "patch_config_path", None),
+        getattr(args, "ltembed_cargo_features", ""),
     )
     command.extend([
         "--bin",
@@ -283,8 +292,6 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
         "warm",
         "--model-dir",
         str(args.model_dir),
-        "--model-size",
-        args.model_size,
         "--warmup",
         str(args.warmup),
         "--iters",
@@ -300,6 +307,7 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
 def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
     return cargo_run_prefix(
         getattr(args, "patch_config_path", None),
+        getattr(args, "ltembed_cargo_features", ""),
     ) + [
         "--bin",
         "benchmark_ltembed",
@@ -310,8 +318,6 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
         scenario_name,
         "--model-dir",
         str(args.model_dir),
-        "--model-size",
-        args.model_size,
         "--threads",
         str(args.threads),
     ]
@@ -320,71 +326,10 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
     return cargo_run_prefix(
         getattr(args, "patch_config_path", None),
+        getattr(args, "ltembed_cargo_features", ""),
     ) + [
         "--bin",
         "benchmark_ltembed",
-        "--",
-        "--mode",
-        "correctness",
-        "--model-dir",
-        str(args.model_dir),
-        "--model-size",
-        args.model_size,
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def candle_warm_command(args: argparse.Namespace) -> list[str]:
-    return [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
-        "--example",
-        "benchmark_candle",
-        "--",
-        "--mode",
-        "warm",
-        "--model-dir",
-        str(args.model_dir),
-        "--warmup",
-        str(args.warmup),
-        "--iters",
-        str(args.iters),
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def candle_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
-        "--example",
-        "benchmark_candle",
-        "--",
-        "--mode",
-        "cold",
-        "--scenario",
-        scenario_name,
-        "--model-dir",
-        str(args.model_dir),
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def candle_correctness_command(args: argparse.Namespace) -> list[str]:
-    return [
-        "cargo",
-        "run",
-        "--quiet",
-        "--release",
-        "--example",
-        "benchmark_candle",
         "--",
         "--mode",
         "correctness",
@@ -447,12 +392,6 @@ RUNNERS = {
         "correctness": ltembed_correctness_command,
         "version": lambda: git_sha(),
     },
-    "candle": {
-        "warm": candle_warm_command,
-        "cold": candle_cold_command,
-        "correctness": candle_correctness_command,
-        "version": lambda: extract_cargo_lock_version(cargo_lock_text(), "candle-transformers"),
-    },
     "pytorch": {
         "warm": pytorch_warm_command,
         "cold": pytorch_cold_command,
@@ -463,7 +402,7 @@ RUNNERS = {
 
 
 def resolved_implementation_version(implementation: str, payload: dict[str, Any]) -> str:
-    if implementation in {"ltembed", "candle"}:
+    if implementation == "ltembed":
         return RUNNERS[implementation]["version"]()
     return str(payload.get("implementation_version", ""))
 
@@ -722,7 +661,7 @@ def summary_lines(
         f"python_version={python_version()}",
         f"rust_version={rust_version()}",
     ]
-    for implementation in ("ltembed", "candle", "pytorch"):
+    for implementation in ("ltembed", "pytorch"):
         payload = warm_payloads.get(implementation, {})
         version = resolved_implementation_version(implementation, payload)
         if implementation == "pytorch":
@@ -754,13 +693,18 @@ def parse_args() -> argparse.Namespace:
         "--model-dir",
         type=Path,
         default=ROOT / "assets",
-        help="Local model directory containing e5-small-v2 assets.",
+        help="Local model directory containing tokenizer.json and onnx/model_q4f16.onnx.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--ltembed-cargo-features",
+        default="",
+        help="Optional cargo features to pass through to LTEmbed benchmark builds.",
+    )
     parser.add_argument(
         "--ltembed-matrixmultiply-source",
         dest="ltembed_matrixmultiply_source",
@@ -789,13 +733,6 @@ def parse_args() -> argparse.Namespace:
         dest="ltembed_matrixmultiply_rev",
         default="",
         help="Pinned git revision for matrixmultiply (used with --ltembed-matrixmultiply-source=git).",
-    )
-    parser.add_argument(
-        "--model-size",
-        dest="model_size",
-        choices=["fp32", "fp16"],
-        default="fp32",
-        help="Model precision to benchmark: fp32 (model.safetensors) or fp16 (model_fp16.safetensors).",
     )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)

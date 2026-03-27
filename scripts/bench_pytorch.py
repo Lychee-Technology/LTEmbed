@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PyTorch benchmark runner for intfloat/e5-small-v2.
+PyTorch benchmark runner for jina-embeddings-v5-text-nano-retrieval.
 
 Outputs machine-readable JSON for warm latency, cold start, or correctness.
 """
@@ -21,9 +21,19 @@ from transformers import AutoModel, AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
 
-SHORT = "query: Hello, world!"
-MEDIUM = "query: What is the impact of large language models on software engineering productivity?"
-LONG = "passage: " + "The quick brown fox jumps over the lazy dog. " * 30
+RAW_DIM = 768
+OUTPUT_DIM = 512
+MAX_LENGTH = 8192
+
+SHORT = {"kind": "query", "text": "Hello, world!"}
+MEDIUM = {
+    "kind": "query",
+    "text": "What is the impact of large language models on software engineering productivity?",
+}
+LONG = {
+    "kind": "document",
+    "text": "The quick brown fox jumps over the lazy dog. " * 30,
+}
 
 SCENARIOS: dict[str, dict[str, object]] = {
     "single/short": {"batch_size": 1, "text_profile": "short", "texts": [SHORT]},
@@ -41,15 +51,23 @@ SCENARIOS: dict[str, dict[str, object]] = {
 }
 
 
-def mean_pool(model_output, attention_mask):
-    token_embeddings = model_output.last_hidden_state
-    mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-    return torch.sum(token_embeddings * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
+def prefixed_text(item: dict[str, str]) -> str:
+    prefix = "Query: " if item["kind"] == "query" else "Document: "
+    return prefix + item["text"]
 
 
-def l2_normalize(v: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(v, axis=-1, keepdims=True)
-    return v / np.maximum(norm, 1e-12)
+def truncate_and_normalize(v: np.ndarray) -> np.ndarray:
+    if v.shape[-1] != RAW_DIM:
+        raise ValueError(f"expected raw dimension {RAW_DIM}, got {v.shape[-1]}")
+    truncated = v[..., :OUTPUT_DIM]
+    norm = np.linalg.norm(truncated, axis=-1, keepdims=True)
+    return truncated / np.maximum(norm, 1e-12)
+
+
+def last_token_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    last_token_index = attention_mask.sum(dim=1) - 1
+    batch_index = torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device)
+    return last_hidden_state[batch_index, last_token_index]
 
 
 def compute_stats(samples_ms: list[float]) -> dict[str, float]:
@@ -65,25 +83,25 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
 
 def load_model(model_name_or_path: str):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        model = AutoModel.from_pretrained(model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True)
     model.eval()
     model.to("cpu")
     return model, tokenizer
 
 
-def embed_texts(model, tokenizer, texts: list[str]) -> list[list[float]]:
+def embed_texts(model, tokenizer, texts: list[dict[str, str]]) -> list[list[float]]:
     encoded = tokenizer(
-        texts,
+        [prefixed_text(item) for item in texts],
         return_tensors="pt",
-        max_length=512,
+        max_length=MAX_LENGTH,
         truncation=True,
         padding=True,
     )
     with torch.no_grad():
         output = model(**encoded)
-    pooled = mean_pool(output, encoded["attention_mask"]).cpu().numpy()
-    normalized = l2_normalize(pooled)
+    pooled = last_token_pool(output.last_hidden_state, encoded["attention_mask"]).cpu().numpy()
+    normalized = truncate_and_normalize(pooled)
     return normalized.tolist()
 
 

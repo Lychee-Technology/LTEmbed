@@ -1,14 +1,11 @@
 use std::error::Error;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use ltembed::engine::ZeroVecEngine;
-use ltembed::traits::pooling::MeanPooling;
+use ltembed::engine::{EmbeddingInput, OnnxEngine};
 
 const ASSETS_DIR: &str = "assets";
-const CONFIG_FILE: &str = "config.json";
-const MODEL_FILE: &str = "model.safetensors";
 const TOKENIZER_FILE: &str = "tokenizer.json";
+const ONNX_MODEL_FILE: &str = "onnx/model_q4f16.onnx";
 
 fn require_file(path: &Path) -> Result<(), Box<dyn Error>> {
     if Path::new(path).exists() {
@@ -21,10 +18,9 @@ fn require_file(path: &Path) -> Result<(), Box<dyn Error>> {
 fn find_assets_dir(start_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     for candidate_root in start_dir.ancestors() {
         let assets_dir = candidate_root.join(ASSETS_DIR);
-        let config_path = assets_dir.join(CONFIG_FILE);
-        let model_path = assets_dir.join(MODEL_FILE);
         let tokenizer_path = assets_dir.join(TOKENIZER_FILE);
-        if config_path.exists() && model_path.exists() && tokenizer_path.exists() {
+        let onnx_path = assets_dir.join(ONNX_MODEL_FILE);
+        if tokenizer_path.exists() && onnx_path.exists() {
             return Ok(assets_dir);
         }
     }
@@ -38,23 +34,21 @@ fn find_assets_dir(start_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let assets_dir = find_assets_dir(&std::env::current_dir()?)?;
-    let config_path = assets_dir.join(CONFIG_FILE);
-    let model_path = assets_dir.join(MODEL_FILE);
     let tokenizer_path = assets_dir.join(TOKENIZER_FILE);
+    let onnx_path = assets_dir.join(ONNX_MODEL_FILE);
 
-    require_file(&config_path)?;
-    require_file(&model_path)?;
     require_file(&tokenizer_path)?;
+    require_file(&onnx_path)?;
 
-    let config_json = fs::read_to_string(&config_path)?;
-    let engine = ZeroVecEngine::new(
-        &model_path.to_string_lossy(),
-        &config_json,
+    let engine = OnnxEngine::new(
+        &onnx_path.to_string_lossy(),
         &tokenizer_path.to_string_lossy(),
-        Box::new(MeanPooling),
     )?;
 
-    let inputs = ["query: Hello, world!", "query: LTEmbed Rust API example"];
+    let inputs = [
+        EmbeddingInput::query("Hello, world!"),
+        EmbeddingInput::query("LTEmbed Rust API example"),
+    ];
     let embeddings = engine.embed_batch(&inputs)?;
     let first = embeddings
         .first()
@@ -95,10 +89,10 @@ mod tests {
         let worktree_dir = repo_root.join(".worktrees").join("branch");
 
         fs::create_dir_all(&repo_assets).unwrap();
+        fs::create_dir_all(repo_assets.join("onnx")).unwrap();
         fs::create_dir_all(&worktree_dir).unwrap();
-        fs::write(repo_assets.join("config.json"), "{}").unwrap();
         fs::write(repo_assets.join("tokenizer.json"), "{}").unwrap();
-        fs::write(repo_assets.join("model.safetensors"), "stub").unwrap();
+        fs::write(repo_assets.join("onnx").join("model_q4f16.onnx"), "stub").unwrap();
 
         let resolved = find_assets_dir(&worktree_dir).unwrap();
         assert_eq!(resolved, repo_assets);

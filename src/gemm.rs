@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub(crate) fn dense_backend_name() -> &'static str {
     "matrixmultiply"
 }

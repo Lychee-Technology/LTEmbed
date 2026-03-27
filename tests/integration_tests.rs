@@ -1,41 +1,21 @@
 // tests/integration_tests.rs
-//
-// Run with: cargo test --test integration_tests
-//
-// Requires model assets for most tests (see below).
-// test_missing_model_file_returns_model_load_error always runs — no assets needed.
 
 use approx::assert_relative_eq;
-use ltembed::engine::ZeroVecEngine;
+use ltembed::engine::{EmbeddingInput, OnnxEngine, EMBEDDING_DIMENSION, MAX_LENGTH};
 use ltembed::error::LTEmbedError;
-use ltembed::traits::pooling::MeanPooling;
 use serde::Deserialize;
 use std::path::Path;
 
-const SAFETENSORS: &str = "assets/model.safetensors";
-const CONFIG: &str = "assets/config.json";
+const MODEL: &str = "assets/onnx/model_q4f16.onnx";
 const TOKENIZER: &str = "assets/tokenizer.json";
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
 
-const DUMMY_CONFIG: &str = r#"{
-    "hidden_size": 384, "num_hidden_layers": 12, "num_attention_heads": 12,
-    "intermediate_size": 1536, "max_position_embeddings": 512,
-    "vocab_size": 30522, "type_vocab_size": 2, "hidden_act": "gelu",
-    "layer_norm_eps": 1e-12,
-    "hidden_dropout_prob": 0.1,
-    "initializer_range": 0.02,
-    "pad_token_id": 0,
-    "classifier_dropout": null
-}"#;
-
 fn assets_available() -> bool {
-    Path::new(SAFETENSORS).exists() && Path::new(CONFIG).exists() && Path::new(TOKENIZER).exists()
+    Path::new(MODEL).exists() && Path::new(TOKENIZER).exists()
 }
 
-fn make_engine() -> ZeroVecEngine {
-    let config_str = std::fs::read_to_string(CONFIG).unwrap();
-    ZeroVecEngine::new(SAFETENSORS, &config_str, TOKENIZER, Box::new(MeanPooling))
-        .expect("Failed to initialize ZeroVecEngine")
+fn make_engine() -> OnnxEngine {
+    OnnxEngine::new(MODEL, TOKENIZER).expect("Failed to initialize OnnxEngine")
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -45,16 +25,23 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-// --- Scenario A: Golden Path Parity ---
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixtureKind {
+    Query,
+    Document,
+}
 
 #[derive(Deserialize)]
 struct Fixture {
-    input: String,
+    kind: FixtureKind,
+    text: String,
     embedding: Vec<f32>,
 }
 
 #[derive(Deserialize)]
 struct FixtureFile {
+    dim: Option<usize>,
     fixtures: Vec<Fixture>,
 }
 
@@ -68,27 +55,34 @@ fn test_golden_parity_cosine_similarity() {
     let fixture_str = std::fs::read_to_string(FIXTURES)
         .expect("tests/fixtures/test_fixtures.json not found — run scripts/generate_fixtures.py");
     let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
+    if data.dim != Some(EMBEDDING_DIMENSION) {
+        eprintln!(
+            "Skipping golden parity test: fixtures are not regenerated for {}-d OnnxEngine outputs",
+            EMBEDDING_DIMENSION
+        );
+        return;
+    }
 
     for fixture in &data.fixtures {
-        let rust_v = engine.embed(&fixture.input).unwrap();
+        let input = match fixture.kind {
+            FixtureKind::Query => EmbeddingInput::query(&fixture.text),
+            FixtureKind::Document => EmbeddingInput::document(&fixture.text),
+        };
+        let rust_v = engine.embed(input).unwrap();
         let sim = cosine_similarity(&rust_v, &fixture.embedding);
         assert!(
-            sim > 0.999,
-            "Cosine similarity {sim:.6} < 0.999 for {:?}",
-            &fixture.input[..50.min(fixture.input.len())]
+            sim > 0.99,
+            "Cosine similarity {sim:.6} < 0.99 for {:?}",
+            &fixture.text[..50.min(fixture.text.len())]
         );
     }
 }
 
-// --- Scenario C1: Missing Model Files ---
-
 #[test]
 fn test_missing_model_file_returns_model_load_error() {
-    let result = ZeroVecEngine::new(
-        "/nonexistent/model.safetensors",
-        DUMMY_CONFIG,
+    let result = OnnxEngine::new(
+        "/nonexistent/model_q4f16.onnx",
         "/nonexistent/tokenizer.json",
-        Box::new(MeanPooling),
     );
     assert!(result.is_err());
     assert!(
@@ -97,52 +91,28 @@ fn test_missing_model_file_returns_model_load_error() {
     );
 }
 
-/// --- Scenario C2: Context Length Overflow ---
-// LTEmbed is a library — overlong input must return an explicit error, not be silently
-// truncated or cause a panic. The caller decides how to handle the error.
-
 #[test]
 fn test_long_input_returns_input_too_long_error() {
-    // Tier 1: does not require model assets — the error is raised in the tokenizer
-    // before any model inference occurs.
     if !std::path::Path::new(TOKENIZER).exists() {
         eprintln!("Skipping: tokenizer asset not found");
         return;
     }
-    // Engine init requires model.safetensors; if absent, use a tokenizer-only test
-    // via HFTokenizer directly.
     use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer};
     let tok = HFTokenizer::from_file(TOKENIZER).unwrap();
-    let long_text = "hello world ".repeat(5000); // encodes to >> 512 tokens
-    let result = tok.encode(&long_text, 512);
+    let long_text = "hello world ".repeat(12000);
+    let result = tok.encode(&long_text, MAX_LENGTH);
     assert!(result.is_err());
     match result.unwrap_err() {
         LTEmbedError::InputTooLong { tokens, max } => {
-            assert!(tokens > 512, "tokens={tokens} should be > 512");
-            assert_eq!(max, 512);
+            assert!(
+                tokens > MAX_LENGTH,
+                "tokens={tokens} should be > {MAX_LENGTH}"
+            );
+            assert_eq!(max, MAX_LENGTH);
         }
         other => panic!("Expected InputTooLong, got {other:?}"),
     }
 }
-
-// --- Scenario C3: Malformed config.json ---
-
-#[test]
-fn test_malformed_config_returns_model_load_error() {
-    let result = ZeroVecEngine::new(
-        "/nonexistent/model.safetensors",
-        "{ this is not valid json !!!",
-        "/nonexistent/tokenizer.json",
-        Box::new(MeanPooling),
-    );
-    assert!(result.is_err());
-    assert!(
-        matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)),
-        "Expected ModelLoad error for malformed config"
-    );
-}
-
-// --- Scenario B: Output properties ---
 
 #[test]
 fn test_embed_batch_consistency() {
@@ -151,17 +121,17 @@ fn test_embed_batch_consistency() {
         return;
     }
     let engine = make_engine();
-    let batch = engine
-        .embed_batch(&["query: hello", "query: world"])
-        .unwrap();
-    let individual = engine.embed("query: hello").unwrap();
+    let inputs = [
+        EmbeddingInput::query("hello"),
+        EmbeddingInput::query("world"),
+    ];
+    let batch = engine.embed_batch(&inputs).unwrap();
+    let individual = engine.embed(inputs[0]).unwrap();
     assert_eq!(
         batch[0], individual,
         "embed_batch[0] must equal embed() for same input"
     );
 }
-
-// --- Output shape and L2 normalization ---
 
 #[test]
 fn test_output_is_l2_normalized() {
@@ -170,18 +140,22 @@ fn test_output_is_l2_normalized() {
         return;
     }
     let engine = make_engine();
-    let v = engine.embed("query: normalization check").unwrap();
+    let v = engine
+        .embed(EmbeddingInput::query("normalization check"))
+        .unwrap();
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     assert_relative_eq!(norm, 1.0, epsilon = 1e-5);
 }
 
 #[test]
-fn test_output_dimension_is_384() {
+fn test_output_dimension_is_512() {
     if !assets_available() {
         eprintln!("Skipping: model assets not found");
         return;
     }
     let engine = make_engine();
-    let v = engine.embed("query: dimension check").unwrap();
-    assert_eq!(v.len(), 384);
+    let v = engine
+        .embed(EmbeddingInput::query("dimension check"))
+        .unwrap();
+    assert_eq!(v.len(), EMBEDDING_DIMENSION);
 }

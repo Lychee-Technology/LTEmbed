@@ -1,12 +1,10 @@
 use ltembed::benchmarking::{
-    dense_backend_name, scenario_by_name, scenario_texts, selected_scenarios, LatencyStats,
+    dense_backend_name, scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats,
 };
-use ltembed::engine::ZeroVecEngine;
+use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine};
 use ltembed::error::LTEmbedError;
-use ltembed::traits::pooling::MeanPooling;
 use serde::Serialize;
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -131,32 +129,31 @@ fn git_sha() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn engine_from_model_dir(model_dir: &Path) -> Result<ZeroVecEngine, LTEmbedError> {
-    let config_path = model_dir.join("config.json");
+fn engine_from_model_dir(model_dir: &Path) -> Result<OnnxEngine, LTEmbedError> {
     let tokenizer_path = model_dir.join("tokenizer.json");
-    let safetensors_path = model_dir.join("model.safetensors");
-    let config = fs::read_to_string(config_path)?;
-    ZeroVecEngine::new(
-        &safetensors_path.to_string_lossy(),
-        &config,
+    let onnx_path = model_dir.join("onnx").join("model_q4f16.onnx");
+    OnnxEngine::new(
+        &onnx_path.to_string_lossy(),
         &tokenizer_path.to_string_lossy(),
-        Box::new(MeanPooling),
     )
 }
 
-fn run_scenario(
-    engine: &ZeroVecEngine,
-    scenario_name: &str,
-) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
     let scenario = scenario_by_name(scenario_name)
         .ok_or_else(|| LTEmbedError::Inference("unknown scenario".into()))?;
-    let texts = scenario_texts(scenario);
-    let refs = texts.iter().map(String::as_str).collect::<Vec<_>>();
-    engine.embed_batch(&refs)
+    let benchmark_inputs = scenario_inputs(scenario);
+    let inputs = benchmark_inputs
+        .iter()
+        .map(|input| match input.kind {
+            EmbeddingInputKind::Query => EmbeddingInput::query(input.text.as_str()),
+            EmbeddingInputKind::Document => EmbeddingInput::document(input.text.as_str()),
+        })
+        .collect::<Vec<_>>();
+    engine.embed_batch(&inputs)
 }
 
 fn measure_warm_stats(
-    engine: &ZeroVecEngine,
+    engine: &OnnxEngine,
     scenario_name: &str,
     warmup: usize,
     iters: usize,

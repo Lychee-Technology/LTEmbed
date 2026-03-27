@@ -20,7 +20,3 @@ Important assumptions:
 
 - `--model-dir` points at a directory containing `tokenizer.json` and `onnx/model_q4f16.onnx`
 - correctness thresholds should account for quantized ONNX output vs. Python reference
-
-## Legacy Scripts
-
-Older safetensors-oriented utilities may still exist in the repository for historical work, but they are no longer part of the primary `OnnxEngine` path.

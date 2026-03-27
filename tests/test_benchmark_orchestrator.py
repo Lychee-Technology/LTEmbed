@@ -102,12 +102,9 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
                 ["cargo", "run", "--quiet", "--release", "--features", "vendored-blas"],
             )
 
-    def test_resolved_notes_reports_ltembed_dense_backend(self):
+    def test_resolved_notes_is_empty_for_current_runners(self):
         bench = load_module()
-        self.assertEqual(
-            bench.resolved_notes("ltembed", {"backend": "openblas-cblas"}),
-            "dense_backend=openblas-cblas",
-        )
+        self.assertEqual(bench.resolved_notes("ltembed", {}), "")
         self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
 
 

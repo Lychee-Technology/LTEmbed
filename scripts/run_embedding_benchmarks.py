@@ -16,7 +16,6 @@ import os
 import platform
 import subprocess
 import sys
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,17 +119,6 @@ SCENARIOS = [
 SCENARIO_BY_NAME = {scenario.name: scenario for scenario in SCENARIOS}
 
 
-def extract_cargo_lock_version(lock_text: str, package_name: str) -> str:
-    current_name: str | None = None
-    for raw_line in lock_text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("name = "):
-            current_name = line.split('"', 2)[1]
-        elif current_name == package_name and line.startswith("version = "):
-            return line.split('"', 2)[1]
-    raise ValueError(f"package {package_name!r} not found in Cargo.lock")
-
-
 def write_csv_report(rows: list[dict[str, str]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
@@ -194,10 +182,6 @@ def host_metadata() -> dict[str, str]:
     }
 
 
-def cargo_lock_text() -> str:
-    return (ROOT / "Cargo.lock").read_text(encoding="utf-8")
-
-
 def rust_version() -> str:
     return (
         subprocess.run(
@@ -233,46 +217,8 @@ def scenario_from_name(name: str) -> Scenario:
         raise ValueError(f"unknown scenario: {name}") from exc
 
 
-def build_patch_config(args: argparse.Namespace) -> str | None:
-    """Write a temporary Cargo config file with a [patch.crates-io] override.
-
-    Returns the path to the temp file, or None when the source is crates-io
-    (the default — no override needed).
-    """
-    source = getattr(args, "ltembed_matrixmultiply_source", "crates-io")
-    if source == "crates-io":
-        return None
-    if source == "path":
-        path = getattr(args, "ltembed_matrixmultiply_path", None)
-        if not path:
-            raise ValueError("--ltembed-matrixmultiply-path is required when source=path")
-        patch_toml = f'[patch.crates-io]\nmatrixmultiply = {{ path = "{path}" }}\n'
-    elif source == "git":
-        url = getattr(args, "ltembed_matrixmultiply_git", None)
-        if not url:
-            raise ValueError("--ltembed-matrixmultiply-git is required when source=git")
-        rev = getattr(args, "ltembed_matrixmultiply_rev", None) or ""
-        rev_clause = f', rev = "{rev}"' if rev else ""
-        patch_toml = f'[patch.crates-io]\nmatrixmultiply = {{ git = "{url}"{rev_clause} }}\n'
-    else:
-        raise ValueError(f"unknown matrixmultiply source: {source!r}")
-
-    f = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".toml", delete=False, prefix="ltembed-patch-"
-    )
-    f.write(patch_toml)
-    f.flush()
-    f.close()
-    return f.name
-
-
-def cargo_run_prefix(
-    patch_config: str | None = None,
-    cargo_features: str = "",
-) -> list[str]:
+def cargo_run_prefix(cargo_features: str = "") -> list[str]:
     command = ["cargo"]
-    if patch_config:
-        command.extend(["--config", patch_config])
     command.extend(["run", "--quiet", "--release"])
     if cargo_features:
         command.extend(["--features", cargo_features])
@@ -280,10 +226,7 @@ def cargo_run_prefix(
 
 
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
-    command = cargo_run_prefix(
-        getattr(args, "patch_config_path", None),
-        getattr(args, "ltembed_cargo_features", ""),
-    )
+    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
     command.extend([
         "--bin",
         "benchmark_ltembed",
@@ -305,10 +248,7 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
 
 
 def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return cargo_run_prefix(
-        getattr(args, "patch_config_path", None),
-        getattr(args, "ltembed_cargo_features", ""),
-    ) + [
+    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", "")) + [
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -324,10 +264,7 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 
 
 def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
-    return cargo_run_prefix(
-        getattr(args, "patch_config_path", None),
-        getattr(args, "ltembed_cargo_features", ""),
-    ) + [
+    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", "")) + [
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -412,20 +349,7 @@ def resolved_notes(
     payload: dict[str, Any],
     args: argparse.Namespace | None = None,
 ) -> str:
-    parts: list[str] = []
-    if implementation == "ltembed":
-        backend = str(payload.get("backend", "")).strip()
-        if backend:
-            parts.append(f"dense_backend={backend}")
-        if args is not None:
-            source = getattr(args, "ltembed_matrixmultiply_source", "crates-io")
-            if source == "path":
-                mm_path = getattr(args, "ltembed_matrixmultiply_path", "")
-                parts.append(f"matrixmultiply=path:{mm_path}")
-            elif source == "git":
-                rev = getattr(args, "ltembed_matrixmultiply_rev", "") or "HEAD"
-                parts.append(f"matrixmultiply=git:{rev}")
-    return " ".join(parts)
+    return ""
 
 
 def run_json_command(command: list[str]) -> dict[str, Any]:
@@ -671,15 +595,6 @@ def summary_lines(
             lines.append(f"transformers_version={transformers_version}")
         else:
             lines.append(f"{implementation}_version={version}")
-    ltembed_backend = warm_payloads.get("ltembed", {}).get("backend", "")
-    if ltembed_backend:
-        lines.append(f"ltembed_dense_backend={ltembed_backend}")
-    mm_source = getattr(args, "ltembed_matrixmultiply_source", "crates-io")
-    if mm_source == "path":
-        lines.append(f"ltembed_matrixmultiply=path:{args.ltembed_matrixmultiply_path}")
-    elif mm_source == "git":
-        rev = getattr(args, "ltembed_matrixmultiply_rev", "") or "HEAD"
-        lines.append(f"ltembed_matrixmultiply=git:{rev}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
     if correctness_payloads is not None:
@@ -705,35 +620,6 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional cargo features to pass through to LTEmbed benchmark builds.",
     )
-    parser.add_argument(
-        "--ltembed-matrixmultiply-source",
-        dest="ltembed_matrixmultiply_source",
-        choices=["crates-io", "path", "git"],
-        default="crates-io",
-        help=(
-            "matrixmultiply dependency source for LTEmbed builds. "
-            "'crates-io' (default) uses the pinned crates.io version; "
-            "'path' or 'git' injects a [patch.crates-io] override via --config."
-        ),
-    )
-    parser.add_argument(
-        "--ltembed-matrixmultiply-path",
-        dest="ltembed_matrixmultiply_path",
-        default="",
-        help="Local path to a matrixmultiply checkout (required when --ltembed-matrixmultiply-source=path).",
-    )
-    parser.add_argument(
-        "--ltembed-matrixmultiply-git",
-        dest="ltembed_matrixmultiply_git",
-        default="",
-        help="Git URL for matrixmultiply (required when --ltembed-matrixmultiply-source=git).",
-    )
-    parser.add_argument(
-        "--ltembed-matrixmultiply-rev",
-        dest="ltembed_matrixmultiply_rev",
-        default="",
-        help="Pinned git revision for matrixmultiply (used with --ltembed-matrixmultiply-source=git).",
-    )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
@@ -753,17 +639,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    args.patch_config_path = build_patch_config(args)
     timestamp = utc_now()
     git_revision = git_sha()
     host = host_metadata()
     rows: list[dict[str, str]] = []
-
-    try:
-        return _run(args=args, timestamp=timestamp, git_revision=git_revision, host=host, rows=rows)
-    finally:
-        if args.patch_config_path and os.path.exists(args.patch_config_path):
-            os.unlink(args.patch_config_path)
+    return _run(args=args, timestamp=timestamp, git_revision=git_revision, host=host, rows=rows)
 
 
 def _run(

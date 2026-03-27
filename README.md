@@ -54,4 +54,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Out Of Scope
 
 - Lambda packaging is not part of the current default path.
-- The handwritten BERT / `model.safetensors` route is no longer the primary integration story.

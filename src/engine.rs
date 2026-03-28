@@ -16,6 +16,21 @@ pub const QUERY_PREFIX: &str = "Query: ";
 pub const DOCUMENT_PREFIX: &str = "Document: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnnxEngineConfig {
+    pub output_dimension: usize,
+    pub l2_normalize: bool,
+}
+
+impl Default for OnnxEngineConfig {
+    fn default() -> Self {
+        Self {
+            output_dimension: EMBEDDING_DIMENSION,
+            l2_normalize: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingInputKind {
     Query,
     Document,
@@ -94,6 +109,51 @@ impl OnnxEngine {
             tokenizer,
             io,
         })
+    }
+
+    pub fn from_bundle_dir(
+        bundle_dir: &Path,
+        config: OnnxEngineConfig,
+    ) -> Result<Self, LTEmbedError> {
+        if config.output_dimension != EMBEDDING_DIMENSION {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "unsupported output_dimension {} (expected {EMBEDDING_DIMENSION})",
+                config.output_dimension
+            )));
+        }
+        if !config.l2_normalize {
+            return Err(LTEmbedError::ModelLoad(
+                "unsupported l2_normalize=false (engine always returns normalized embeddings)"
+                    .into(),
+            ));
+        }
+
+        let model_path = bundle_dir.join("model.ort");
+        let tokenizer_path = bundle_dir.join("tokenizer.json");
+        let build_info_path = bundle_dir.join("build-info.json");
+        let ort_dylib_path = bundle_dir.join("libonnxruntime.so");
+
+        if !build_info_path.exists() {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "bundle metadata file not found: {}",
+                build_info_path.display()
+            )));
+        }
+        if !ort_dylib_path.exists() {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "ORT dynamic library not found: {}",
+                ort_dylib_path.display()
+            )));
+        }
+
+        if std::env::var("ORT_DYLIB_PATH").map_or(true, |value| value.is_empty()) {
+            std::env::set_var("ORT_DYLIB_PATH", &ort_dylib_path);
+        }
+
+        Self::new(
+            &model_path.to_string_lossy(),
+            &tokenizer_path.to_string_lossy(),
+        )
     }
 
     pub fn embed(&self, input: EmbeddingInput<'_>) -> Result<Vec<f32>, LTEmbedError> {

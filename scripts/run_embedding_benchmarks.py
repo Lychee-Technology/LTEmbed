@@ -619,14 +619,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=Path,
-        default=ROOT / "ort_bundle",
+        default=ROOT / "assets",
         help="Local model directory for the PyTorch reference runner.",
     )
     parser.add_argument(
         "--ort-bundle-dir",
         type=Path,
         default=ROOT / "ort_bundle",
-        help="Local LTEmbed ORT bundle directory containing model.ort, tokenizer.json, libonnxruntime.so, and build-info.json.",
+        help="Local LTEmbed ORT bundle directory containing model.ort, tokenizer.json, build-info.json, and libonnxruntime.so.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)

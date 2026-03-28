@@ -66,6 +66,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             "Args",
             (),
             {
+                "model_dir": Path("assets"),
                 "ort_bundle_dir": Path("ort_bundle"),
                 "output_dimension": 512,
                 "l2_normalize": True,
@@ -88,10 +89,10 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             "Args",
             (),
             {
+                "model_dir": Path("assets"),
                 "ort_bundle_dir": Path("ort_bundle"),
                 "output_dimension": 512,
                 "l2_normalize": True,
-                "model_dir": Path("ort_bundle"),
                 "warmup": 5,
                 "iters": 10,
                 "threads": 1,
@@ -109,6 +110,68 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
                 command[:6],
                 ["cargo", "run", "--quiet", "--release", "--features", "vendored-blas"],
             )
+
+    def test_ltembed_commands_use_ort_bundle_contract(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("assets"),
+                "ort_bundle_dir": Path("ort_bundle"),
+                "output_dimension": 512,
+                "l2_normalize": True,
+                "warmup": 5,
+                "iters": 10,
+                "threads": 1,
+                "scenario": None,
+                "ltembed_cargo_features": "",
+            },
+        )
+
+        warm_command = bench.ltembed_warm_command(args)
+        cold_command = bench.ltembed_cold_command(args, "single/long")
+        correctness_command = bench.ltembed_correctness_command(args)
+
+        for command in (warm_command, cold_command, correctness_command):
+            self.assertIn("--ort-bundle-dir", command)
+            self.assertIn("ort_bundle", command)
+            self.assertNotIn("--model-dir", command)
+
+    def test_pytorch_commands_keep_model_dir_contract(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("assets"),
+                "warmup": 5,
+                "iters": 10,
+                "threads": 1,
+            },
+        )
+
+        warm_command = bench.pytorch_warm_command(args)
+        cold_command = bench.pytorch_cold_command(args, "single/long")
+        correctness_command = bench.pytorch_correctness_command(args)
+
+        for command in (warm_command, cold_command, correctness_command):
+            self.assertIn("--model-name-or-path", command)
+            self.assertIn("assets", command)
+
+    def test_benchmark_workflow_downloads_builder_bundle_and_hf_weights(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("minimal-ort-builder", workflow)
+        self.assertIn("v1.0.9", workflow)
+        self.assertIn(
+            "jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz",
+            workflow,
+        )
+        self.assertIn("snapshot_download(", workflow)
+        self.assertIn('--ort-bundle-dir "$ORT_BUNDLE_DIR"', workflow)
 
     def test_resolved_notes_is_empty_for_current_runners(self):
         bench = load_module()

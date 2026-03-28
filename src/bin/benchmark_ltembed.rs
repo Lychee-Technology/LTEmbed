@@ -205,6 +205,14 @@ fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, 
         .map_err(LTEmbedError::Inference)
 }
 
+fn progress_label(mode: &str, scenario_name: &str, state: &str) -> String {
+    format!("{mode} {scenario_name} {state}")
+}
+
+fn emit_progress(mode: &str, scenario_name: &str, state: &str) {
+    eprintln!("{}", progress_label(mode, scenario_name, state));
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args =
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
@@ -218,7 +226,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
             for scenario in scenarios {
+                emit_progress("warm", scenario.name, "start");
                 let stats = measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
+                emit_progress("warm", scenario.name, "done");
                 results.push(StatsEntry {
                     scenario: scenario.name.to_string(),
                     stats,
@@ -237,7 +247,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scenario_name = args.scenario.as_deref().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing --scenario")
             })?;
+            emit_progress("cold", scenario_name, "start");
             let stats = measure_cold_stats(&args, scenario_name)?;
+            emit_progress("cold", scenario_name, "done");
             serde_json::to_writer(
                 std::io::stdout(),
                 &ColdPayload {
@@ -254,7 +266,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
             for scenario in scenarios {
+                emit_progress("correctness", scenario.name, "start");
                 let embeddings = run_scenario(&engine, scenario.name)?;
+                emit_progress("correctness", scenario.name, "done");
                 results.push(EmbeddingsEntry {
                     scenario: scenario.name.to_string(),
                     embeddings,
@@ -307,5 +321,13 @@ mod tests {
         assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
+    }
+
+    #[test]
+    fn test_progress_label_includes_mode_scenario_and_state() {
+        assert_eq!(
+            progress_label("correctness", "batch/mixed/8", "start"),
+            "correctness batch/mixed/8 start"
+        );
     }
 }

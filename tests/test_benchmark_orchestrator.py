@@ -1,8 +1,12 @@
 import csv
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,6 +196,25 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         bench = load_module()
         self.assertEqual(bench.resolved_notes("ltembed", {}), "")
         self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
+
+    def test_run_json_command_logs_labeled_start_and_finish_messages(self):
+        bench = load_module()
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(
+                bench.subprocess,
+                "run",
+                return_value=SimpleNamespace(stdout='{"status":"ok"}'),
+            ) as run_mock,
+            contextlib.redirect_stderr(stderr),
+        ):
+            payload = bench.run_json_command(["python3", "tool.py"], "pytorch warm")
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("START pytorch warm", stderr.getvalue())
+        self.assertIn("DONE pytorch warm", stderr.getvalue())
+        run_mock.assert_called_once()
 
 
 if __name__ == "__main__":

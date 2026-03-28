@@ -74,6 +74,11 @@ class BenchPyTorchTests(unittest.TestCase):
         self.assertEqual(len(embeddings), 1)
         self.assertEqual(len(embeddings[0]), bench.OUTPUT_DIM)
 
+    def test_progress_label_includes_mode_scenario_and_state(self):
+        bench = load_module()
+        label = bench.progress_label("warm", "batch/mixed/8", "start")
+        self.assertEqual(label, "warm batch/mixed/8 start")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,21 +1,37 @@
-// tests/integration_tests.rs
-
 use approx::assert_relative_eq;
-use ltembed::engine::{EmbeddingInput, OnnxEngine, EMBEDDING_DIMENSION, MAX_LENGTH};
+use ltembed::engine::{
+    EmbeddingInput, OnnxEngine, OnnxEngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
+};
 use ltembed::error::LTEmbedError;
 use serde::Deserialize;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const MODEL: &str = "assets/onnx/model_q4f16.onnx";
-const TOKENIZER: &str = "assets/tokenizer.json";
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
+const TOKENIZER: &str = "assets/tokenizer.json";
+const TEST_BUNDLE_ENV: &str = "LTEMBED_TEST_BUNDLE_DIR";
 
-fn assets_available() -> bool {
-    Path::new(MODEL).exists() && Path::new(TOKENIZER).exists()
+fn bundle_dir() -> Option<PathBuf> {
+    std::env::var_os(TEST_BUNDLE_ENV).map(PathBuf::from)
+}
+
+fn bundle_available() -> bool {
+    bundle_dir()
+        .map(|dir| dir.join("model.ort").exists() && dir.join("tokenizer.json").exists())
+        .unwrap_or(false)
 }
 
 fn make_engine() -> OnnxEngine {
-    OnnxEngine::new(MODEL, TOKENIZER).expect("Failed to initialize OnnxEngine")
+    let bundle_dir = bundle_dir().expect("LTEMBED_TEST_BUNDLE_DIR must be set for bundle tests");
+    OnnxEngine::from_bundle_dir(
+        bundle_dir,
+        OnnxEngineConfig {
+            output_dimension: EMBEDDING_DIMENSION,
+            l2_normalize: true,
+        },
+    )
+    .expect("Failed to initialize OnnxEngine from bundle")
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -45,10 +61,42 @@ struct FixtureFile {
     fixtures: Vec<Fixture>,
 }
 
+fn unique_temp_dir() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}"))
+}
+
+fn write_build_info(dir: &Path, body: &str) {
+    fs::write(dir.join("build-info.json"), body).unwrap();
+}
+
+fn write_tokenizer(dir: &Path) {
+    fs::copy(TOKENIZER, dir.join("tokenizer.json")).unwrap();
+}
+
+fn valid_build_info_json() -> &'static str {
+    r#"{
+  "target_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "last_token",
+    "input_kind": "retrieval",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#
+}
+
 #[test]
 fn test_golden_parity_cosine_similarity() {
-    if !assets_available() {
-        eprintln!("Skipping golden parity test: model assets not found");
+    if !bundle_available() {
+        eprintln!("Skipping golden parity test: {TEST_BUNDLE_ENV} not set");
         return;
     }
     let engine = make_engine();
@@ -80,15 +128,154 @@ fn test_golden_parity_cosine_similarity() {
 
 #[test]
 fn test_missing_model_file_returns_model_load_error() {
-    let result = OnnxEngine::new(
-        "/nonexistent/model_q4f16.onnx",
-        "/nonexistent/tokenizer.json",
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(&temp_dir, valid_build_info_json());
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_missing_ort_dylib_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    write_build_info(&temp_dir, valid_build_info_json());
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_missing_tokenizer_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(&temp_dir, valid_build_info_json());
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_missing_build_info_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_malformed_build_info_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(&temp_dir, "{not-json");
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_invalid_input_kind_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(
+        &temp_dir,
+        r#"{
+  "target_id": "bad-model",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "last_token",
+    "input_kind": "text",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
     );
-    assert!(result.is_err());
-    assert!(
-        matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)),
-        "Expected ModelLoad error"
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_invalid_pooling_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(
+        &temp_dir,
+        r#"{
+  "target_id": "bad-model",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "mean",
+    "input_kind": "retrieval",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
     );
+
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn test_output_dimension_larger_than_raw_returns_model_load_error() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
+    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    write_build_info(&temp_dir, valid_build_info_json());
+
+    let result = OnnxEngine::from_bundle_dir(
+        &temp_dir,
+        OnnxEngineConfig {
+            output_dimension: 769,
+            l2_normalize: true,
+        },
+    );
+    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+
+    fs::remove_dir_all(temp_dir).unwrap();
 }
 
 #[test]
@@ -116,8 +303,8 @@ fn test_long_input_returns_input_too_long_error() {
 
 #[test]
 fn test_embed_batch_consistency() {
-    if !assets_available() {
-        eprintln!("Skipping: model assets not found");
+    if !bundle_available() {
+        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
         return;
     }
     let engine = make_engine();
@@ -135,8 +322,8 @@ fn test_embed_batch_consistency() {
 
 #[test]
 fn test_output_is_l2_normalized() {
-    if !assets_available() {
-        eprintln!("Skipping: model assets not found");
+    if !bundle_available() {
+        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
         return;
     }
     let engine = make_engine();
@@ -149,8 +336,8 @@ fn test_output_is_l2_normalized() {
 
 #[test]
 fn test_output_dimension_is_512() {
-    if !assets_available() {
-        eprintln!("Skipping: model assets not found");
+    if !bundle_available() {
+        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
         return;
     }
     let engine = make_engine();

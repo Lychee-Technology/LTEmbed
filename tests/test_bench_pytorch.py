@@ -2,6 +2,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import torch
 
@@ -78,6 +79,53 @@ class BenchPyTorchTests(unittest.TestCase):
         bench = load_module()
         label = bench.progress_label("warm", "batch/mixed/8", "start")
         self.assertEqual(label, "warm batch/mixed/8 start")
+
+    def test_load_model_moves_cpu_model_to_float32(self):
+        bench = load_module()
+
+        class FakeModel:
+            def __init__(self):
+                self.eval_called = False
+                self.to_calls = []
+
+            def eval(self):
+                self.eval_called = True
+                return self
+
+            def to(self, *args, **kwargs):
+                self.to_calls.append((args, kwargs))
+                return self
+
+        fake_model = FakeModel()
+
+        with (
+            mock.patch.object(
+                bench.AutoTokenizer,
+                "from_pretrained",
+                return_value="fake-tokenizer",
+            ) as tokenizer_from_pretrained,
+            mock.patch.object(
+                bench.AutoModel,
+                "from_pretrained",
+                return_value=fake_model,
+            ) as model_from_pretrained,
+        ):
+            model, tokenizer = bench.load_model("fake-model")
+
+        self.assertIs(model, fake_model)
+        self.assertEqual(tokenizer, "fake-tokenizer")
+        self.assertTrue(fake_model.eval_called)
+        tokenizer_from_pretrained.assert_called_once_with(
+            "fake-model",
+            trust_remote_code=True,
+        )
+        model_from_pretrained.assert_called_once_with(
+            "fake-model",
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+        )
+        self.assertIn((("cpu",), {}), fake_model.to_calls)
+        self.assertIn(((), {"dtype": torch.float32}), fake_model.to_calls)
 
 
 if __name__ == "__main__":

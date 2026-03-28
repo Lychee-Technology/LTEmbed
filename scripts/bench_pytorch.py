@@ -93,9 +93,14 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
 def load_model(model_name_or_path: str):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.eval()
+        model = AutoModel.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+        )
     model.to("cpu")
+    model.to(dtype=torch.float32)
+    model.eval()
     return model, tokenizer
 
 

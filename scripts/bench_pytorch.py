@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import statistics
+import sys
 import time
 
 import numpy as np
@@ -49,6 +50,14 @@ SCENARIOS: dict[str, dict[str, object]] = {
     },
     "batch/medium/16": {"batch_size": 16, "text_profile": "medium", "texts": [MEDIUM] * 16},
 }
+
+
+def progress_label(mode: str, scenario_name: str, state: str) -> str:
+    return f"{mode} {scenario_name} {state}"
+
+
+def emit_progress(mode: str, scenario_name: str, state: str) -> None:
+    print(progress_label(mode, scenario_name, state), file=sys.stderr, flush=True)
 
 
 def prefixed_text(item: dict[str, str]) -> str:
@@ -133,45 +142,58 @@ def measure_cold_stats(model_name_or_path: str, scenario_name: str) -> dict[str,
 
 def warm_payload(args) -> dict[str, object]:
     model, tokenizer = load_model(args.model_name_or_path)
+    results = []
+    for scenario_name in SCENARIOS:
+        emit_progress("warm", scenario_name, "start")
+        stats = measure_warm_stats(model, tokenizer, scenario_name, args.warmup, args.iters)
+        emit_progress("warm", scenario_name, "done")
+        results.append(
+            {
+                "scenario": scenario_name,
+                "stats": stats,
+            }
+        )
     return {
         "implementation": "pytorch",
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
-        "results": [
-            {
-                "scenario": scenario_name,
-                "stats": measure_warm_stats(model, tokenizer, scenario_name, args.warmup, args.iters),
-            }
-            for scenario_name in SCENARIOS
-        ],
+        "results": results,
     }
 
 
 def cold_payload(args) -> dict[str, object]:
     if not args.scenario:
         raise ValueError("--scenario is required for cold mode")
+    emit_progress("cold", args.scenario, "start")
+    stats = measure_cold_stats(args.model_name_or_path, args.scenario)
+    emit_progress("cold", args.scenario, "done")
     return {
         "implementation": "pytorch",
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
         "scenario": args.scenario,
-        "stats": measure_cold_stats(args.model_name_or_path, args.scenario),
+        "stats": stats,
     }
 
 
 def correctness_payload(args) -> dict[str, object]:
     model, tokenizer = load_model(args.model_name_or_path)
+    results = []
+    for scenario_name, scenario in SCENARIOS.items():
+        emit_progress("correctness", scenario_name, "start")
+        embeddings = embed_texts(model, tokenizer, list(scenario["texts"]))
+        emit_progress("correctness", scenario_name, "done")
+        results.append(
+            {
+                "scenario": scenario_name,
+                "embeddings": embeddings,
+            }
+        )
     return {
         "implementation": "pytorch",
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
-        "results": [
-            {
-                "scenario": scenario_name,
-                "embeddings": embed_texts(model, tokenizer, list(scenario["texts"])),
-            }
-            for scenario_name, scenario in SCENARIOS.items()
-        ],
+        "results": results,
     }
 
 

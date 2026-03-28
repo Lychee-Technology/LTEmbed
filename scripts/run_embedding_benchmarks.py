@@ -16,6 +16,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -364,30 +365,40 @@ def resolved_notes(
     return ""
 
 
-def run_json_command(command: list[str]) -> dict[str, Any]:
+def log_progress(label: str, state: str, elapsed_seconds: float | None = None) -> None:
+    timestamp = utc_now()
+    suffix = ""
+    if elapsed_seconds is not None:
+        suffix = f" ({elapsed_seconds:.1f}s)"
+    print(f"[{timestamp}] {state} {label}{suffix}", file=sys.stderr, flush=True)
+
+
+def run_json_command(command: list[str], label: str) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    log_progress(label, "START")
     try:
         completed = subprocess.run(
             command,
             check=True,
             cwd=ROOT,
-            capture_output=True,
+            stdout=subprocess.PIPE,
             text=True,
         )
     except subprocess.CalledProcessError as exc:
         # Surface Cargo build errors and binary stderr that would otherwise be
-        # swallowed by capture_output=True.
+        # swallowed by stdout capture.
         print(
             f"\n--- command failed (exit {exc.returncode}): {' '.join(exc.cmd)}\n"
-            f"--- stdout ---\n{exc.stdout}"
-            f"--- stderr ---\n{exc.stderr}",
+            f"--- stdout ---\n{exc.stdout}",
             file=sys.stderr,
         )
         raise
+    log_progress(label, "DONE", time.perf_counter() - started_at)
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"failed to parse JSON from {' '.join(command)}:\n{completed.stdout}\n{completed.stderr}"
+            f"failed to parse JSON from {' '.join(command)}:\n{completed.stdout}"
         ) from exc
 
 
@@ -465,7 +476,7 @@ def collect_warm_rows(
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {}
     for implementation, runner in RUNNERS.items():
-        payload = run_json_command(runner["warm"](args))
+        payload = run_json_command(runner["warm"](args), f"{implementation} warm")
         results[implementation] = payload
         version = resolved_implementation_version(implementation, payload)
         for entry in payload["results"]:
@@ -503,7 +514,10 @@ def collect_cold_rows(
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
     for scenario in SCENARIOS:
         for implementation, runner in RUNNERS.items():
-            payload = run_json_command(runner["cold"](args, scenario.name))
+            payload = run_json_command(
+                runner["cold"](args, scenario.name),
+                f"{implementation} cold {scenario.name}",
+            )
             results[implementation][scenario.name] = payload
             version = resolved_implementation_version(implementation, payload)
             base_fields = base_row_fields(
@@ -538,7 +552,10 @@ def collect_correctness_rows(
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
     for implementation, runner in RUNNERS.items():
-        payloads[implementation] = run_json_command(runner["correctness"](args))
+        payloads[implementation] = run_json_command(
+            runner["correctness"](args),
+            f"{implementation} correctness",
+        )
 
     reference = payloads["pytorch"]
     for implementation, payload in payloads.items():

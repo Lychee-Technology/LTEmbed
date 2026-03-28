@@ -1,0 +1,126 @@
+name: release-bundles
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: package-${{ matrix.asset_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - builder_repo: Lychee-Technology/minimal-ort-builder
+            release_tag: v1.0.7
+            asset_name: jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz
+            expected_model_id: jinaai/jina-embeddings-v5-text-nano-retrieval
+            output_dimension: 512
+            l2_normalize: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download minimal-ort-builder asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts/builder
+          gh release download "${{ matrix.release_tag }}" \
+            --repo "${{ matrix.builder_repo }}" \
+            --pattern "${{ matrix.asset_name }}" \
+            --dir artifacts/builder
+
+      - name: Extract and verify bundle
+        env:
+          EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
+        run: |
+          mkdir -p artifacts/unpacked
+          tar -xzf "artifacts/builder/${{ matrix.asset_name }}" -C artifacts/unpacked
+          cd artifacts/unpacked
+
+          sha256sum -c SHA256SUMS
+
+          test -f model.ort
+          test -f tokenizer.json
+          test -f libonnxruntime.so
+          test -f build-info.json
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          build_info = json.loads(Path("build-info.json").read_text(encoding="utf-8"))
+          assert build_info["target_id"] == os.environ["EXPECTED_MODEL_ID"]
+          PY
+
+      - name: Build LTEmbed release tarball
+        id: bundle
+        env:
+          BUILDER_REPO: ${{ matrix.builder_repo }}
+          BUILDER_RELEASE_TAG: ${{ matrix.release_tag }}
+          BUILDER_ASSET_NAME: ${{ matrix.asset_name }}
+          EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
+          OUTPUT_DIMENSION: ${{ matrix.output_dimension }}
+          L2_NORMALIZE: ${{ matrix.l2_normalize }}
+        run: |
+          VERSION="$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          cargo_toml = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          print(tomllib.loads(cargo_toml)["package"]["version"])
+          PY
+          )"
+
+          ASSET_STEM="${BUILDER_ASSET_NAME%.tar.gz}"
+          ROOT_NAME="ltembed-${VERSION}-${ASSET_STEM}"
+          OUTPUT_NAME="ltembed-${VERSION}-${BUILDER_ASSET_NAME}"
+
+          mkdir -p artifacts/package
+          git archive --format=tar --prefix="${ROOT_NAME}/" HEAD | tar -xf - -C artifacts/package
+          mkdir -p "artifacts/package/${ROOT_NAME}/ort_bundle"
+          tar -xzf "artifacts/builder/${BUILDER_ASSET_NAME}" -C "artifacts/package/${ROOT_NAME}/ort_bundle"
+          tar -czf "artifacts/package/${OUTPUT_NAME}" -C artifacts/package "${ROOT_NAME}"
+          tar -tzf "artifacts/package/${OUTPUT_NAME}" | grep -q "${ROOT_NAME}/ort_bundle/model.ort"
+
+          {
+            echo "builder_repo=${BUILDER_REPO}"
+            echo "builder_release_tag=${BUILDER_RELEASE_TAG}"
+            echo "builder_asset_name=${BUILDER_ASSET_NAME}"
+            echo "expected_model_id=${EXPECTED_MODEL_ID}"
+            echo "output_dimension=${OUTPUT_DIMENSION}"
+            echo "l2_normalize=${L2_NORMALIZE}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "path=artifacts/package/${OUTPUT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "name=${OUTPUT_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: ${{ steps.bundle.outputs.path }}
+          retention-days: 7
+
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ steps.bundle.outputs.path }}" \
+            --repo "${{ github.repository }}" \
+            --clobber

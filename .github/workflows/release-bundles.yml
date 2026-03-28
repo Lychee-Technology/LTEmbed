@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - builder_repo: Lychee-Technology/minimal-ort-builder
-            release_tag: v1.0.7
+            release_tag: v1.0.9
             asset_name: jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz
             expected_model_id: jinaai/jina-embeddings-v5-text-nano-retrieval
             output_dimension: 512

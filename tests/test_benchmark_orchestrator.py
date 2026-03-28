@@ -181,6 +181,13 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("https://download.pytorch.org/whl/cpu", workflow)
         self.assertIn("python -m pip install --index-url https://download.pytorch.org/whl/cpu torch", workflow)
 
+    def test_benchmark_workflow_downloads_hf_remote_code_files(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"*.py"', workflow)
+
     def test_resolved_notes_is_empty_for_current_runners(self):
         bench = load_module()
         self.assertEqual(bench.resolved_notes("ltembed", {}), "")

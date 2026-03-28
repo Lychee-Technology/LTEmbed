@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.MODEL_DIR }}
-          key: ${{ runner.os }}-arm64-model-jina-v1
+          key: ${{ runner.os }}-arm64-model-jina-v2
 
       - name: Cache ORT Bundle
         id: cache-ort-bundle
@@ -115,6 +115,7 @@ jobs:
                   "special_tokens_map.json",
                   "vocab.txt",
                   "model.safetensors",
+                  "*.py",
               ],
           )
           PY

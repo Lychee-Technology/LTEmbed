@@ -1,6 +1,9 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,33 @@ class BenchPyTorchTests(unittest.TestCase):
         )
         self.assertEqual(stats["mean_ms"], 25.0)
         self.assertEqual(stats["median_ms"], 25.0)
+
+    def test_embed_texts_casts_bfloat16_model_output_before_numpy(self):
+        bench = load_module()
+
+        class FakeTokenizer:
+            def __call__(self, texts, **kwargs):
+                self.seen_texts = texts
+                return {
+                    "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.int64),
+                }
+
+        class FakeModel:
+            def __call__(self, **encoded):
+                return SimpleNamespace(
+                    last_hidden_state=torch.arange(
+                        3 * bench.RAW_DIM, dtype=torch.bfloat16
+                    ).reshape(1, 3, bench.RAW_DIM)
+                )
+
+        embeddings = bench.embed_texts(
+            FakeModel(),
+            FakeTokenizer(),
+            [{"kind": "query", "text": "hello"}],
+        )
+
+        self.assertEqual(len(embeddings), 1)
+        self.assertEqual(len(embeddings[0]), bench.OUTPUT_DIM)
 
 
 if __name__ == "__main__":

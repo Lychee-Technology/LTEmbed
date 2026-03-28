@@ -1,5 +1,5 @@
 use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
-use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine};
+use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig};
 use ltembed::error::LTEmbedError;
 use serde::Serialize;
 use std::env;
@@ -10,7 +10,9 @@ use std::time::Instant;
 struct Args {
     mode: String,
     scenario: Option<String>,
-    model_dir: PathBuf,
+    ort_bundle_dir: PathBuf,
+    output_dimension: usize,
+    l2_normalize: bool,
     warmup: usize,
     iters: usize,
     threads: usize,
@@ -57,7 +59,9 @@ where
 {
     let mut mode = None;
     let mut scenario = None;
-    let mut model_dir = None;
+    let mut ort_bundle_dir = None;
+    let mut output_dimension = None;
+    let mut l2_normalize = None;
     let mut warmup = 10usize;
     let mut iters = 100usize;
     let mut threads = 1usize;
@@ -68,7 +72,28 @@ where
         match arg.as_str() {
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
-            "--model-dir" => model_dir = iter.next().map(PathBuf::from),
+            "--ort-bundle-dir" => ort_bundle_dir = iter.next().map(PathBuf::from),
+            "--output-dimension" => {
+                output_dimension = Some(
+                    iter.next()
+                        .ok_or_else(|| "missing value for --output-dimension".to_string())?
+                        .parse()
+                        .map_err(|_| "invalid value for --output-dimension".to_string())?,
+                )
+            }
+            "--l2-normalize" => {
+                l2_normalize = Some(
+                    match iter
+                        .next()
+                        .ok_or_else(|| "missing value for --l2-normalize".to_string())?
+                        .as_str()
+                    {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err("invalid value for --l2-normalize".to_string()),
+                    },
+                )
+            }
             "--warmup" => {
                 warmup = iter
                     .next()
@@ -97,7 +122,11 @@ where
     Ok(Args {
         mode: mode.ok_or_else(|| "missing required --mode".to_string())?,
         scenario,
-        model_dir: model_dir.ok_or_else(|| "missing required --model-dir".to_string())?,
+        ort_bundle_dir: ort_bundle_dir
+            .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
+        output_dimension: output_dimension
+            .ok_or_else(|| "missing required --output-dimension".to_string())?,
+        l2_normalize: l2_normalize.ok_or_else(|| "missing required --l2-normalize".to_string())?,
         warmup,
         iters,
         threads,
@@ -124,12 +153,13 @@ fn git_sha() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn engine_from_model_dir(model_dir: &Path) -> Result<OnnxEngine, LTEmbedError> {
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    let onnx_path = model_dir.join("onnx").join("model_q4f16.onnx");
-    OnnxEngine::new(
-        &onnx_path.to_string_lossy(),
-        &tokenizer_path.to_string_lossy(),
+fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
+    OnnxEngine::from_bundle_dir(
+        Path::new(&args.ort_bundle_dir),
+        OnnxEngineConfig {
+            output_dimension: args.output_dimension,
+            l2_normalize: args.l2_normalize,
+        },
     )
 }
 
@@ -167,9 +197,9 @@ fn measure_warm_stats(
     LatencyStats::from_samples_ms(&samples).map_err(LTEmbedError::Inference)
 }
 
-fn measure_cold_stats(model_dir: &Path, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
+fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
     let start = Instant::now();
-    let engine = engine_from_model_dir(model_dir)?;
+    let engine = engine_from_bundle_dir(args)?;
     let _ = run_scenario(&engine, scenario_name)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
         .map_err(LTEmbedError::Inference)
@@ -183,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.mode.as_str() {
         "warm" => {
-            let engine = engine_from_model_dir(&args.model_dir)?;
+            let engine = engine_from_bundle_dir(&args)?;
             let mut results = Vec::new();
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
@@ -207,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let scenario_name = args.scenario.as_deref().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing --scenario")
             })?;
-            let stats = measure_cold_stats(&args.model_dir, scenario_name)?;
+            let stats = measure_cold_stats(&args, scenario_name)?;
             serde_json::to_writer(
                 std::io::stdout(),
                 &ColdPayload {
@@ -219,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         "correctness" => {
-            let engine = engine_from_model_dir(&args.model_dir)?;
+            let engine = engine_from_bundle_dir(&args)?;
             let mut results = Vec::new();
             let scenarios = selected_scenarios(args.scenario.as_deref())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
@@ -263,13 +293,19 @@ mod tests {
             "warm",
             "--scenario",
             "single/medium",
-            "--model-dir",
-            "assets",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
         ])
         .unwrap();
 
         assert_eq!(args.mode, "warm");
         assert_eq!(args.scenario.as_deref(), Some("single/medium"));
-        assert_eq!(args.model_dir, PathBuf::from("assets"));
+        assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
+        assert_eq!(args.output_dimension, 512);
+        assert!(args.l2_normalize);
     }
 }

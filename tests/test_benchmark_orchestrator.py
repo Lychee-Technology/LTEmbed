@@ -66,7 +66,9 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             "Args",
             (),
             {
-                "model_dir": Path("assets"),
+                "ort_bundle_dir": Path("ort_bundle"),
+                "output_dimension": 512,
+                "l2_normalize": True,
                 "warmup": 5,
                 "iters": 10,
                 "threads": 1,
@@ -76,6 +78,9 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         command = bench.ltembed_warm_command(args)
         self.assertIn("--scenario", command)
         self.assertIn("single/medium", command)
+        self.assertIn("--ort-bundle-dir", command)
+        self.assertIn("--output-dimension", command)
+        self.assertIn("--l2-normalize", command)
 
     def test_ltembed_commands_include_optional_cargo_features(self):
         bench = load_module()
@@ -83,7 +88,10 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             "Args",
             (),
             {
-                "model_dir": Path("assets"),
+                "ort_bundle_dir": Path("ort_bundle"),
+                "output_dimension": 512,
+                "l2_normalize": True,
+                "model_dir": Path("ort_bundle"),
                 "warmup": 5,
                 "iters": 10,
                 "threads": 1,

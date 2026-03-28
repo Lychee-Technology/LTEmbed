@@ -5,18 +5,21 @@
 Verify the `OnnxEngine` path end to end:
 
 - tokenizer loading
-- ONNX graph loading
+- ORT bundle loading
 - typed query/document prefix handling
 - last-token pooling
 - `768 -> 512` truncation
 - L2 normalization
 
-## Asset Expectations
+## Bundle Expectations
 
 Tier 2 tests expect:
 
-- `assets/tokenizer.json`
-- `assets/onnx/model_q4f16.onnx`
+- a valid `ort_bundle/`
+  - `model.ort`
+  - `tokenizer.json`
+  - `libonnxruntime.so`
+  - `build-info.json`
 - regenerated `tests/fixtures/test_fixtures.json`
 
 Tier 1 tests must remain runnable without local model weights.
@@ -25,10 +28,13 @@ Tier 1 tests must remain runnable without local model weights.
 
 Always safe for CI and local smoke runs:
 
-- missing ONNX file returns `ModelLoad`
+- missing `model.ort` returns `ModelLoad`
+- missing `libonnxruntime.so` returns `ModelLoad`
 - missing tokenizer returns `ModelLoad`
+- missing or malformed `build-info.json` returns `ModelLoad`
+- unsupported metadata returns `ModelLoad`
 - tokenizer overlength returns `InputTooLong { max: 8192 }`
-- output helpers preserve the `512`-d contract
+- output config validation preserves the `512`-d contract
 
 ## Tier 2
 

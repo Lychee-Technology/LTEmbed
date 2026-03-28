@@ -233,8 +233,12 @@ def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
         "--",
         "--mode",
         "warm",
-        "--model-dir",
-        str(args.model_dir),
+        "--ort-bundle-dir",
+        str(args.ort_bundle_dir),
+        "--output-dimension",
+        str(args.output_dimension),
+        "--l2-normalize",
+        "true" if args.l2_normalize else "false",
         "--warmup",
         str(args.warmup),
         "--iters",
@@ -256,8 +260,12 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
         "cold",
         "--scenario",
         scenario_name,
-        "--model-dir",
-        str(args.model_dir),
+        "--ort-bundle-dir",
+        str(args.ort_bundle_dir),
+        "--output-dimension",
+        str(args.output_dimension),
+        "--l2-normalize",
+        "true" if args.l2_normalize else "false",
         "--threads",
         str(args.threads),
     ]
@@ -270,8 +278,12 @@ def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
         "--",
         "--mode",
         "correctness",
-        "--model-dir",
-        str(args.model_dir),
+        "--ort-bundle-dir",
+        str(args.ort_bundle_dir),
+        "--output-dimension",
+        str(args.output_dimension),
+        "--l2-normalize",
+        "true" if args.l2_normalize else "false",
         "--threads",
         str(args.threads),
     ]
@@ -607,11 +619,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-dir",
         type=Path,
-        default=ROOT / "assets",
-        help="Local model directory containing tokenizer.json and onnx/model_q4f16.onnx.",
+        default=ROOT / "ort_bundle",
+        help="Local model directory for the PyTorch reference runner.",
+    )
+    parser.add_argument(
+        "--ort-bundle-dir",
+        type=Path,
+        default=ROOT / "ort_bundle",
+        help="Local LTEmbed ORT bundle directory containing model.ort, tokenizer.json, libonnxruntime.so, and build-info.json.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)
+    parser.add_argument("--output-dimension", type=int, default=512)
+    parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)

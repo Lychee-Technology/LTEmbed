@@ -1,28 +1,34 @@
 # LTEmbed
 
-LTEmbed is a Rust embedding library centered on [`OnnxEngine`](./src/engine.rs). The default path uses ONNX Runtime (`ort`) with `jinaai/jina-embeddings-v5-text-nano-retrieval`.
+LTEmbed is a Rust embedding library centered on [`OnnxEngine`](./src/engine.rs). The default path uses ONNX Runtime (`ort`) with a builder-produced `ort_bundle/` for `jinaai/jina-embeddings-v5-text-nano-retrieval`.
 
-## Model Layout
+## Bundle Layout
 
-Expected local assets:
+Expected local bundle contents:
 
-- `assets/tokenizer.json`
-- `assets/onnx/model_q4f16.onnx`
+- `ort_bundle/model.ort`
+- `ort_bundle/tokenizer.json`
+- `ort_bundle/libonnxruntime.so`
+- `ort_bundle/build-info.json`
 
 Runtime notes:
 
-- `ORT_DYLIB_PATH` can point to the ONNX Runtime shared library when the host environment does not already provide it.
-- The engine validates the ONNX graph contract at startup and returns `ModelLoad` on missing files or incompatible I/O.
+- `OnnxEngine::from_bundle_dir(...)` loads the ORT dynamic library from the bundle itself.
+- `OnnxEngineConfig` controls the returned embedding dimension and whether outputs are L2-normalized.
+- The engine validates bundle metadata at startup and returns `ModelLoad` on missing files or incompatible metadata.
 
 ## API
 
 ```rust
-use ltembed::engine::{EmbeddingInput, OnnxEngine};
+use ltembed::engine::{EmbeddingInput, OnnxEngine, OnnxEngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = OnnxEngine::new(
-        "assets/onnx/model_q4f16.onnx",
-        "assets/tokenizer.json",
+    let engine = OnnxEngine::from_bundle_dir(
+        "ort_bundle",
+        OnnxEngineConfig {
+            output_dimension: 512,
+            l2_normalize: true,
+        },
     )?;
 
     let single = engine.embed(EmbeddingInput::query("Hello, world!"))?;
@@ -40,16 +46,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Retrieval Semantics
 
 - Callers pass typed inputs: `EmbeddingInput::query(...)` or `EmbeddingInput::document(...)`.
-- LTEmbed applies the required `Query: ` or `Document: ` prefix internally.
+- LTEmbed reads `Query: ` and `Document: ` prefixes from bundle metadata and applies them internally.
 - The model's raw pooled output is `768` dimensions.
-- LTEmbed truncates to `512` and then L2-normalizes before returning results.
+- `OnnxEngineConfig` can truncate to a smaller output dimension and optionally L2-normalize before returning results.
 - Maximum tokenizer length is `8192`; overlong inputs return `InputTooLong`.
 
-## Benchmarks And Fixtures
+## Benchmarks, Fixtures, And Releases
 
 - `scripts/bench_pytorch.py` is the Python reference runner for the Jina model.
 - `scripts/generate_fixtures.py` regenerates correctness fixtures in the new `kind + text + embedding` schema.
-- `scripts/run_embedding_benchmarks.py` orchestrates warm, cold, and correctness runs against the ONNX path.
+- `scripts/run_embedding_benchmarks.py` orchestrates warm, cold, and correctness runs against `ort_bundle_dir`.
+- LTEmbed release tarballs are expected to contain a source snapshot plus `ort_bundle/` at the tarball root.
 
 ## Out Of Scope
 

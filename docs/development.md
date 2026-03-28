@@ -38,7 +38,7 @@ For a quick end-to-end check against local assets, run:
 ```bash
 cargo check --all-targets
 cargo run --example api_usage
-cargo run --bin benchmark_ltembed -- --mode correctness --model-dir assets
+cargo run --bin benchmark_ltembed -- --mode correctness --ort-bundle-dir ort_bundle --output-dimension 512 --l2-normalize true
 ```
 
 The root [`README.md`](../README.md) is the primary guide for the Rust API surface and expected asset layout.

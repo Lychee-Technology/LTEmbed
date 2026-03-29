@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use ort::session::Session;
+use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::TensorRef;
 use serde::Deserialize;
 
@@ -177,6 +177,12 @@ impl OnnxEngine {
             .with_intra_threads(1)
             .map_err(|err| {
                 LTEmbedError::ModelLoad(format!("Failed to configure ORT session: {err}"))
+            })?
+            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .map_err(|err| {
+                LTEmbedError::ModelLoad(format!(
+                    "Failed to disable ORT runtime optimization: {err}"
+                ))
             })?
             .commit_from_file(model_path)
             .map_err(|err| LTEmbedError::ModelLoad(format!("Failed to load ORT model: {err}")))?;
@@ -468,6 +474,26 @@ fn model_sequence_length(shape: &[i64]) -> Result<Option<usize>, LTEmbedError> {
     }
 }
 
+fn resolved_model_sequence_length(
+    input_ids_shape: &[i64],
+    attention_mask_shape: &[i64],
+) -> Result<Option<usize>, LTEmbedError> {
+    let input_sequence_length = model_sequence_length(input_ids_shape)?;
+    let attention_mask_sequence_length = model_sequence_length(attention_mask_shape)?;
+
+    match (input_sequence_length, attention_mask_sequence_length) {
+        (Some(input_len), Some(mask_len)) if input_len != mask_len => Err(LTEmbedError::ModelLoad(
+            format!(
+                "ORT model inputs `input_ids` and `attention_mask` must expose compatible sequence lengths, got {input_ids_shape:?} and {attention_mask_shape:?}"
+            ),
+        )),
+        (Some(input_len), Some(_)) => Ok(Some(input_len)),
+        (Some(input_len), None) => Ok(Some(input_len)),
+        (None, Some(mask_len)) => Ok(Some(mask_len)),
+        (None, None) => Ok(None),
+    }
+}
+
 fn effective_sequence_length(
     model_sequence_length: Option<usize>,
     batch_max_sequence_length: usize,
@@ -528,19 +554,14 @@ impl SessionIo {
         let attention_mask_shape = attention_mask.dtype().tensor_shape().ok_or_else(|| {
             LTEmbedError::ModelLoad("ORT model input `attention_mask` must be a tensor".into())
         })?;
-        let input_sequence_length = model_sequence_length(input_ids_shape)?;
-        let attention_mask_sequence_length = model_sequence_length(attention_mask_shape)?;
-        if input_sequence_length != attention_mask_sequence_length {
-            return Err(LTEmbedError::ModelLoad(format!(
-                "ORT model inputs `input_ids` and `attention_mask` must expose matching sequence lengths, got {input_ids_shape:?} and {attention_mask_shape:?}"
-            )));
-        }
+        let sequence_length =
+            resolved_model_sequence_length(input_ids_shape, attention_mask_shape)?;
 
         Ok(Self {
             input_ids: input_ids.name().to_string(),
             attention_mask: attention_mask.name().to_string(),
             last_hidden_state: last_hidden_state.name().to_string(),
-            sequence_length: input_sequence_length,
+            sequence_length,
         })
     }
 }
@@ -663,5 +684,27 @@ mod tests {
     #[test]
     fn test_effective_sequence_length_uses_fixed_model_length() {
         assert_eq!(effective_sequence_length(Some(8192), 7).unwrap(), 8192);
+    }
+
+    #[test]
+    fn test_resolved_model_sequence_length_uses_fixed_input_ids_shape() {
+        assert_eq!(
+            resolved_model_sequence_length(&[-1, 8192], &[-1, -1]).unwrap(),
+            Some(8192)
+        );
+    }
+
+    #[test]
+    fn test_resolved_model_sequence_length_uses_fixed_attention_mask_shape() {
+        assert_eq!(
+            resolved_model_sequence_length(&[-1, -1], &[-1, 8192]).unwrap(),
+            Some(8192)
+        );
+    }
+
+    #[test]
+    fn test_resolved_model_sequence_length_rejects_mismatched_fixed_shapes() {
+        let err = resolved_model_sequence_length(&[-1, 8192], &[-1, 4096]).unwrap_err();
+        assert!(matches!(err, LTEmbedError::ModelLoad(_)));
     }
 }

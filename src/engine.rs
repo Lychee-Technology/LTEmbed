@@ -68,6 +68,7 @@ struct SessionIo {
     input_ids: String,
     attention_mask: String,
     last_hidden_state: String,
+    sequence_length: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,11 +216,12 @@ impl OnnxEngine {
             .tokenizer
             .encode_batch(&prefixed_inputs, self.spec.max_length)?;
         let batch_size = encoded.len();
-        let seq_len = encoded
+        let batch_max_seq_len = encoded
             .iter()
             .map(|item| item.input_ids.len())
             .max()
             .unwrap_or(0);
+        let seq_len = effective_sequence_length(self.io.sequence_length, batch_max_seq_len)?;
 
         let mut input_ids = vec![0_i64; batch_size * seq_len];
         let mut attention_mask = vec![0_i64; batch_size * seq_len];
@@ -451,6 +453,36 @@ fn resolve_ort_source(dylib_path: Option<&Path>) -> OrtInitSource {
     }
 }
 
+fn model_sequence_length(shape: &[i64]) -> Result<Option<usize>, LTEmbedError> {
+    if shape.len() != 2 {
+        return Err(LTEmbedError::ModelLoad(format!(
+            "ORT model input must be rank-2, got shape {shape:?}"
+        )));
+    }
+
+    match shape[1] {
+        dim if dim < 0 => Ok(None),
+        dim => usize::try_from(dim)
+            .map(Some)
+            .map_err(|_| LTEmbedError::ModelLoad(format!("Invalid ORT input shape {shape:?}"))),
+    }
+}
+
+fn effective_sequence_length(
+    model_sequence_length: Option<usize>,
+    batch_max_sequence_length: usize,
+) -> Result<usize, LTEmbedError> {
+    match model_sequence_length {
+        Some(model_len) if batch_max_sequence_length > model_len => Err(LTEmbedError::Inference(
+            format!(
+                "encoded input length {batch_max_sequence_length} exceeds ORT model sequence length {model_len}"
+            ),
+        )),
+        Some(model_len) => Ok(model_len),
+        None => Ok(batch_max_sequence_length),
+    }
+}
+
 impl SessionIo {
     fn from_session(
         session: &Session,
@@ -490,11 +522,25 @@ impl SessionIo {
                 "ORT model output `last_hidden_state` must expose raw embedding dimension {raw_embedding_dimension}, got {raw_dim:?}"
             )));
         }
+        let input_ids_shape = input_ids.dtype().tensor_shape().ok_or_else(|| {
+            LTEmbedError::ModelLoad("ORT model input `input_ids` must be a tensor".into())
+        })?;
+        let attention_mask_shape = attention_mask.dtype().tensor_shape().ok_or_else(|| {
+            LTEmbedError::ModelLoad("ORT model input `attention_mask` must be a tensor".into())
+        })?;
+        let input_sequence_length = model_sequence_length(input_ids_shape)?;
+        let attention_mask_sequence_length = model_sequence_length(attention_mask_shape)?;
+        if input_sequence_length != attention_mask_sequence_length {
+            return Err(LTEmbedError::ModelLoad(format!(
+                "ORT model inputs `input_ids` and `attention_mask` must expose matching sequence lengths, got {input_ids_shape:?} and {attention_mask_shape:?}"
+            )));
+        }
 
         Ok(Self {
             input_ids: input_ids.name().to_string(),
             attention_mask: attention_mask.name().to_string(),
             last_hidden_state: last_hidden_state.name().to_string(),
+            sequence_length: input_sequence_length,
         })
     }
 }
@@ -597,5 +643,25 @@ mod tests {
         .validate(RAW_EMBEDDING_DIMENSION)
         .unwrap_err();
         assert!(matches!(err, LTEmbedError::ModelLoad(_)));
+    }
+
+    #[test]
+    fn test_model_sequence_length_is_dynamic_when_second_dim_is_negative() {
+        assert_eq!(model_sequence_length(&[-1, -1]).unwrap(), None);
+    }
+
+    #[test]
+    fn test_model_sequence_length_uses_fixed_second_dim() {
+        assert_eq!(model_sequence_length(&[-1, 8192]).unwrap(), Some(8192));
+    }
+
+    #[test]
+    fn test_effective_sequence_length_uses_batch_max_for_dynamic_models() {
+        assert_eq!(effective_sequence_length(None, 7).unwrap(), 7);
+    }
+
+    #[test]
+    fn test_effective_sequence_length_uses_fixed_model_length() {
+        assert_eq!(effective_sequence_length(Some(8192), 7).unwrap(), 8192);
     }
 }

@@ -6,6 +6,7 @@ use ltembed::error::LTEmbedError;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
@@ -62,11 +63,13 @@ struct FixtureFile {
 }
 
 fn unique_temp_dir() -> PathBuf {
+    static UNIQUE_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}"))
+    let counter = UNIQUE_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}-{counter}"))
 }
 
 fn write_build_info(dir: &Path, body: &str) {

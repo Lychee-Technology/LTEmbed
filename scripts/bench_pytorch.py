@@ -84,9 +84,14 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
 def load_model(model_name_or_path: str):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.eval()
+        model = AutoModel.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+        )
     model.to("cpu")
+    model.to(dtype=torch.float32)
+    model.eval()
     return model, tokenizer
 
 
@@ -100,7 +105,12 @@ def embed_texts(model, tokenizer, texts: list[dict[str, str]]) -> list[list[floa
     )
     with torch.no_grad():
         output = model(**encoded)
-    pooled = last_token_pool(output.last_hidden_state, encoded["attention_mask"]).cpu().numpy()
+    pooled = (
+        last_token_pool(output.last_hidden_state, encoded["attention_mask"])
+        .to(dtype=torch.float32)
+        .cpu()
+        .numpy()
+    )
     normalized = truncate_and_normalize(pooled)
     return normalized.tolist()
 

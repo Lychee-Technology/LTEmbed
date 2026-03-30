@@ -199,6 +199,13 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
         self.assertIn('"*.py"', workflow)
 
+    def test_benchmark_workflow_enables_ltembed_stage_profiling(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('export LTEMBED_PROFILE="1"', workflow)
+
     def test_resolved_notes_is_empty_for_current_runners(self):
         bench = load_module()
         self.assertEqual(bench.resolved_notes("ltembed", {}), "")

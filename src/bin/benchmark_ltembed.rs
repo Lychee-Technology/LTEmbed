@@ -1,5 +1,7 @@
 use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
-use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig};
+use ltembed::engine::{
+    EmbedBatchProfile, EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig,
+};
 use ltembed::error::LTEmbedError;
 use serde::Serialize;
 use std::env;
@@ -50,6 +52,20 @@ struct ColdPayload {
     implementation_version: String,
     scenario: String,
     stats: LatencyStats,
+}
+
+#[derive(Debug, Default)]
+struct ProfileAccumulator {
+    samples: usize,
+    batch_size_sum: usize,
+    seq_len_sum: usize,
+    prefix_ms_sum: f64,
+    tokenize_ms_sum: f64,
+    tensorize_ms_sum: f64,
+    run_ms_sum: f64,
+    extract_ms_sum: f64,
+    postprocess_ms_sum: f64,
+    total_ms_sum: f64,
 }
 
 fn parse_args_from<I, S>(args: I) -> Result<Args, String>
@@ -164,6 +180,26 @@ fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
 }
 
 fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+    let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, false)?;
+    Ok(embeddings)
+}
+
+fn run_scenario_profiled(
+    engine: &OnnxEngine,
+    scenario_name: &str,
+) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
+    let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, true)?;
+    let profile = profile.ok_or_else(|| {
+        LTEmbedError::Inference("profiling requested but no profile was collected".into())
+    })?;
+    Ok((embeddings, profile))
+}
+
+fn run_scenario_maybe_profiled(
+    engine: &OnnxEngine,
+    scenario_name: &str,
+    collect_profile: bool,
+) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
     let scenario = scenario_by_name(scenario_name)
         .ok_or_else(|| LTEmbedError::Inference("unknown scenario".into()))?;
     let benchmark_inputs = scenario_inputs(scenario);
@@ -174,7 +210,73 @@ fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>
             EmbeddingInputKind::Document => EmbeddingInput::document(input.text.as_str()),
         })
         .collect::<Vec<_>>();
-    engine.embed_batch(&inputs)
+    if collect_profile {
+        let (embeddings, profile) = engine.embed_batch_profiled(&inputs)?;
+        Ok((embeddings, Some(profile)))
+    } else {
+        Ok((engine.embed_batch(&inputs)?, None))
+    }
+}
+
+fn profiling_enabled_from_env() -> bool {
+    matches!(
+        env::var("LTEMBED_PROFILE").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn profile_summary_line(
+    scenario_name: &str,
+    samples: usize,
+    batch_size: usize,
+    seq_len: usize,
+    prefix_ms: f64,
+    tokenize_ms: f64,
+    tensorize_ms: f64,
+    run_ms: f64,
+    extract_ms: f64,
+    postprocess_ms: f64,
+    total_ms: f64,
+) -> String {
+    format!(
+        "profile {scenario_name} samples={samples} batch_size={batch_size} seq_len={seq_len} prefix_ms={prefix_ms:.3} tokenize_ms={tokenize_ms:.3} tensorize_ms={tensorize_ms:.3} run_ms={run_ms:.3} extract_ms={extract_ms:.3} postprocess_ms={postprocess_ms:.3} total_ms={total_ms:.3}"
+    )
+}
+
+impl ProfileAccumulator {
+    fn record(&mut self, profile: EmbedBatchProfile) {
+        self.samples += 1;
+        self.batch_size_sum += profile.batch_size;
+        self.seq_len_sum += profile.sequence_length;
+        self.prefix_ms_sum += profile.prefix_ms;
+        self.tokenize_ms_sum += profile.tokenize_ms;
+        self.tensorize_ms_sum += profile.tensorize_ms;
+        self.run_ms_sum += profile.run_ms;
+        self.extract_ms_sum += profile.extract_ms;
+        self.postprocess_ms_sum += profile.postprocess_ms;
+        self.total_ms_sum += profile.total_ms;
+    }
+
+    fn summary_line(&self, scenario_name: &str) -> Option<String> {
+        if self.samples == 0 {
+            return None;
+        }
+
+        let samples = self.samples as f64;
+        Some(profile_summary_line(
+            scenario_name,
+            self.samples,
+            self.batch_size_sum / self.samples,
+            self.seq_len_sum / self.samples,
+            self.prefix_ms_sum / samples,
+            self.tokenize_ms_sum / samples,
+            self.tensorize_ms_sum / samples,
+            self.run_ms_sum / samples,
+            self.extract_ms_sum / samples,
+            self.postprocess_ms_sum / samples,
+            self.total_ms_sum / samples,
+        ))
+    }
 }
 
 fn measure_warm_stats(
@@ -182,19 +284,32 @@ fn measure_warm_stats(
     scenario_name: &str,
     warmup: usize,
     iters: usize,
-) -> Result<LatencyStats, LTEmbedError> {
+) -> Result<(LatencyStats, Option<String>), LTEmbedError> {
+    let profiling_enabled = profiling_enabled_from_env();
     for _ in 0..warmup {
-        let _ = run_scenario(engine, scenario_name)?;
+        if profiling_enabled {
+            let _ = run_scenario_profiled(engine, scenario_name)?;
+        } else {
+            let _ = run_scenario(engine, scenario_name)?;
+        }
     }
 
     let mut samples = Vec::with_capacity(iters);
+    let mut accumulator = profiling_enabled.then(ProfileAccumulator::default);
     for _ in 0..iters {
         let start = Instant::now();
-        let _ = run_scenario(engine, scenario_name)?;
+        if let Some(accumulator) = &mut accumulator {
+            let (_, profile) = run_scenario_profiled(engine, scenario_name)?;
+            accumulator.record(profile);
+        } else {
+            let _ = run_scenario(engine, scenario_name)?;
+        }
         samples.push(start.elapsed().as_secs_f64() * 1_000.0);
     }
 
-    LatencyStats::from_samples_ms(&samples).map_err(LTEmbedError::Inference)
+    let stats = LatencyStats::from_samples_ms(&samples).map_err(LTEmbedError::Inference)?;
+    let profile_line = accumulator.and_then(|accumulator| accumulator.summary_line(scenario_name));
+    Ok((stats, profile_line))
 }
 
 fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
@@ -213,6 +328,10 @@ fn emit_progress(mode: &str, scenario_name: &str, state: &str) {
     eprintln!("{}", progress_label(mode, scenario_name, state));
 }
 
+fn emit_profile_summary(line: &str) {
+    eprintln!("{line}");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args =
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
@@ -227,8 +346,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
             for scenario in scenarios {
                 emit_progress("warm", scenario.name, "start");
-                let stats = measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
+                let (stats, profile_line) =
+                    measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
                 emit_progress("warm", scenario.name, "done");
+                if let Some(profile_line) = profile_line {
+                    emit_profile_summary(&profile_line);
+                }
                 results.push(StatsEntry {
                     scenario: scenario.name.to_string(),
                     stats,
@@ -328,6 +451,45 @@ mod tests {
         assert_eq!(
             progress_label("correctness", "batch/mixed/8", "start"),
             "correctness batch/mixed/8 start"
+        );
+    }
+
+    #[test]
+    fn test_profiling_enabled_from_env_defaults_to_false() {
+        unsafe { std::env::remove_var("LTEMBED_PROFILE") };
+        assert!(!profiling_enabled_from_env());
+    }
+
+    #[test]
+    fn test_profiling_enabled_from_env_accepts_one_and_true() {
+        unsafe { std::env::set_var("LTEMBED_PROFILE", "1") };
+        assert!(profiling_enabled_from_env());
+
+        unsafe { std::env::set_var("LTEMBED_PROFILE", "true") };
+        assert!(profiling_enabled_from_env());
+
+        unsafe { std::env::remove_var("LTEMBED_PROFILE") };
+    }
+
+    #[test]
+    fn test_profile_summary_line_renders_parseable_key_values() {
+        let line = profile_summary_line(
+            "single/short",
+            3,
+            1,
+            7,
+            1.25,
+            2.5,
+            3.75,
+            5.0,
+            6.25,
+            7.5,
+            26.25,
+        );
+
+        assert_eq!(
+            line,
+            "profile single/short samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
         );
     }
 }

@@ -149,6 +149,8 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             (),
             {
                 "model_dir": Path("assets"),
+                "output_dimension": 768,
+                "l2_normalize": True,
                 "warmup": 5,
                 "iters": 10,
                 "threads": 1,
@@ -162,6 +164,10 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         for command in (warm_command, cold_command, correctness_command):
             self.assertIn("--model-name-or-path", command)
             self.assertIn("assets", command)
+            self.assertIn("--output-dimension", command)
+            self.assertIn("768", command)
+            self.assertIn("--l2-normalize", command)
+            self.assertIn("true", command)
 
     def test_benchmark_workflow_downloads_builder_bundle_and_hf_weights(self):
         workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
@@ -176,6 +182,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         )
         self.assertIn("snapshot_download(", workflow)
         self.assertIn('--ort-bundle-dir "$ORT_BUNDLE_DIR"', workflow)
+        self.assertIn('output_dimension:', workflow)
 
     def test_benchmark_workflow_installs_cpu_only_pytorch(self):
         workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(

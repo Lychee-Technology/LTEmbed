@@ -18,6 +18,10 @@ on:
         description: CPU threads per implementation
         required: false
         default: "1"
+      output_dimension:
+        description: Output embedding dimension after post-processing
+        required: false
+        default: "512"
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -155,6 +159,7 @@ jobs:
             --ort-bundle-dir "$ORT_BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
+            --output-dimension "${{ inputs.output_dimension }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

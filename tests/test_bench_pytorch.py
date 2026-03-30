@@ -75,6 +75,33 @@ class BenchPyTorchTests(unittest.TestCase):
         self.assertEqual(len(embeddings), 1)
         self.assertEqual(len(embeddings[0]), bench.OUTPUT_DIM)
 
+    def test_embed_texts_respects_output_dimension_override(self):
+        bench = load_module()
+
+        class FakeTokenizer:
+            def __call__(self, texts, **kwargs):
+                return {
+                    "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.int64),
+                }
+
+        class FakeModel:
+            def __call__(self, **encoded):
+                return SimpleNamespace(
+                    last_hidden_state=torch.arange(
+                        3 * bench.RAW_DIM, dtype=torch.float32
+                    ).reshape(1, 3, bench.RAW_DIM)
+                )
+
+        embeddings = bench.embed_texts(
+            FakeModel(),
+            FakeTokenizer(),
+            [{"kind": "query", "text": "hello"}],
+            output_dimension=bench.RAW_DIM,
+        )
+
+        self.assertEqual(len(embeddings), 1)
+        self.assertEqual(len(embeddings[0]), bench.RAW_DIM)
+
     def test_progress_label_includes_mode_scenario_and_state(self):
         bench = load_module()
         label = bench.progress_label("warm", "batch/mixed/8", "start")

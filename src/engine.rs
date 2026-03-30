@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::TensorRef;
@@ -113,6 +114,19 @@ pub struct OnnxEngine {
     config: OnnxEngineConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EmbedBatchProfile {
+    pub batch_size: usize,
+    pub sequence_length: usize,
+    pub prefix_ms: f64,
+    pub tokenize_ms: f64,
+    pub tensorize_ms: f64,
+    pub run_ms: f64,
+    pub extract_ms: f64,
+    pub postprocess_ms: f64,
+    pub total_ms: f64,
+}
+
 impl std::fmt::Debug for OnnxEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OnnxEngine").finish_non_exhaustive()
@@ -209,18 +223,54 @@ impl OnnxEngine {
         &self,
         inputs: &[EmbeddingInput<'_>],
     ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+        let (embeddings, _) = self.embed_batch_impl(inputs, false)?;
+        Ok(embeddings)
+    }
+
+    pub fn embed_batch_profiled(
+        &self,
+        inputs: &[EmbeddingInput<'_>],
+    ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
+        let (embeddings, profile) = self.embed_batch_impl(inputs, true)?;
+        let profile = profile.ok_or_else(|| {
+            LTEmbedError::Inference("profiling requested but no profile was collected".into())
+        })?;
+        Ok((embeddings, profile))
+    }
+
+    fn embed_batch_impl(
+        &self,
+        inputs: &[EmbeddingInput<'_>],
+        collect_profile: bool,
+    ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
         if inputs.is_empty() {
-            return Ok(Vec::new());
+            let profile = collect_profile.then_some(EmbedBatchProfile {
+                batch_size: 0,
+                sequence_length: 0,
+                prefix_ms: 0.0,
+                tokenize_ms: 0.0,
+                tensorize_ms: 0.0,
+                run_ms: 0.0,
+                extract_ms: 0.0,
+                postprocess_ms: 0.0,
+                total_ms: 0.0,
+            });
+            return Ok((Vec::new(), profile));
         }
 
+        let overall_start = Instant::now();
+        let prefix_start = Instant::now();
         let prefixed_inputs = inputs
             .iter()
             .copied()
             .map(|input| prefixed_text(input, &self.spec))
             .collect::<Vec<_>>();
+        let prefix_ms = prefix_start.elapsed().as_secs_f64() * 1_000.0;
+        let tokenize_start = Instant::now();
         let encoded = self
             .tokenizer
             .encode_batch(&prefixed_inputs, self.spec.max_length)?;
+        let tokenize_ms = tokenize_start.elapsed().as_secs_f64() * 1_000.0;
         let batch_size = encoded.len();
         let batch_max_seq_len = encoded
             .iter()
@@ -229,6 +279,7 @@ impl OnnxEngine {
             .unwrap_or(0);
         let seq_len = effective_sequence_length(self.io.sequence_length, batch_max_seq_len)?;
 
+        let tensorize_start = Instant::now();
         let mut input_ids = vec![0_i64; batch_size * seq_len];
         let mut attention_mask = vec![0_i64; batch_size * seq_len];
 
@@ -256,17 +307,21 @@ impl OnnxEngine {
         .map_err(|err| {
             LTEmbedError::Inference(format!("Failed to convert attention_mask tensor: {err}"))
         })?;
+        let tensorize_ms = tensorize_start.elapsed().as_secs_f64() * 1_000.0;
 
         let mut session = self
             .session
             .lock()
             .map_err(|_| LTEmbedError::Inference("ORT session mutex poisoned".into()))?;
+        let run_start = Instant::now();
         let outputs = session
             .run(ort::inputs! {
                 self.io.input_ids.as_str() => input_ids_tensor,
                 self.io.attention_mask.as_str() => attention_mask_tensor,
             })
             .map_err(|err| LTEmbedError::Inference(format!("ORT inference failed: {err}")))?;
+        let run_ms = run_start.elapsed().as_secs_f64() * 1_000.0;
+        let extract_start = Instant::now();
         let (hidden_shape, hidden_data) = outputs[self.io.last_hidden_state.as_str()]
             .try_extract_tensor::<f32>()
             .map_err(|err| {
@@ -289,7 +344,9 @@ impl OnnxEngine {
                 self.spec.raw_embedding_dimension, hidden_shape[2]
             )));
         }
+        let extract_ms = extract_start.elapsed().as_secs_f64() * 1_000.0;
 
+        let postprocess_start = Instant::now();
         let mut embeddings = Vec::with_capacity(batch_size);
         for batch_idx in 0..batch_size {
             let mask_start = batch_idx * seq_len;
@@ -312,8 +369,21 @@ impl OnnxEngine {
                 self.config,
             )?);
         }
+        let postprocess_ms = postprocess_start.elapsed().as_secs_f64() * 1_000.0;
+        let total_ms = overall_start.elapsed().as_secs_f64() * 1_000.0;
+        let profile = collect_profile.then_some(EmbedBatchProfile {
+            batch_size,
+            sequence_length: seq_len,
+            prefix_ms,
+            tokenize_ms,
+            tensorize_ms,
+            run_ms,
+            extract_ms,
+            postprocess_ms,
+            total_ms,
+        });
 
-        Ok(embeddings)
+        Ok((embeddings, profile))
     }
 }
 

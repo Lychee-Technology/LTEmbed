@@ -146,6 +146,7 @@ jobs:
       - name: Run Unified Benchmark Harness
         run: |
           export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          export LTEMBED_PROFILE="1"
           export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
           EXTRA_ARGS=""
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then

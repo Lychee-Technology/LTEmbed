@@ -115,6 +115,43 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertEqual(bench.resolved_notes("ltembed", {}), "")
         self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
 
+    def test_benchmark_workflow_downloads_builder_bundle_for_jina_retrieval(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval',
+            workflow,
+        )
+        self.assertIn("minimal-ort-builder", workflow)
+        self.assertIn("v1.0.15", workflow)
+        self.assertIn(
+            "jinaai__jina-embeddings-v5-text-nano-retrieval_int8_linux-arm64.tar.gz",
+            workflow,
+        )
+        self.assertIn("Download ORT Bundle", workflow)
+        self.assertIn('test -f "$ORT_BUNDLE_DIR/model.ort"', workflow)
+        self.assertIn('--ort-bundle-dir "$ORT_BUNDLE_DIR"', workflow)
+
+    def test_benchmark_workflow_installs_cpu_only_pytorch(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("https://download.pytorch.org/whl/cpu", workflow)
+        self.assertIn(
+            "python -m pip install --index-url https://download.pytorch.org/whl/cpu torch",
+            workflow,
+        )
+
+    def test_benchmark_workflow_downloads_hf_remote_code_files(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"*.py"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

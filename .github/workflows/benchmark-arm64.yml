@@ -1,5 +1,8 @@
 name: benchmark-arm64
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +18,10 @@ on:
         description: CPU threads per implementation
         required: false
         default: "1"
+      output_dimension:
+        description: Output embedding dimension after post-processing
+        required: false
+        default: "512"
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -33,8 +40,13 @@ jobs:
       - Linux
       - ARM64
     env:
-      MODEL_ID: intfloat/e5-small-v2
-      MODEL_DIR: ${{ github.workspace }}/.cache/models/intfloat-e5-small-v2
+      MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
+      MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
+      ORT_BUNDLE_DIR: ${{ github.workspace }}/ort_bundle
+      BUILDER_REPO: Lychee-Technology/minimal-ort-builder
+      BUILDER_RELEASE_TAG: v1.0.15
+      BUILDER_ASSET_NAME: jinaai__jina-embeddings-v5-text-nano-retrieval_int8_linux-arm64.tar.gz
+      BUILDER_ASSET_SHA256: a8e1389abb77b523aea21808a4dc68f6febfe7a0683b9ec703ea8e8508c7eca3
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
     steps:
       - name: Checkout
@@ -49,7 +61,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Cache Cargo Registry
         uses: actions/cache@v4
@@ -74,12 +86,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.MODEL_DIR }}
-          key: ${{ runner.os }}-arm64-model-e5-small-v2-v1
+          key: ${{ runner.os }}-arm64-model-jina-v2
+
+      - name: Cache ORT Bundle
+        id: cache-ort-bundle
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ORT_BUNDLE_DIR }}
+          key: ${{ runner.os }}-arm64-ort-bundle-v1.0.15-jina-retrieval-int8
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy torch transformers huggingface_hub
+          python -m pip install numpy transformers huggingface_hub
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
 
       - name: Download Model Snapshot
         run: |
@@ -99,9 +119,24 @@ jobs:
                   "special_tokens_map.json",
                   "vocab.txt",
                   "model.safetensors",
+                  "*.py",
               ],
           )
           PY
+
+      - name: Download ORT Bundle
+        if: steps.cache-ort-bundle.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$ORT_BUNDLE_DIR"
+          curl -fsSL \
+            -o "$RUNNER_TEMP/$BUILDER_ASSET_NAME" \
+            "https://github.com/$BUILDER_REPO/releases/download/$BUILDER_RELEASE_TAG/$BUILDER_ASSET_NAME"
+          echo "$BUILDER_ASSET_SHA256  $RUNNER_TEMP/$BUILDER_ASSET_NAME" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$BUILDER_ASSET_NAME" -C "$ORT_BUNDLE_DIR"
+          test -f "$ORT_BUNDLE_DIR/model.ort"
+          test -f "$ORT_BUNDLE_DIR/tokenizer.json"
+          test -f "$ORT_BUNDLE_DIR/build-info.json"
+          test -f "$ORT_BUNDLE_DIR/libonnxruntime.so"
 
       # Compile check with visible errors before handing off to the Python
       # harness, which swallows Cargo's stderr via capture_output=True.
@@ -110,6 +145,9 @@ jobs:
 
       - name: Run Unified Benchmark Harness
         run: |
+          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          export LTEMBED_PROFILE="1"
+          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
           EXTRA_ARGS=""
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
@@ -119,8 +157,10 @@ jobs:
           fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
+            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
+            --output-dimension "${{ inputs.output_dimension }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

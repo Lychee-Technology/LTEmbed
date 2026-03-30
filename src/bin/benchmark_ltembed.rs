@@ -225,21 +225,18 @@ fn profiling_enabled_from_env() -> bool {
     )
 }
 
-fn profile_summary_line(
-    scenario_name: &str,
-    samples: usize,
-    batch_size: usize,
-    seq_len: usize,
-    prefix_ms: f64,
-    tokenize_ms: f64,
-    tensorize_ms: f64,
-    run_ms: f64,
-    extract_ms: f64,
-    postprocess_ms: f64,
-    total_ms: f64,
-) -> String {
+fn profile_summary_line(scenario_name: &str, samples: usize, profile: EmbedBatchProfile) -> String {
     format!(
-        "profile {scenario_name} samples={samples} batch_size={batch_size} seq_len={seq_len} prefix_ms={prefix_ms:.3} tokenize_ms={tokenize_ms:.3} tensorize_ms={tensorize_ms:.3} run_ms={run_ms:.3} extract_ms={extract_ms:.3} postprocess_ms={postprocess_ms:.3} total_ms={total_ms:.3}"
+        "profile {scenario_name} samples={samples} batch_size={} seq_len={} prefix_ms={:.3} tokenize_ms={:.3} tensorize_ms={:.3} run_ms={:.3} extract_ms={:.3} postprocess_ms={:.3} total_ms={:.3}",
+        profile.batch_size,
+        profile.sequence_length,
+        profile.prefix_ms,
+        profile.tokenize_ms,
+        profile.tensorize_ms,
+        profile.run_ms,
+        profile.extract_ms,
+        profile.postprocess_ms,
+        profile.total_ms,
     )
 }
 
@@ -266,15 +263,17 @@ impl ProfileAccumulator {
         Some(profile_summary_line(
             scenario_name,
             self.samples,
-            self.batch_size_sum / self.samples,
-            self.seq_len_sum / self.samples,
-            self.prefix_ms_sum / samples,
-            self.tokenize_ms_sum / samples,
-            self.tensorize_ms_sum / samples,
-            self.run_ms_sum / samples,
-            self.extract_ms_sum / samples,
-            self.postprocess_ms_sum / samples,
-            self.total_ms_sum / samples,
+            EmbedBatchProfile {
+                batch_size: self.batch_size_sum / self.samples,
+                sequence_length: self.seq_len_sum / self.samples,
+                prefix_ms: self.prefix_ms_sum / samples,
+                tokenize_ms: self.tokenize_ms_sum / samples,
+                tensorize_ms: self.tensorize_ms_sum / samples,
+                run_ms: self.run_ms_sum / samples,
+                extract_ms: self.extract_ms_sum / samples,
+                postprocess_ms: self.postprocess_ms_sum / samples,
+                total_ms: self.total_ms_sum / samples,
+            },
         ))
     }
 }
@@ -476,15 +475,17 @@ mod tests {
         let line = profile_summary_line(
             "single/short",
             3,
-            1,
-            7,
-            1.25,
-            2.5,
-            3.75,
-            5.0,
-            6.25,
-            7.5,
-            26.25,
+            EmbedBatchProfile {
+                batch_size: 1,
+                sequence_length: 7,
+                prefix_ms: 1.25,
+                tokenize_ms: 2.5,
+                tensorize_ms: 3.75,
+                run_ms: 5.0,
+                extract_ms: 6.25,
+                postprocess_ms: 7.5,
+                total_ms: 26.25,
+            },
         );
 
         assert_eq!(

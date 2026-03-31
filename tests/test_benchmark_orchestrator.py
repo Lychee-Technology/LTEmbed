@@ -213,6 +213,19 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn('description: Apply L2 normalization after post-processing', workflow)
         self.assertIn('EXTRA_ARGS+=(--no-l2-normalize)', workflow)
 
+    def test_benchmark_workflow_accepts_raw_compare_only_input(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("raw_compare_only:", workflow)
+        self.assertIn('description: Run raw embedding compare instead of the benchmark harness', workflow)
+        self.assertIn('if: ${{ inputs.raw_compare_only != true }}', workflow)
+        self.assertIn('if: ${{ inputs.raw_compare_only == true }}', workflow)
+        self.assertIn("scripts/compare_embedding_outputs.py", workflow)
+        self.assertIn("raw-embedding-compare.json", workflow)
+        self.assertIn("raw-embedding-compare.txt", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

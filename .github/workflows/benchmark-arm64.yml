@@ -31,6 +31,11 @@ on:
         description: Optional single scenario to benchmark
         required: false
         default: ""
+      raw_compare_only:
+        description: Run raw embedding compare instead of the benchmark harness
+        required: false
+        default: false
+        type: boolean
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -153,6 +158,7 @@ jobs:
         run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
 
       - name: Run Unified Benchmark Harness
+        if: ${{ inputs.raw_compare_only != true }}
         run: |
           export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
           export LTEMBED_PROFILE="1"
@@ -185,7 +191,50 @@ jobs:
             --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
             "${EXTRA_ARGS[@]}"
 
+      - name: Run Raw Embedding Compare
+        if: ${{ inputs.raw_compare_only == true }}
+        run: |
+          mkdir -p artifacts
+          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
+          if [ "${{ inputs.scenario }}" = "" ]; then
+            SCENARIO="single/medium"
+          else
+            SCENARIO="${{ inputs.scenario }}"
+          fi
+          if [ "${{ inputs.l2_normalize }}" = "true" ]; then
+            PYTORCH_NORMALIZE_FLAG=(--l2-normalize)
+            LTEMBED_NORMALIZE_VALUE=true
+          else
+            PYTORCH_NORMALIZE_FLAG=(--no-l2-normalize)
+            LTEMBED_NORMALIZE_VALUE=false
+          fi
+          python3 scripts/bench_pytorch.py \
+            --mode correctness \
+            --scenario "$SCENARIO" \
+            --model-name-or-path "$MODEL_DIR" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            "${PYTORCH_NORMALIZE_FLAG[@]}" \
+            --threads "${{ inputs.threads }}" \
+            > artifacts/pytorch-correctness.json
+          cargo run --quiet --release --bin benchmark_ltembed -- \
+            --mode correctness \
+            --scenario "$SCENARIO" \
+            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
+            --threads "${{ inputs.threads }}" \
+            > artifacts/ltembed-correctness.json
+          python3 scripts/compare_embedding_outputs.py \
+            --ltembed-json artifacts/ltembed-correctness.json \
+            --pytorch-json artifacts/pytorch-correctness.json \
+            --scenario "$SCENARIO" \
+            --output-json artifacts/raw-embedding-compare.json \
+            --output-text artifacts/raw-embedding-compare.txt
+          cat artifacts/raw-embedding-compare.txt
+
       - name: Upload Benchmark Artifacts
+        if: ${{ inputs.raw_compare_only != true }}
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-arm64-results
@@ -193,3 +242,15 @@ jobs:
           path: |
             artifacts/benchmark-report.csv
             artifacts/benchmark-summary.txt
+
+      - name: Upload Raw Compare Artifacts
+        if: ${{ inputs.raw_compare_only == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-arm64-results
+          retention-days: 1
+          path: |
+            artifacts/ltembed-correctness.json
+            artifacts/pytorch-correctness.json
+            artifacts/raw-embedding-compare.json
+            artifacts/raw-embedding-compare.txt

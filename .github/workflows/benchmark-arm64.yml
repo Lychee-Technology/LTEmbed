@@ -51,6 +51,10 @@ on:
         required: false
         default: true
         type: boolean
+      retrieval_eval_path:
+        description: Retrieval eval dataset path relative to the repository root
+        required: false
+        default: "scripts/retrieval_eval_cases.json"
 
 jobs:
   benchmark:
@@ -191,6 +195,7 @@ jobs:
             --ort-bundle-dir "$ORT_BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
+            --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
             --output-dimension "${{ inputs.output_dimension }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \

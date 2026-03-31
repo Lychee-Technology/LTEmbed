@@ -239,6 +239,16 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
         self.assertEqual([case["name"] for case in cases], ["mini-retrieval-v1", "mini-retrieval-hard-v1"])
 
+    def test_curated_jane_austen_eval_file_loads(self):
+        bench = load_module()
+        cases = bench.load_retrieval_eval_cases(
+            ROOT / "tests" / "data" / "jane-austen_pride-and-prejudice-retrieval_eval.json"
+        )
+
+        self.assertEqual([case["name"] for case in cases], ["jane-austen_pride-and-prejudice-v1"])
+        self.assertGreaterEqual(len(cases[0]["documents"]), 10)
+        self.assertGreaterEqual(len(cases[0]["queries"]), 8)
+
     def test_benchmark_workflow_downloads_builder_bundle_for_jina_retrieval(self):
         workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
             encoding="utf-8"
@@ -315,6 +325,15 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("include_retrieval_eval:", workflow)
         self.assertIn("Include small retrieval ranking eval", workflow)
         self.assertIn('EXTRA_ARGS+=(--no-include-retrieval-eval)', workflow)
+
+    def test_benchmark_workflow_accepts_retrieval_eval_path_input(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("retrieval_eval_path:", workflow)
+        self.assertIn('default: "scripts/retrieval_eval_cases.json"', workflow)
+        self.assertIn('--retrieval-eval-path "${{ inputs.retrieval_eval_path }}"', workflow)
 
 
 if __name__ == "__main__":

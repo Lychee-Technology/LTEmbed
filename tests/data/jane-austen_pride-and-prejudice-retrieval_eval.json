@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "name": "jane-austen_pride-and-prejudice-v1",
+      "documents": [
+        {
+          "id": "netherfield_let",
+          "text": "It is a truth universally acknowledged that a single man in possession of a good fortune must be in want of a wife. Mrs. Bennet tells her husband that Netherfield Park is let at last and that the house has been taken by a young man of large fortune named Bingley."
+        },
+        {
+          "id": "bennet_visits_bingley",
+          "text": "Mr. Bennet was among the earliest of those who waited on Mr. Bingley. He had always intended to visit him, though he had told his wife to the last that he would not, and only afterwards revealed that he had already made the call."
+        },
+        {
+          "id": "bingley_at_the_ball",
+          "text": "Mr. Bingley quickly made himself acquainted with the principal people in the room. He was lively and unreserved, danced every dance, and spoke of giving a ball himself at Netherfield."
+        },
+        {
+          "id": "darcy_proud_at_the_ball",
+          "text": "Mr. Darcy danced only once with Mrs. Hurst and once with Miss Bingley, declined being introduced to any other lady, and spent the rest of the evening walking about the room. He was soon judged the proudest and most disagreeable man in the world."
+        },
+        {
+          "id": "jane_praises_bingley",
+          "text": "When Jane and Elizabeth were alone, Jane confessed how much she admired Mr. Bingley. She called him sensible, good humoured, lively, handsome, and possessed of happy manners and perfect good breeding."
+        },
+        {
+          "id": "pemberley_model",
+          "text": "Miss Bingley praises the library at Pemberley and says there is not a finer county in England than Derbyshire. She suggests that when Charles builds a house he should take Pemberley as a model."
+        },
+        {
+          "id": "collins_rejected",
+          "text": "Elizabeth tells Mr. Collins that she has no wish to increase his love by suspense and that she would rather be believed sincere. She thanks him for the honour of his proposal but refuses to accept him."
+        },
+        {
+          "id": "lady_catherine_displayed",
+          "text": "Mr. Collins exults in the chance to display the grandeur of Lady Catherine de Bourgh to his visitors. He treats the invitation from his patroness as a triumph and an instance of extraordinary condescension."
+        },
+        {
+          "id": "darcy_on_wickham",
+          "text": "Darcy explains in his letter that he did not ruin the immediate prosperity of Mr. Wickham by caprice or cruelty. He describes Wickham as the companion of his youth and rejects the accusation that he had wantonly destroyed his prospects."
+        },
+        {
+          "id": "lydia_brighton_warning",
+          "text": "Elizabeth represents all the improprieties of Lydia's general behaviour and the danger of sending her to Brighton. She argues that Lydia is too imprudent and that the temptations of Brighton will only make her worse."
+        },
+        {
+          "id": "lydia_aftermath",
+          "text": "Jane and Elizabeth speak after the crisis over Lydia, and the whole family is affected by what has happened. Their uncle and aunt arrive, and the conversation turns to the distress and consequences of Lydia's conduct."
+        },
+        {
+          "id": "bingley_returns",
+          "text": "When Bingley returns, Mrs. Bennet receives him with conspicuous civility while treating Darcy with cold ceremony. Elizabeth is distressed because she knows Darcy helped preserve Lydia from irremediable infamy."
+        }
+      ],
+      "queries": [
+        {
+          "id": "q_netherfield",
+          "text": "What rented estate starts the Bennet family's excitement about a rich bachelor moving nearby?",
+          "relevant_document_ids": ["netherfield_let"]
+        },
+        {
+          "id": "q_secret_visit",
+          "text": "Who secretly paid a visit to Mr. Bingley before admitting it to the family?",
+          "relevant_document_ids": ["bennet_visits_bingley"]
+        },
+        {
+          "id": "q_ball_charm",
+          "text": "Which man wins everyone over at the assembly by dancing every dance and behaving in an open, lively way?",
+          "relevant_document_ids": ["bingley_at_the_ball"]
+        },
+        {
+          "id": "q_ball_pride",
+          "text": "Who is condemned as proud and disagreeable after refusing most of the dances at the first ball?",
+          "relevant_document_ids": ["darcy_proud_at_the_ball"]
+        },
+        {
+          "id": "q_jane_opinion",
+          "text": "Which sister tells Elizabeth that Bingley is sensible, lively, and good humoured?",
+          "relevant_document_ids": ["jane_praises_bingley"]
+        },
+        {
+          "id": "q_pemberley",
+          "text": "What Derbyshire estate is treated as the model for an ideal house and library?",
+          "relevant_document_ids": ["pemberley_model"]
+        },
+        {
+          "id": "q_collins",
+          "text": "Which proposal does Elizabeth refuse while insisting that her rejection is perfectly sincere?",
+          "relevant_document_ids": ["collins_rejected"]
+        },
+        {
+          "id": "q_wickham",
+          "text": "Whose prospects does Darcy say he did not ruin when he defends himself in his letter?",
+          "relevant_document_ids": ["darcy_on_wickham"]
+        },
+        {
+          "id": "q_lydia",
+          "text": "Whom does Elizabeth argue should not be sent to Brighton because she is too imprudent?",
+          "relevant_document_ids": ["lydia_brighton_warning"]
+        }
+      ]
+    }
+  ]
+}

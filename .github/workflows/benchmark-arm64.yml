@@ -67,9 +67,9 @@ jobs:
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
       ORT_BUNDLE_DIR: ${{ github.workspace }}/ort_bundle
       BUILDER_REPO: Lychee-Technology/minimal-ort-builder
-      BUILDER_RELEASE_TAG: v1.0.16-b
+      BUILDER_RELEASE_TAG: v1.0.16-c
       BUILDER_ASSET_NAME: jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz
-      BUILDER_ASSET_SHA256: 6ff82b97bb7b77f1e8b220007cf2b059b4a6dc92cebd2dc5d53984dc27e23b88
+      BUILDER_ASSET_SHA256: 487c1249ea60b7f6435b5da07c74d0af9da3f4c521ca8b0a059f049abd324356
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
     steps:
       - name: Checkout
@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.ORT_BUNDLE_DIR }}
-          key: ${{ runner.os }}-arm64-ort-bundle-v1.0.16-b-jina-retrieval-q4f16
+          key: ${{ runner.os }}-arm64-ort-bundle-v1.0.16-c-jina-retrieval-q4f16
 
       - name: Install Python Dependencies
         run: |

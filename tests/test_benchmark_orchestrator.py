@@ -168,9 +168,9 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("minimal-ort-builder", workflow)
-        self.assertIn("v1.0.10", workflow)
+        self.assertIn("v1.0.16-a", workflow)
         self.assertIn(
-            "jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz",
+            "jinaai__jina-embeddings-v5-text-nano-retrieval_int8_linux-arm64.tar.gz",
             workflow,
         )
         self.assertIn("Download ORT Bundle", workflow)

@@ -75,6 +75,21 @@ class BenchPyTorchTests(unittest.TestCase):
         self.assertEqual(len(embeddings), 1)
         self.assertEqual(len(embeddings[0]), bench.OUTPUT_DIM)
 
+    def test_postprocess_embedding_can_skip_truncation_and_normalization(self):
+        bench = load_module()
+        raw = torch.zeros((1, bench.RAW_DIM), dtype=torch.float32)
+        raw[0, 0] = 3.0
+        raw[0, 1] = 4.0
+        raw[0, 2] = 10.0
+
+        output = bench.postprocess_embeddings(
+            raw.numpy(),
+            output_dimension=3,
+            l2_normalize=False,
+        )
+
+        self.assertEqual(output.tolist(), [[3.0, 4.0, 10.0]])
+
     def test_load_model_moves_cpu_model_to_float32(self):
         bench = load_module()
 
@@ -129,6 +144,8 @@ class BenchPyTorchTests(unittest.TestCase):
             warmup=2,
             iters=3,
             scenario="single/medium",
+            output_dimension=bench.OUTPUT_DIM,
+            l2_normalize=True,
         )
 
         with (
@@ -142,13 +159,23 @@ class BenchPyTorchTests(unittest.TestCase):
             payload = bench.warm_payload(args)
 
         self.assertEqual([row["scenario"] for row in payload["results"]], ["single/medium"])
-        measure_warm_stats.assert_called_once_with("model", "tokenizer", "single/medium", 2, 3)
+        measure_warm_stats.assert_called_once_with(
+            "model",
+            "tokenizer",
+            "single/medium",
+            2,
+            3,
+            output_dimension=bench.OUTPUT_DIM,
+            l2_normalize=True,
+        )
 
     def test_correctness_payload_filters_to_requested_scenario(self):
         bench = load_module()
         args = SimpleNamespace(
             model_name_or_path="fake-model",
             scenario="single/medium",
+            output_dimension=bench.RAW_DIM,
+            l2_normalize=False,
         )
 
         with (

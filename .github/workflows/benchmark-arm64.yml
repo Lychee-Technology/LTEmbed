@@ -22,6 +22,11 @@ on:
         description: Output embedding dimension after post-processing
         required: false
         default: "512"
+      l2_normalize:
+        description: Apply L2 normalization after post-processing
+        required: false
+        default: true
+        type: boolean
       scenario:
         description: Optional single scenario to benchmark
         required: false
@@ -168,6 +173,7 @@ jobs:
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
             --output-dimension "${{ inputs.output_dimension }}" \
+            --l2-normalize "${{ inputs.l2_normalize }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

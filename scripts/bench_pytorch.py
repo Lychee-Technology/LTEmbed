@@ -62,12 +62,21 @@ def prefixed_text(item: dict[str, str]) -> str:
     return prefix + item["text"]
 
 
-def truncate_and_normalize(v: np.ndarray) -> np.ndarray:
+def postprocess_embeddings(
+    v: np.ndarray,
+    *,
+    output_dimension: int = OUTPUT_DIM,
+    l2_normalize: bool = True,
+) -> np.ndarray:
     if v.shape[-1] != RAW_DIM:
         raise ValueError(f"expected raw dimension {RAW_DIM}, got {v.shape[-1]}")
-    truncated = v[..., :OUTPUT_DIM]
-    norm = np.linalg.norm(truncated, axis=-1, keepdims=True)
-    return truncated / np.maximum(norm, 1e-12)
+    if output_dimension <= 0 or output_dimension > RAW_DIM:
+        raise ValueError(f"output_dimension must be in [1, {RAW_DIM}], got {output_dimension}")
+    output = v[..., :output_dimension]
+    if not l2_normalize:
+        return output
+    norm = np.linalg.norm(output, axis=-1, keepdims=True)
+    return output / np.maximum(norm, 1e-12)
 
 
 def last_token_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -101,7 +110,14 @@ def load_model(model_name_or_path: str):
     return model, tokenizer
 
 
-def embed_texts(model, tokenizer, texts: list[dict[str, str]]) -> list[list[float]]:
+def embed_texts(
+    model,
+    tokenizer,
+    texts: list[dict[str, str]],
+    *,
+    output_dimension: int = OUTPUT_DIM,
+    l2_normalize: bool = True,
+) -> list[list[float]]:
     encoded = tokenizer(
         [prefixed_text(item) for item in texts],
         return_tensors="pt",
@@ -117,27 +133,64 @@ def embed_texts(model, tokenizer, texts: list[dict[str, str]]) -> list[list[floa
         .cpu()
         .numpy()
     )
-    normalized = truncate_and_normalize(pooled)
-    return normalized.tolist()
+    output = postprocess_embeddings(
+        pooled,
+        output_dimension=output_dimension,
+        l2_normalize=l2_normalize,
+    )
+    return output.tolist()
 
 
-def measure_warm_stats(model, tokenizer, scenario_name: str, warmup: int, iters: int) -> dict[str, float]:
+def measure_warm_stats(
+    model,
+    tokenizer,
+    scenario_name: str,
+    warmup: int,
+    iters: int,
+    *,
+    output_dimension: int = OUTPUT_DIM,
+    l2_normalize: bool = True,
+) -> dict[str, float]:
     texts = list(SCENARIOS[scenario_name]["texts"])
     for _ in range(warmup):
-        embed_texts(model, tokenizer, texts)
+        embed_texts(
+            model,
+            tokenizer,
+            texts,
+            output_dimension=output_dimension,
+            l2_normalize=l2_normalize,
+        )
 
     samples_ms = []
     for _ in range(iters):
         start = time.perf_counter_ns()
-        embed_texts(model, tokenizer, texts)
+        embed_texts(
+            model,
+            tokenizer,
+            texts,
+            output_dimension=output_dimension,
+            l2_normalize=l2_normalize,
+        )
         samples_ms.append((time.perf_counter_ns() - start) / 1_000_000)
     return compute_stats(samples_ms)
 
 
-def measure_cold_stats(model_name_or_path: str, scenario_name: str) -> dict[str, float]:
+def measure_cold_stats(
+    model_name_or_path: str,
+    scenario_name: str,
+    *,
+    output_dimension: int = OUTPUT_DIM,
+    l2_normalize: bool = True,
+) -> dict[str, float]:
     start = time.perf_counter_ns()
     model, tokenizer = load_model(model_name_or_path)
-    embed_texts(model, tokenizer, list(SCENARIOS[scenario_name]["texts"]))
+    embed_texts(
+        model,
+        tokenizer,
+        list(SCENARIOS[scenario_name]["texts"]),
+        output_dimension=output_dimension,
+        l2_normalize=l2_normalize,
+    )
     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
     return compute_stats([elapsed_ms])
 
@@ -151,7 +204,15 @@ def warm_payload(args) -> dict[str, object]:
         "results": [
             {
                 "scenario": scenario_name,
-                "stats": measure_warm_stats(model, tokenizer, scenario_name, args.warmup, args.iters),
+                "stats": measure_warm_stats(
+                    model,
+                    tokenizer,
+                    scenario_name,
+                    args.warmup,
+                    args.iters,
+                    output_dimension=args.output_dimension,
+                    l2_normalize=args.l2_normalize,
+                ),
             }
             for scenario_name, _ in selected_scenarios(args.scenario)
         ],
@@ -166,7 +227,12 @@ def cold_payload(args) -> dict[str, object]:
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
         "scenario": args.scenario,
-        "stats": measure_cold_stats(args.model_name_or_path, args.scenario),
+        "stats": measure_cold_stats(
+            args.model_name_or_path,
+            args.scenario,
+            output_dimension=args.output_dimension,
+            l2_normalize=args.l2_normalize,
+        ),
     }
 
 
@@ -179,7 +245,13 @@ def correctness_payload(args) -> dict[str, object]:
         "results": [
             {
                 "scenario": scenario_name,
-                "embeddings": embed_texts(model, tokenizer, list(scenario["texts"])),
+                "embeddings": embed_texts(
+                    model,
+                    tokenizer,
+                    list(scenario["texts"]),
+                    output_dimension=args.output_dimension,
+                    l2_normalize=args.l2_normalize,
+                ),
             }
             for scenario_name, scenario in selected_scenarios(args.scenario)
         ],
@@ -191,6 +263,8 @@ def parse_args():
     parser.add_argument("--mode", choices=["warm", "cold", "correctness"], required=True)
     parser.add_argument("--scenario")
     parser.add_argument("--model-name-or-path", required=True)
+    parser.add_argument("--output-dimension", type=int, default=OUTPUT_DIM)
+    parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)

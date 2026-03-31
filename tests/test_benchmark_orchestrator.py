@@ -110,6 +110,8 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
                 "iters": 10,
                 "threads": 1,
                 "scenario": "single/medium",
+                "output_dimension": 768,
+                "l2_normalize": False,
             },
         )
 
@@ -119,6 +121,10 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         for command in (warm_command, correctness_command):
             self.assertIn("--scenario", command)
             self.assertIn("single/medium", command)
+            self.assertIn("--output-dimension", command)
+            self.assertIn("768", command)
+            self.assertIn("--l2-normalize", command)
+            self.assertIn("false", command)
 
     def test_ltembed_commands_include_optional_cargo_features(self):
         bench = load_module()
@@ -198,6 +204,15 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("scenario:", workflow)
         self.assertIn('description: Optional single scenario to benchmark', workflow)
         self.assertIn('EXTRA_ARGS+=(--scenario "${{ inputs.scenario }}")', workflow)
+
+    def test_benchmark_workflow_accepts_l2_normalize_input(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("l2_normalize:", workflow)
+        self.assertIn('description: Apply L2 normalization after post-processing', workflow)
+        self.assertIn('--l2-normalize "${{ inputs.l2_normalize }}"', workflow)
 
 
 if __name__ == "__main__":

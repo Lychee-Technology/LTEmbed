@@ -122,6 +122,44 @@ class BenchPyTorchTests(unittest.TestCase):
         self.assertIn((("cpu",), {}), fake_model.to_calls)
         self.assertIn(((), {"dtype": torch.float32}), fake_model.to_calls)
 
+    def test_warm_payload_filters_to_requested_scenario(self):
+        bench = load_module()
+        args = SimpleNamespace(
+            model_name_or_path="fake-model",
+            warmup=2,
+            iters=3,
+            scenario="single/medium",
+        )
+
+        with (
+            mock.patch.object(bench, "load_model", return_value=("model", "tokenizer")),
+            mock.patch.object(
+                bench,
+                "measure_warm_stats",
+                return_value={"mean_ms": 1.0, "median_ms": 1.0, "p95_ms": 1.0, "p99_ms": 1.0, "min_ms": 1.0, "max_ms": 1.0},
+            ) as measure_warm_stats,
+        ):
+            payload = bench.warm_payload(args)
+
+        self.assertEqual([row["scenario"] for row in payload["results"]], ["single/medium"])
+        measure_warm_stats.assert_called_once_with("model", "tokenizer", "single/medium", 2, 3)
+
+    def test_correctness_payload_filters_to_requested_scenario(self):
+        bench = load_module()
+        args = SimpleNamespace(
+            model_name_or_path="fake-model",
+            scenario="single/medium",
+        )
+
+        with (
+            mock.patch.object(bench, "load_model", return_value=("model", "tokenizer")),
+            mock.patch.object(bench, "embed_texts", return_value=[[0.1, 0.2]]) as embed_texts,
+        ):
+            payload = bench.correctness_payload(args)
+
+        self.assertEqual([row["scenario"] for row in payload["results"]], ["single/medium"])
+        embed_texts.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

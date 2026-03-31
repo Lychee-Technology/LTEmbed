@@ -211,7 +211,7 @@ fn test_invalid_input_kind_returns_model_load_error() {
   "model_metadata": {
     "model_format": "ort",
     "pooling": "last_token",
-    "input_kind": "text",
+    "input_kind": "classification",
     "query_prefix": "Query: ",
     "document_prefix": "Document: ",
     "raw_embedding_dimension": 768,

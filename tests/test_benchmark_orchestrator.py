@@ -82,6 +82,44 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("--output-dimension", command)
         self.assertIn("--l2-normalize", command)
 
+    def test_ltembed_correctness_command_includes_optional_scenario(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "ort_bundle_dir": Path("ort_bundle"),
+                "output_dimension": 512,
+                "l2_normalize": True,
+                "threads": 1,
+                "scenario": "single/medium",
+            },
+        )
+        command = bench.ltembed_correctness_command(args)
+        self.assertIn("--scenario", command)
+        self.assertIn("single/medium", command)
+
+    def test_pytorch_commands_include_optional_scenario(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("model_dir"),
+                "warmup": 5,
+                "iters": 10,
+                "threads": 1,
+                "scenario": "single/medium",
+            },
+        )
+
+        warm_command = bench.pytorch_warm_command(args)
+        correctness_command = bench.pytorch_correctness_command(args)
+
+        for command in (warm_command, correctness_command):
+            self.assertIn("--scenario", command)
+            self.assertIn("single/medium", command)
+
     def test_ltembed_commands_include_optional_cargo_features(self):
         bench = load_module()
         args = type(
@@ -151,6 +189,15 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         )
 
         self.assertIn('"*.py"', workflow)
+
+    def test_benchmark_workflow_accepts_optional_scenario_input(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("scenario:", workflow)
+        self.assertIn('description: Optional single scenario to benchmark', workflow)
+        self.assertIn('EXTRA_ARGS+=(--scenario "${{ inputs.scenario }}")', workflow)
 
 
 if __name__ == "__main__":

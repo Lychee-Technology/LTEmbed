@@ -351,13 +351,13 @@ impl ModelSpec {
         })?;
 
         let metadata = build_info.model_metadata;
-        if metadata.input_kind != "retrieval" {
+        if metadata.input_kind != "retrieval" && metadata.input_kind != "text" {
             return Err(LTEmbedError::ModelLoad(format!(
                 "Unsupported input_kind '{}' for bundle target '{}'",
                 metadata.input_kind, build_info.target_id
             )));
         }
-        if metadata.pooling != "last_token" {
+        if metadata.pooling != "last_token" && metadata.pooling != "lasttoken" {
             return Err(LTEmbedError::ModelLoad(format!(
                 "Unsupported pooling '{}' for bundle target '{}'",
                 metadata.pooling, build_info.target_id
@@ -503,6 +503,17 @@ impl SessionIo {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_build_info_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ltembed-{name}-{nanos}.json"))
+    }
 
     #[test]
     fn test_embedding_input_query_constructor() {
@@ -597,5 +608,64 @@ mod tests {
         .validate(RAW_EMBEDDING_DIMENSION)
         .unwrap_err();
         assert!(matches!(err, LTEmbedError::ModelLoad(_)));
+    }
+
+    #[test]
+    fn test_model_spec_accepts_legacy_q4f16_metadata_aliases() {
+        let path = temp_build_info_path("legacy-build-info");
+        fs::write(
+            &path,
+            r#"{
+  "target_id": "legacy-q4f16",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "lasttoken",
+    "input_kind": "text",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
+        )
+        .unwrap();
+
+        let spec = ModelSpec::from_build_info(&path).unwrap();
+
+        assert_eq!(spec.query_prefix, "Query: ");
+        assert_eq!(spec.document_prefix, "Document: ");
+        assert_eq!(spec.raw_embedding_dimension, 768);
+        assert_eq!(spec.max_length, 8192);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_model_spec_rejects_unknown_input_kind() {
+        let path = temp_build_info_path("invalid-input-kind");
+        fs::write(
+            &path,
+            r#"{
+  "target_id": "bad-model",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "last_token",
+    "input_kind": "classification",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
+        )
+        .unwrap();
+
+        let err = ModelSpec::from_build_info(&path).unwrap_err();
+
+        assert!(matches!(err, LTEmbedError::ModelLoad(_)));
+
+        fs::remove_file(path).unwrap();
     }
 }

@@ -272,7 +272,8 @@ def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 
 
 def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
-    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", "")) + [
+    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
+    command.extend([
         "--bin",
         "benchmark_ltembed",
         "--",
@@ -286,11 +287,14 @@ def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
         "true" if args.l2_normalize else "false",
         "--threads",
         str(args.threads),
-    ]
+    ])
+    if getattr(args, "scenario", None):
+        command.extend(["--scenario", str(args.scenario)])
+    return command
 
 
 def pytorch_warm_command(args: argparse.Namespace) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(ROOT / "scripts" / "bench_pytorch.py"),
         "--mode",
@@ -304,6 +308,9 @@ def pytorch_warm_command(args: argparse.Namespace) -> list[str]:
         "--threads",
         str(args.threads),
     ]
+    if getattr(args, "scenario", None):
+        command.extend(["--scenario", str(args.scenario)])
+    return command
 
 
 def pytorch_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
@@ -322,7 +329,7 @@ def pytorch_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
 
 
 def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(ROOT / "scripts" / "bench_pytorch.py"),
         "--mode",
@@ -332,6 +339,9 @@ def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
         "--threads",
         str(args.threads),
     ]
+    if getattr(args, "scenario", None):
+        command.extend(["--scenario", str(args.scenario)])
+    return command
 
 
 RUNNERS = {
@@ -501,7 +511,7 @@ def collect_cold_rows(
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
-    for scenario in SCENARIOS:
+    for scenario in selected_scenarios(args.scenario):
         for implementation, runner in RUNNERS.items():
             payload = run_json_command(runner["cold"](args, scenario.name))
             results[implementation][scenario.name] = payload
@@ -630,6 +640,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)
+    parser.add_argument(
+        "--scenario",
+        help="Optional single scenario name to run instead of the full suite.",
+    )
     parser.add_argument("--output-dimension", type=int, default=512)
     parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmup", type=int, default=10)

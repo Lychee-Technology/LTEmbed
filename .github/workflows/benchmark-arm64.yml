@@ -22,6 +22,10 @@ on:
         description: Output embedding dimension after post-processing
         required: false
         default: "512"
+      scenario:
+        description: Optional single scenario to benchmark
+        required: false
+        default: ""
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -148,12 +152,15 @@ jobs:
           export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
           export LTEMBED_PROFILE="1"
           export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
-          EXTRA_ARGS=""
+          EXTRA_ARGS=()
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
+            EXTRA_ARGS+=(--no-include-cold-start)
           fi
           if [ "${{ inputs.include_correctness }}" != "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-include-correctness"
+            EXTRA_ARGS+=(--no-include-correctness)
+          fi
+          if [ -n "${{ inputs.scenario }}" ]; then
+            EXTRA_ARGS+=(--scenario "${{ inputs.scenario }}")
           fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
@@ -166,7 +173,7 @@ jobs:
             --threads "${{ inputs.threads }}" \
             --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
             --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
-            $EXTRA_ARGS
+            "${EXTRA_ARGS[@]}"
 
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v4

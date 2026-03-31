@@ -51,6 +51,12 @@ SCENARIOS: dict[str, dict[str, object]] = {
 }
 
 
+def selected_scenarios(scenario_name: str | None) -> list[tuple[str, dict[str, object]]]:
+    if scenario_name is None:
+        return list(SCENARIOS.items())
+    return [(scenario_name, SCENARIOS[scenario_name])]
+
+
 def prefixed_text(item: dict[str, str]) -> str:
     prefix = "Query: " if item["kind"] == "query" else "Document: "
     return prefix + item["text"]
@@ -147,7 +153,7 @@ def warm_payload(args) -> dict[str, object]:
                 "scenario": scenario_name,
                 "stats": measure_warm_stats(model, tokenizer, scenario_name, args.warmup, args.iters),
             }
-            for scenario_name in SCENARIOS
+            for scenario_name, _ in selected_scenarios(args.scenario)
         ],
     }
 
@@ -175,7 +181,7 @@ def correctness_payload(args) -> dict[str, object]:
                 "scenario": scenario_name,
                 "embeddings": embed_texts(model, tokenizer, list(scenario["texts"])),
             }
-            for scenario_name, scenario in SCENARIOS.items()
+            for scenario_name, scenario in selected_scenarios(args.scenario)
         ],
     }
 

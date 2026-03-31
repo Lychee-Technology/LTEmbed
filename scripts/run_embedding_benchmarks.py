@@ -234,17 +234,19 @@ def scenario_from_name(name: str) -> Scenario:
         raise ValueError(f"unknown scenario: {name}") from exc
 
 
-def load_retrieval_eval_cases(path: Path) -> dict[str, Any]:
-    cases = json.loads(path.read_text(encoding="utf-8"))
-    document_ids = {str(document["id"]) for document in cases["documents"]}
-    for query in cases["queries"]:
-        relevant_document_ids = [str(doc_id) for doc_id in query["relevant_document_ids"]]
-        if not relevant_document_ids:
-            raise ValueError(f"query {query['id']} must declare at least one relevant document")
-        missing = set(relevant_document_ids) - document_ids
-        if missing:
-            missing_ids = ", ".join(sorted(missing))
-            raise ValueError(f"query {query['id']} references unknown documents: {missing_ids}")
+def load_retrieval_eval_cases(path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    cases = list(payload["cases"]) if "cases" in payload else [payload]
+    for case in cases:
+        document_ids = {str(document["id"]) for document in case["documents"]}
+        for query in case["queries"]:
+            relevant_document_ids = [str(doc_id) for doc_id in query["relevant_document_ids"]]
+            if not relevant_document_ids:
+                raise ValueError(f"query {query['id']} must declare at least one relevant document")
+            missing = set(relevant_document_ids) - document_ids
+            if missing:
+                missing_ids = ", ".join(sorted(missing))
+                raise ValueError(f"query {query['id']} references unknown documents: {missing_ids}")
     return cases
 
 
@@ -771,7 +773,8 @@ def collect_retrieval_eval_rows(
     host: dict[str, str],
     git_revision: str,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    cases = load_retrieval_eval_cases(args.retrieval_eval_path)
+    retrieval_cases = load_retrieval_eval_cases(args.retrieval_eval_path)
+    cases_by_name = {str(case["name"]): case for case in retrieval_cases}
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
 
@@ -779,36 +782,38 @@ def collect_retrieval_eval_rows(
         payload = run_json_command(runner["retrieval"](args))
         payloads[implementation] = payload
         version = resolved_implementation_version(implementation, payload)
-        metrics = compute_retrieval_metrics(
-            cases,
-            query_embeddings={str(item["id"]): item["embedding"] for item in payload["queries"]},
-            document_embeddings={str(item["id"]): item["embedding"] for item in payload["documents"]},
-        )
-        base_fields = base_row_fields_for_case(
-            run_id=run_id,
-            timestamp_utc=timestamp_utc,
-            model_id=args.model_id,
-            model_source=args.model_source,
-            implementation=implementation,
-            implementation_version=version,
-            git_revision=git_revision,
-            scenario_name=str(cases["name"]),
-            batch_size=len(cases["documents"]),
-            text_profile="retrieval_eval",
-            mode="retrieval_eval",
-            threads=args.threads,
-            warmup_iters=0,
-            timed_iters=0,
-            host=host,
-        )
-        for metric_name in ("recall_at_1", "mrr_at_3"):
-            row = build_metric_row(
-                base_fields=base_fields,
-                metric_name=metric_name,
-                metric_value=float(metrics[metric_name]),
+        for result in payload["results"]:
+            case = cases_by_name[str(result["dataset_name"])]
+            metrics = compute_retrieval_metrics(
+                case,
+                query_embeddings={str(item["id"]): item["embedding"] for item in result["queries"]},
+                document_embeddings={str(item["id"]): item["embedding"] for item in result["documents"]},
             )
-            row["notes"] = resolved_notes(implementation, payload, args)
-            rows.append(row)
+            base_fields = base_row_fields_for_case(
+                run_id=run_id,
+                timestamp_utc=timestamp_utc,
+                model_id=args.model_id,
+                model_source=args.model_source,
+                implementation=implementation,
+                implementation_version=version,
+                git_revision=git_revision,
+                scenario_name=str(case["name"]),
+                batch_size=len(case["documents"]),
+                text_profile="retrieval_eval",
+                mode="retrieval_eval",
+                threads=args.threads,
+                warmup_iters=0,
+                timed_iters=0,
+                host=host,
+            )
+            for metric_name in ("recall_at_1", "mrr_at_3"):
+                row = build_metric_row(
+                    base_fields=base_fields,
+                    metric_name=metric_name,
+                    metric_value=float(metrics[metric_name]),
+                )
+                row["notes"] = resolved_notes(implementation, payload, args)
+                rows.append(row)
 
     return rows, payloads
 

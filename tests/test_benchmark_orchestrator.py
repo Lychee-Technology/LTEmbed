@@ -184,7 +184,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
     def test_compute_retrieval_metrics_tracks_ranking_quality(self):
         bench = load_module()
-        cases = {
+        retrieval_case = {
             "name": "mini-retrieval-v1",
             "queries": [
                 {"id": "q1", "relevant_document_ids": ["d1"]},
@@ -202,7 +202,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         }
 
         metrics = bench.compute_retrieval_metrics(
-            cases,
+            retrieval_case,
             query_embeddings=query_embeddings,
             document_embeddings=document_embeddings,
         )
@@ -210,6 +210,34 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertEqual(metrics["query_count"], 2)
         self.assertAlmostEqual(metrics["recall_at_1"], 0.5)
         self.assertAlmostEqual(metrics["mrr_at_3"], 0.75)
+
+    def test_load_retrieval_eval_cases_accepts_suite_schema(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retrieval_eval_path = Path(tmpdir) / "retrieval_eval_cases.json"
+            retrieval_eval_path.write_text(
+                """
+                {
+                  "cases": [
+                    {
+                      "name": "mini-retrieval-v1",
+                      "documents": [{"id": "d1", "text": "Rust ownership"}],
+                      "queries": [{"id": "q1", "text": "Rust memory safety", "relevant_document_ids": ["d1"]}]
+                    },
+                    {
+                      "name": "mini-retrieval-hard-v1",
+                      "documents": [{"id": "d2", "text": "ANN search"}],
+                      "queries": [{"id": "q2", "text": "dense embeddings", "relevant_document_ids": ["d2"]}]
+                    }
+                  ]
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            cases = bench.load_retrieval_eval_cases(retrieval_eval_path)
+
+        self.assertEqual([case["name"] for case in cases], ["mini-retrieval-v1", "mini-retrieval-hard-v1"])
 
     def test_benchmark_workflow_downloads_builder_bundle_for_jina_retrieval(self):
         workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(

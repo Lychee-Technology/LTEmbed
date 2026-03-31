@@ -1,59 +1,122 @@
 {
-  "name": "mini-retrieval-v1",
-  "documents": [
+  "cases": [
     {
-      "id": "rust_ownership",
-      "text": "Rust ownership and borrowing let the compiler enforce memory safety without a garbage collector."
+      "name": "mini-retrieval-v1",
+      "documents": [
+        {
+          "id": "rust_ownership",
+          "text": "Rust ownership and borrowing let the compiler enforce memory safety without a garbage collector."
+        },
+        {
+          "id": "java_gc",
+          "text": "Java uses a garbage collector to reclaim unreachable objects automatically."
+        },
+        {
+          "id": "postgres_mvcc",
+          "text": "PostgreSQL uses MVCC so reads and writes can proceed concurrently inside transactions."
+        },
+        {
+          "id": "mysql_indexes",
+          "text": "MySQL can accelerate keyword lookups with B-tree indexes and full-text search."
+        },
+        {
+          "id": "vector_search",
+          "text": "Vector databases store dense embeddings and use approximate nearest neighbor indexes for semantic search."
+        },
+        {
+          "id": "bm25_search",
+          "text": "BM25 ranks documents for lexical search with token frequency and inverse document frequency."
+        },
+        {
+          "id": "kubernetes_rollout",
+          "text": "Kubernetes Deployments manage rolling updates and keep a desired replica count."
+        },
+        {
+          "id": "docker_layers",
+          "text": "Docker images are built from layered filesystem snapshots and shared base images."
+        }
+      ],
+      "queries": [
+        {
+          "id": "q_rust",
+          "text": "How does Rust provide memory safety without a garbage collector?",
+          "relevant_document_ids": ["rust_ownership"]
+        },
+        {
+          "id": "q_postgres",
+          "text": "What lets PostgreSQL handle concurrent reads and writes in transactions?",
+          "relevant_document_ids": ["postgres_mvcc"]
+        },
+        {
+          "id": "q_semantic",
+          "text": "What kind of system is used for semantic search over dense embeddings?",
+          "relevant_document_ids": ["vector_search"]
+        },
+        {
+          "id": "q_k8s",
+          "text": "How do I roll out a new version of a service while keeping replicas available?",
+          "relevant_document_ids": ["kubernetes_rollout"]
+        }
+      ]
     },
     {
-      "id": "java_gc",
-      "text": "Java uses a garbage collector to reclaim unreachable objects automatically."
-    },
-    {
-      "id": "postgres_mvcc",
-      "text": "PostgreSQL uses MVCC so reads and writes can proceed concurrently inside transactions."
-    },
-    {
-      "id": "mysql_indexes",
-      "text": "MySQL can accelerate keyword lookups with B-tree indexes and full-text search."
-    },
-    {
-      "id": "vector_search",
-      "text": "Vector databases store dense embeddings and use approximate nearest neighbor indexes for semantic search."
-    },
-    {
-      "id": "bm25_search",
-      "text": "BM25 ranks documents for lexical search with token frequency and inverse document frequency."
-    },
-    {
-      "id": "kubernetes_rollout",
-      "text": "Kubernetes Deployments manage rolling updates and keep a desired replica count."
-    },
-    {
-      "id": "docker_layers",
-      "text": "Docker images are built from layered filesystem snapshots and shared base images."
-    }
-  ],
-  "queries": [
-    {
-      "id": "q_rust",
-      "text": "How does Rust provide memory safety without a garbage collector?",
-      "relevant_document_ids": ["rust_ownership"]
-    },
-    {
-      "id": "q_postgres",
-      "text": "What lets PostgreSQL handle concurrent reads and writes in transactions?",
-      "relevant_document_ids": ["postgres_mvcc"]
-    },
-    {
-      "id": "q_semantic",
-      "text": "What kind of system is used for semantic search over dense embeddings?",
-      "relevant_document_ids": ["vector_search"]
-    },
-    {
-      "id": "q_k8s",
-      "text": "How do I roll out a new version of a service while keeping replicas available?",
-      "relevant_document_ids": ["kubernetes_rollout"]
+      "name": "mini-retrieval-hard-v1",
+      "documents": [
+        {
+          "id": "rust_no_gc",
+          "text": "Rust ownership and borrowing prevent use-after-free bugs and provide memory safety without relying on a garbage collector."
+        },
+        {
+          "id": "java_gc_latency",
+          "text": "Java's garbage collector automatically reclaims objects, but pauses and heap tuning can affect latency."
+        },
+        {
+          "id": "postgres_mvcc_isolation",
+          "text": "PostgreSQL implements MVCC so transactions can isolate reads and writes without blocking every reader."
+        },
+        {
+          "id": "mysql_mvcc",
+          "text": "MySQL InnoDB also uses MVCC for transactions, but operational behavior and defaults differ from PostgreSQL."
+        },
+        {
+          "id": "ann_vector_search",
+          "text": "Approximate nearest neighbor indexes in vector databases are used to retrieve semantically similar embeddings quickly."
+        },
+        {
+          "id": "hybrid_search",
+          "text": "Hybrid search combines lexical ranking like BM25 with embedding similarity to improve retrieval quality."
+        },
+        {
+          "id": "k8s_deployment",
+          "text": "Kubernetes Deployments coordinate rolling updates, replica availability, and rollback history for services."
+        },
+        {
+          "id": "k8s_hpa",
+          "text": "Horizontal Pod Autoscalers change replica counts based on observed CPU or custom metrics."
+        }
+      ],
+      "queries": [
+        {
+          "id": "q_rust_vs_java",
+          "text": "Which language feature gives Rust memory safety without requiring a garbage collector?",
+          "relevant_document_ids": ["rust_no_gc"]
+        },
+        {
+          "id": "q_postgres_vs_mysql",
+          "text": "What PostgreSQL mechanism keeps readers and writers isolated inside transactions?",
+          "relevant_document_ids": ["postgres_mvcc_isolation"]
+        },
+        {
+          "id": "q_ann_vs_hybrid",
+          "text": "What index type is used to retrieve nearest neighbors for dense embedding search?",
+          "relevant_document_ids": ["ann_vector_search"]
+        },
+        {
+          "id": "q_rollout_vs_scale",
+          "text": "Which Kubernetes component is responsible for rolling out a new service version while keeping replicas available?",
+          "relevant_document_ids": ["k8s_deployment"]
+        }
+      ]
     }
   ]
 }

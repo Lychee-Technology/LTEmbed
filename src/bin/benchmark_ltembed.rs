@@ -56,10 +56,17 @@ struct ColdPayload {
 }
 
 #[derive(Debug, Deserialize)]
-struct RetrievalEvalCases {
+struct RetrievalEvalCase {
     name: String,
     documents: Vec<RetrievalDocument>,
     queries: Vec<RetrievalQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RetrievalEvalSpec {
+    Suite { cases: Vec<RetrievalEvalCase> },
+    Single(RetrievalEvalCase),
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,12 +89,17 @@ struct RetrievalEmbedding {
 }
 
 #[derive(Serialize)]
-struct RetrievalPayload {
-    implementation: &'static str,
-    implementation_version: String,
+struct RetrievalResult {
     dataset_name: String,
     queries: Vec<RetrievalEmbedding>,
     documents: Vec<RetrievalEmbedding>,
+}
+
+#[derive(Serialize)]
+struct RetrievalPayload {
+    implementation: &'static str,
+    implementation_version: String,
+    results: Vec<RetrievalResult>,
 }
 
 fn parse_args_from<I, S>(args: I) -> Result<Args, String>
@@ -204,34 +216,40 @@ fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
     )
 }
 
-fn load_retrieval_eval_cases(path: &Path) -> io::Result<RetrievalEvalCases> {
+fn load_retrieval_eval_cases(path: &Path) -> io::Result<Vec<RetrievalEvalCase>> {
     let contents = fs::read_to_string(path)?;
-    let cases: RetrievalEvalCases = serde_json::from_str(&contents)
+    let spec: RetrievalEvalSpec = serde_json::from_str(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    let document_ids = cases
-        .documents
-        .iter()
-        .map(|document| document.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    for query in &cases.queries {
-        if query.relevant_document_ids.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "query {} must declare at least one relevant document",
-                    query.id
-                ),
-            ));
-        }
-        for document_id in &query.relevant_document_ids {
-            if !document_ids.contains(document_id.as_str()) {
+    let cases = match spec {
+        RetrievalEvalSpec::Suite { cases } => cases,
+        RetrievalEvalSpec::Single(case) => vec![case],
+    };
+    for case in &cases {
+        let document_ids = case
+            .documents
+            .iter()
+            .map(|document| document.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        for query in &case.queries {
+            if query.relevant_document_ids.is_empty() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "query {} references unknown document {}",
-                        query.id, document_id
+                        "query {} must declare at least one relevant document",
+                        query.id
                     ),
                 ));
+            }
+            for document_id in &query.relevant_document_ids {
+                if !document_ids.contains(document_id.as_str()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "query {} references unknown document {}",
+                            query.id, document_id
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -357,46 +375,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 io::Error::new(io::ErrorKind::InvalidInput, "missing --retrieval-eval-path")
             })?;
             let cases = load_retrieval_eval_cases(retrieval_eval_path)?;
-            let query_embeddings = embed_retrieval_inputs(
-                &engine,
-                cases
-                    .queries
-                    .iter()
-                    .map(|query| EmbeddingInput::query(query.text.as_str()))
-                    .collect(),
-            )?;
-            let document_embeddings = embed_retrieval_inputs(
-                &engine,
-                cases
-                    .documents
-                    .iter()
-                    .map(|document| EmbeddingInput::document(document.text.as_str()))
-                    .collect(),
-            )?;
             serde_json::to_writer(
                 std::io::stdout(),
                 &RetrievalPayload {
                     implementation: "ltembed",
                     implementation_version,
-                    dataset_name: cases.name,
-                    queries: cases
-                        .queries
+                    results: cases
                         .into_iter()
-                        .zip(query_embeddings)
-                        .map(|(query, embedding)| RetrievalEmbedding {
-                            id: query.id,
-                            embedding,
+                        .map(|case| {
+                            let query_embeddings = embed_retrieval_inputs(
+                                &engine,
+                                case.queries
+                                    .iter()
+                                    .map(|query| EmbeddingInput::query(query.text.as_str()))
+                                    .collect(),
+                            )?;
+                            let document_embeddings = embed_retrieval_inputs(
+                                &engine,
+                                case.documents
+                                    .iter()
+                                    .map(|document| {
+                                        EmbeddingInput::document(document.text.as_str())
+                                    })
+                                    .collect(),
+                            )?;
+                            Ok(RetrievalResult {
+                                dataset_name: case.name,
+                                queries: case
+                                    .queries
+                                    .into_iter()
+                                    .zip(query_embeddings)
+                                    .map(|(query, embedding)| RetrievalEmbedding {
+                                        id: query.id,
+                                        embedding,
+                                    })
+                                    .collect(),
+                                documents: case
+                                    .documents
+                                    .into_iter()
+                                    .zip(document_embeddings)
+                                    .map(|(document, embedding)| RetrievalEmbedding {
+                                        id: document.id,
+                                        embedding,
+                                    })
+                                    .collect(),
+                            })
                         })
-                        .collect(),
-                    documents: cases
-                        .documents
-                        .into_iter()
-                        .zip(document_embeddings)
-                        .map(|(document, embedding)| RetrievalEmbedding {
-                            id: document.id,
-                            embedding,
-                        })
-                        .collect(),
+                        .collect::<Result<Vec<_>, LTEmbedError>>()?,
                 },
             )?;
         }
@@ -471,20 +496,30 @@ mod tests {
         fs::write(
             &path,
             r#"{
-                "name": "mini-retrieval-v1",
-                "documents": [{"id": "d1", "text": "Rust ownership protects memory safety."}],
-                "queries": [{"id": "q1", "text": "How does Rust avoid a garbage collector?", "relevant_document_ids": ["d1"]}]
+                "cases": [
+                    {
+                        "name": "mini-retrieval-v1",
+                        "documents": [{"id": "d1", "text": "Rust ownership protects memory safety."}],
+                        "queries": [{"id": "q1", "text": "How does Rust avoid a garbage collector?", "relevant_document_ids": ["d1"]}]
+                    },
+                    {
+                        "name": "mini-retrieval-hard-v1",
+                        "documents": [{"id": "d2", "text": "ANN indexes power vector retrieval."}],
+                        "queries": [{"id": "q2", "text": "What supports nearest-neighbor search over embeddings?", "relevant_document_ids": ["d2"]}]
+                    }
+                ]
             }"#,
         )
         .unwrap();
 
         let cases = load_retrieval_eval_cases(&path).unwrap();
 
-        assert_eq!(cases.name, "mini-retrieval-v1");
-        assert_eq!(cases.documents.len(), 1);
-        assert_eq!(cases.documents[0].id, "d1");
-        assert_eq!(cases.queries.len(), 1);
-        assert_eq!(cases.queries[0].relevant_document_ids, vec!["d1"]);
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "mini-retrieval-v1");
+        assert_eq!(cases[0].documents.len(), 1);
+        assert_eq!(cases[0].documents[0].id, "d1");
+        assert_eq!(cases[1].name, "mini-retrieval-hard-v1");
+        assert_eq!(cases[1].queries[0].relevant_document_ids, vec!["d2"]);
 
         let _ = fs::remove_file(path);
     }

@@ -98,8 +98,11 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
     }
 
 
-def load_retrieval_eval_cases(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "cases" in payload:
+        return list(payload["cases"])
+    return [payload]
 
 
 def load_model(model_name_or_path: str):
@@ -268,41 +271,46 @@ def retrieval_payload(args) -> dict[str, object]:
     cases = load_retrieval_eval_cases(args.retrieval_eval_path)
     model, tokenizer = load_model(args.model_name_or_path)
 
-    query_inputs = [
-        {"kind": "query", "text": str(query["text"])}
-        for query in cases["queries"]
-    ]
-    document_inputs = [
-        {"kind": "document", "text": str(document["text"])}
-        for document in cases["documents"]
-    ]
-    query_embeddings = embed_texts(
-        model,
-        tokenizer,
-        query_inputs,
-        output_dimension=args.output_dimension,
-        l2_normalize=args.l2_normalize,
-    )
-    document_embeddings = embed_texts(
-        model,
-        tokenizer,
-        document_inputs,
-        output_dimension=args.output_dimension,
-        l2_normalize=args.l2_normalize,
-    )
-
     return {
         "implementation": "pytorch",
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
-        "dataset_name": cases["name"],
-        "queries": [
-            {"id": str(query["id"]), "embedding": embedding}
-            for query, embedding in zip(cases["queries"], query_embeddings, strict=True)
-        ],
-        "documents": [
-            {"id": str(document["id"]), "embedding": embedding}
-            for document, embedding in zip(cases["documents"], document_embeddings, strict=True)
+        "results": [
+            {
+                "dataset_name": str(case["name"]),
+                "queries": [
+                    {"id": str(query["id"]), "embedding": embedding}
+                    for query, embedding in zip(
+                        case["queries"],
+                        embed_texts(
+                            model,
+                            tokenizer,
+                            [{"kind": "query", "text": str(query["text"])} for query in case["queries"]],
+                            output_dimension=args.output_dimension,
+                            l2_normalize=args.l2_normalize,
+                        ),
+                        strict=True,
+                    )
+                ],
+                "documents": [
+                    {"id": str(document["id"]), "embedding": embedding}
+                    for document, embedding in zip(
+                        case["documents"],
+                        embed_texts(
+                            model,
+                            tokenizer,
+                            [
+                                {"kind": "document", "text": str(document["text"])}
+                                for document in case["documents"]
+                            ],
+                            output_dimension=args.output_dimension,
+                            l2_normalize=args.l2_normalize,
+                        ),
+                        strict=True,
+                    )
+                ],
+            }
+            for case in cases
         ],
     }
 

@@ -196,18 +196,36 @@ class BenchPyTorchTests(unittest.TestCase):
             retrieval_eval_path.write_text(
                 json.dumps(
                     {
-                        "name": "mini-retrieval-v1",
-                        "documents": [
-                            {"id": "d1", "text": "Rust ownership protects memory safety."},
-                            {"id": "d2", "text": "Vector databases power semantic search."},
-                        ],
-                        "queries": [
+                        "cases": [
                             {
-                                "id": "q1",
-                                "text": "How does Rust avoid garbage collection?",
-                                "relevant_document_ids": ["d1"],
-                            }
-                        ],
+                                "name": "mini-retrieval-v1",
+                                "documents": [
+                                    {"id": "d1", "text": "Rust ownership protects memory safety."},
+                                    {"id": "d2", "text": "Vector databases power semantic search."},
+                                ],
+                                "queries": [
+                                    {
+                                        "id": "q1",
+                                        "text": "How does Rust avoid garbage collection?",
+                                        "relevant_document_ids": ["d1"],
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "mini-retrieval-hard-v1",
+                                "documents": [
+                                    {"id": "d3", "text": "BM25 ranks lexical results with token statistics."},
+                                    {"id": "d4", "text": "ANN indexes accelerate dense vector retrieval."},
+                                ],
+                                "queries": [
+                                    {
+                                        "id": "q2",
+                                        "text": "What system supports nearest-neighbor search over dense embeddings?",
+                                        "relevant_document_ids": ["d4"],
+                                    }
+                                ],
+                            },
+                        ]
                     }
                 ),
                 encoding="utf-8",
@@ -227,18 +245,28 @@ class BenchPyTorchTests(unittest.TestCase):
                     side_effect=[
                         [[1.0, 0.0]],
                         [[0.0, 1.0], [0.5, 0.5]],
+                        [[0.2, 0.8]],
+                        [[0.9, 0.1], [0.4, 0.6]],
                     ],
                 ) as embed_texts,
             ):
                 payload = bench.retrieval_payload(args)
 
-        self.assertEqual(payload["dataset_name"], "mini-retrieval-v1")
-        self.assertEqual(payload["queries"], [{"id": "q1", "embedding": [1.0, 0.0]}])
+        self.assertEqual([result["dataset_name"] for result in payload["results"]], ["mini-retrieval-v1", "mini-retrieval-hard-v1"])
+        self.assertEqual(payload["results"][0]["queries"], [{"id": "q1", "embedding": [1.0, 0.0]}])
         self.assertEqual(
-            payload["documents"],
+            payload["results"][0]["documents"],
             [
                 {"id": "d1", "embedding": [0.0, 1.0]},
                 {"id": "d2", "embedding": [0.5, 0.5]},
+            ],
+        )
+        self.assertEqual(payload["results"][1]["queries"], [{"id": "q2", "embedding": [0.2, 0.8]}])
+        self.assertEqual(
+            payload["results"][1]["documents"],
+            [
+                {"id": "d3", "embedding": [0.9, 0.1]},
+                {"id": "d4", "embedding": [0.4, 0.6]},
             ],
         )
         self.assertEqual(
@@ -251,6 +279,10 @@ class BenchPyTorchTests(unittest.TestCase):
                 {"kind": "document", "text": "Rust ownership protects memory safety."},
                 {"kind": "document", "text": "Vector databases power semantic search."},
             ],
+        )
+        self.assertEqual(
+            embed_texts.call_args_list[2].args[2],
+            [{"kind": "query", "text": "What system supports nearest-neighbor search over dense embeddings?"}],
         )
 
 

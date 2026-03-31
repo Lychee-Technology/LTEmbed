@@ -167,13 +167,17 @@ jobs:
           if [ -n "${{ inputs.scenario }}" ]; then
             EXTRA_ARGS+=(--scenario "${{ inputs.scenario }}")
           fi
+          if [ "${{ inputs.l2_normalize }}" = "true" ]; then
+            EXTRA_ARGS+=(--l2-normalize)
+          else
+            EXTRA_ARGS+=(--no-l2-normalize)
+          fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
             --ort-bundle-dir "$ORT_BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
             --output-dimension "${{ inputs.output_dimension }}" \
-            --l2-normalize "${{ inputs.l2_normalize }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \

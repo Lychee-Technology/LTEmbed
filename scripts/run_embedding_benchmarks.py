@@ -225,6 +225,10 @@ def cargo_run_prefix(cargo_features: str = "") -> list[str]:
     return command
 
 
+def python_bool_flag(flag_name: str, enabled: bool) -> list[str]:
+    return [f"--{flag_name}" if enabled else f"--no-{flag_name}"]
+
+
 def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
     command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
     command.extend([
@@ -303,8 +307,6 @@ def pytorch_warm_command(args: argparse.Namespace) -> list[str]:
         str(args.model_dir),
         "--output-dimension",
         str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
         "--warmup",
         str(args.warmup),
         "--iters",
@@ -312,13 +314,14 @@ def pytorch_warm_command(args: argparse.Namespace) -> list[str]:
         "--threads",
         str(args.threads),
     ]
+    command.extend(python_bool_flag("l2-normalize", args.l2_normalize))
     if getattr(args, "scenario", None):
         command.extend(["--scenario", str(args.scenario)])
     return command
 
 
 def pytorch_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(ROOT / "scripts" / "bench_pytorch.py"),
         "--mode",
@@ -329,11 +332,11 @@ def pytorch_cold_command(args: argparse.Namespace, scenario_name: str) -> list[s
         str(args.model_dir),
         "--output-dimension",
         str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
         "--threads",
         str(args.threads),
     ]
+    command.extend(python_bool_flag("l2-normalize", args.l2_normalize))
+    return command
 
 
 def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
@@ -346,11 +349,10 @@ def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
         str(args.model_dir),
         "--output-dimension",
         str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
         "--threads",
         str(args.threads),
     ]
+    command.extend(python_bool_flag("l2-normalize", args.l2_normalize))
     if getattr(args, "scenario", None):
         command.extend(["--scenario", str(args.scenario)])
     return command

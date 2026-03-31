@@ -123,8 +123,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             self.assertIn("single/medium", command)
             self.assertIn("--output-dimension", command)
             self.assertIn("768", command)
-            self.assertIn("--l2-normalize", command)
-            self.assertIn("false", command)
+            self.assertIn("--no-l2-normalize", command)
 
     def test_ltembed_commands_include_optional_cargo_features(self):
         bench = load_module()
@@ -212,7 +211,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
         self.assertIn("l2_normalize:", workflow)
         self.assertIn('description: Apply L2 normalization after post-processing', workflow)
-        self.assertIn('--l2-normalize "${{ inputs.l2_normalize }}"', workflow)
+        self.assertIn('EXTRA_ARGS+=(--no-l2-normalize)', workflow)
 
 
 if __name__ == "__main__":

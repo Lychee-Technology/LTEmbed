@@ -10,7 +10,11 @@ Regenerates `tests/fixtures/test_fixtures.json` for `jinaai/jina-embeddings-v5-t
 
 ## `bench_pytorch.py`
 
-Python reference runner for warm, cold, and correctness benchmark modes against the same Jina retrieval contract.
+Python reference runner for warm, cold, correctness, and mini retrieval eval modes against the same Jina retrieval contract.
+
+## `retrieval_eval_cases.json`
+
+Small retrieval ranking fixture used by the benchmark harness to report `recall@1` and `mrr@3`.
 
 ## `run_embedding_benchmarks.py`
 
@@ -21,3 +25,4 @@ Important assumptions:
 - `--ort-bundle-dir` points at a directory containing `model.ort`, `tokenizer.json`, `libonnxruntime.so`, and `build-info.json`
 - `--output-dimension` and `--l2-normalize` describe LTEmbed post-processing explicitly
 - correctness thresholds should account for quantized ONNX output vs. Python reference
+- retrieval eval uses `scripts/retrieval_eval_cases.json` unless `--retrieval-eval-path` overrides it

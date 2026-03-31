@@ -1,8 +1,10 @@
 use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
 use ltembed::engine::{EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig};
 use ltembed::error::LTEmbedError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -11,6 +13,7 @@ struct Args {
     mode: String,
     scenario: Option<String>,
     ort_bundle_dir: PathBuf,
+    retrieval_eval_path: Option<PathBuf>,
     output_dimension: usize,
     l2_normalize: bool,
     warmup: usize,
@@ -52,6 +55,41 @@ struct ColdPayload {
     stats: LatencyStats,
 }
 
+#[derive(Debug, Deserialize)]
+struct RetrievalEvalCases {
+    name: String,
+    documents: Vec<RetrievalDocument>,
+    queries: Vec<RetrievalQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalDocument {
+    id: String,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalQuery {
+    id: String,
+    text: String,
+    relevant_document_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RetrievalEmbedding {
+    id: String,
+    embedding: Vec<f32>,
+}
+
+#[derive(Serialize)]
+struct RetrievalPayload {
+    implementation: &'static str,
+    implementation_version: String,
+    dataset_name: String,
+    queries: Vec<RetrievalEmbedding>,
+    documents: Vec<RetrievalEmbedding>,
+}
+
 fn parse_args_from<I, S>(args: I) -> Result<Args, String>
 where
     I: IntoIterator<Item = S>,
@@ -60,6 +98,7 @@ where
     let mut mode = None;
     let mut scenario = None;
     let mut ort_bundle_dir = None;
+    let mut retrieval_eval_path = None;
     let mut output_dimension = None;
     let mut l2_normalize = None;
     let mut warmup = 10usize;
@@ -73,6 +112,7 @@ where
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
             "--ort-bundle-dir" => ort_bundle_dir = iter.next().map(PathBuf::from),
+            "--retrieval-eval-path" => retrieval_eval_path = iter.next().map(PathBuf::from),
             "--output-dimension" => {
                 output_dimension = Some(
                     iter.next()
@@ -124,6 +164,7 @@ where
         scenario,
         ort_bundle_dir: ort_bundle_dir
             .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
+        retrieval_eval_path,
         output_dimension: output_dimension
             .ok_or_else(|| "missing required --output-dimension".to_string())?,
         l2_normalize: l2_normalize.ok_or_else(|| "missing required --l2-normalize".to_string())?,
@@ -161,6 +202,47 @@ fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
             l2_normalize: args.l2_normalize,
         },
     )
+}
+
+fn load_retrieval_eval_cases(path: &Path) -> io::Result<RetrievalEvalCases> {
+    let contents = fs::read_to_string(path)?;
+    let cases: RetrievalEvalCases = serde_json::from_str(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let document_ids = cases
+        .documents
+        .iter()
+        .map(|document| document.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for query in &cases.queries {
+        if query.relevant_document_ids.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "query {} must declare at least one relevant document",
+                    query.id
+                ),
+            ));
+        }
+        for document_id in &query.relevant_document_ids {
+            if !document_ids.contains(document_id.as_str()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "query {} references unknown document {}",
+                        query.id, document_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(cases)
+}
+
+fn embed_retrieval_inputs(
+    engine: &OnnxEngine,
+    inputs: Vec<EmbeddingInput<'_>>,
+) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+    engine.embed_batch(&inputs)
 }
 
 fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
@@ -269,6 +351,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
         }
+        "retrieval" => {
+            let engine = engine_from_bundle_dir(&args)?;
+            let retrieval_eval_path = args.retrieval_eval_path.as_deref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "missing --retrieval-eval-path")
+            })?;
+            let cases = load_retrieval_eval_cases(retrieval_eval_path)?;
+            let query_embeddings = embed_retrieval_inputs(
+                &engine,
+                cases
+                    .queries
+                    .iter()
+                    .map(|query| EmbeddingInput::query(query.text.as_str()))
+                    .collect(),
+            )?;
+            let document_embeddings = embed_retrieval_inputs(
+                &engine,
+                cases
+                    .documents
+                    .iter()
+                    .map(|document| EmbeddingInput::document(document.text.as_str()))
+                    .collect(),
+            )?;
+            serde_json::to_writer(
+                std::io::stdout(),
+                &RetrievalPayload {
+                    implementation: "ltembed",
+                    implementation_version,
+                    dataset_name: cases.name,
+                    queries: cases
+                        .queries
+                        .into_iter()
+                        .zip(query_embeddings)
+                        .map(|(query, embedding)| RetrievalEmbedding {
+                            id: query.id,
+                            embedding,
+                        })
+                        .collect(),
+                    documents: cases
+                        .documents
+                        .into_iter()
+                        .zip(document_embeddings)
+                        .map(|(document, embedding)| RetrievalEmbedding {
+                            id: document.id,
+                            embedding,
+                        })
+                        .collect(),
+                },
+            )?;
+        }
         other => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -284,6 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_parse_args_accepts_optional_scenario_for_warm_mode() {
@@ -307,5 +439,53 @@ mod tests {
         assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
+    }
+
+    #[test]
+    fn test_parse_args_accepts_retrieval_eval_path_for_retrieval_mode() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "retrieval",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--retrieval-eval-path",
+            "scripts/retrieval_eval_cases.json",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, "retrieval");
+        assert_eq!(
+            args.retrieval_eval_path.as_deref(),
+            Some(Path::new("scripts/retrieval_eval_cases.json"))
+        );
+    }
+
+    #[test]
+    fn test_load_retrieval_eval_cases_reads_queries_and_documents() {
+        let path = std::env::temp_dir().join("ltembed-retrieval-eval-cases.json");
+        fs::write(
+            &path,
+            r#"{
+                "name": "mini-retrieval-v1",
+                "documents": [{"id": "d1", "text": "Rust ownership protects memory safety."}],
+                "queries": [{"id": "q1", "text": "How does Rust avoid a garbage collector?", "relevant_document_ids": ["d1"]}]
+            }"#,
+        )
+        .unwrap();
+
+        let cases = load_retrieval_eval_cases(&path).unwrap();
+
+        assert_eq!(cases.name, "mini-retrieval-v1");
+        assert_eq!(cases.documents.len(), 1);
+        assert_eq!(cases.documents[0].id, "d1");
+        assert_eq!(cases.queries.len(), 1);
+        assert_eq!(cases.queries[0].relevant_document_ids, vec!["d1"]);
+
+        let _ = fs::remove_file(path);
     }
 }

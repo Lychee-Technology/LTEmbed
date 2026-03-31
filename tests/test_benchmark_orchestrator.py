@@ -125,6 +125,30 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
             self.assertIn("768", command)
             self.assertIn("--no-l2-normalize", command)
 
+    def test_pytorch_retrieval_command_includes_eval_path(self):
+        bench = load_module()
+        args = type(
+            "Args",
+            (),
+            {
+                "model_dir": Path("model_dir"),
+                "threads": 1,
+                "output_dimension": 512,
+                "l2_normalize": True,
+                "retrieval_eval_path": Path("scripts/retrieval_eval_cases.json"),
+            },
+        )
+
+        command = bench.pytorch_retrieval_command(args)
+
+        self.assertIn("--mode", command)
+        self.assertIn("retrieval", command)
+        self.assertIn("--retrieval-eval-path", command)
+        self.assertEqual(
+            command[command.index("--retrieval-eval-path") + 1],
+            "scripts/retrieval_eval_cases.json",
+        )
+
     def test_ltembed_commands_include_optional_cargo_features(self):
         bench = load_module()
         args = type(
@@ -157,6 +181,35 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         bench = load_module()
         self.assertEqual(bench.resolved_notes("ltembed", {}), "")
         self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
+
+    def test_compute_retrieval_metrics_tracks_ranking_quality(self):
+        bench = load_module()
+        cases = {
+            "name": "mini-retrieval-v1",
+            "queries": [
+                {"id": "q1", "relevant_document_ids": ["d1"]},
+                {"id": "q2", "relevant_document_ids": ["d2"]},
+            ],
+        }
+        query_embeddings = {
+            "q1": [1.0, 0.0],
+            "q2": [0.0, 1.0],
+        }
+        document_embeddings = {
+            "d1": [1.0, 0.0],
+            "d2": [0.6, 0.8],
+            "d3": [0.0, 1.0],
+        }
+
+        metrics = bench.compute_retrieval_metrics(
+            cases,
+            query_embeddings=query_embeddings,
+            document_embeddings=document_embeddings,
+        )
+
+        self.assertEqual(metrics["query_count"], 2)
+        self.assertAlmostEqual(metrics["recall_at_1"], 0.5)
+        self.assertAlmostEqual(metrics["mrr_at_3"], 0.75)
 
     def test_benchmark_workflow_downloads_builder_bundle_for_jina_retrieval(self):
         workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
@@ -225,6 +278,15 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("scripts/compare_embedding_outputs.py", workflow)
         self.assertIn("raw-embedding-compare.json", workflow)
         self.assertIn("raw-embedding-compare.txt", workflow)
+
+    def test_benchmark_workflow_accepts_retrieval_eval_toggle(self):
+        workflow = (ROOT / ".github" / "workflows" / "benchmark-arm64.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("include_retrieval_eval:", workflow)
+        self.assertIn("Include small retrieval ranking eval", workflow)
+        self.assertIn('EXTRA_ARGS+=(--no-include-retrieval-eval)', workflow)
 
 
 if __name__ == "__main__":

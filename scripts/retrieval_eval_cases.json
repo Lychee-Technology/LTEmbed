@@ -1,0 +1,59 @@
+{
+  "name": "mini-retrieval-v1",
+  "documents": [
+    {
+      "id": "rust_ownership",
+      "text": "Rust ownership and borrowing let the compiler enforce memory safety without a garbage collector."
+    },
+    {
+      "id": "java_gc",
+      "text": "Java uses a garbage collector to reclaim unreachable objects automatically."
+    },
+    {
+      "id": "postgres_mvcc",
+      "text": "PostgreSQL uses MVCC so reads and writes can proceed concurrently inside transactions."
+    },
+    {
+      "id": "mysql_indexes",
+      "text": "MySQL can accelerate keyword lookups with B-tree indexes and full-text search."
+    },
+    {
+      "id": "vector_search",
+      "text": "Vector databases store dense embeddings and use approximate nearest neighbor indexes for semantic search."
+    },
+    {
+      "id": "bm25_search",
+      "text": "BM25 ranks documents for lexical search with token frequency and inverse document frequency."
+    },
+    {
+      "id": "kubernetes_rollout",
+      "text": "Kubernetes Deployments manage rolling updates and keep a desired replica count."
+    },
+    {
+      "id": "docker_layers",
+      "text": "Docker images are built from layered filesystem snapshots and shared base images."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q_rust",
+      "text": "How does Rust provide memory safety without a garbage collector?",
+      "relevant_document_ids": ["rust_ownership"]
+    },
+    {
+      "id": "q_postgres",
+      "text": "What lets PostgreSQL handle concurrent reads and writes in transactions?",
+      "relevant_document_ids": ["postgres_mvcc"]
+    },
+    {
+      "id": "q_semantic",
+      "text": "What kind of system is used for semantic search over dense embeddings?",
+      "relevant_document_ids": ["vector_search"]
+    },
+    {
+      "id": "q_k8s",
+      "text": "How do I roll out a new version of a service while keeping replicas available?",
+      "relevant_document_ids": ["kubernetes_rollout"]
+    }
+  ]
+}

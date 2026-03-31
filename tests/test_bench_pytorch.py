@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -186,6 +188,70 @@ class BenchPyTorchTests(unittest.TestCase):
 
         self.assertEqual([row["scenario"] for row in payload["results"]], ["single/medium"])
         embed_texts.assert_called_once()
+
+    def test_retrieval_payload_embeds_queries_and_documents_from_case_file(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retrieval_eval_path = Path(tmpdir) / "retrieval_eval_cases.json"
+            retrieval_eval_path.write_text(
+                json.dumps(
+                    {
+                        "name": "mini-retrieval-v1",
+                        "documents": [
+                            {"id": "d1", "text": "Rust ownership protects memory safety."},
+                            {"id": "d2", "text": "Vector databases power semantic search."},
+                        ],
+                        "queries": [
+                            {
+                                "id": "q1",
+                                "text": "How does Rust avoid garbage collection?",
+                                "relevant_document_ids": ["d1"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                model_name_or_path="fake-model",
+                retrieval_eval_path=retrieval_eval_path,
+                output_dimension=bench.OUTPUT_DIM,
+                l2_normalize=True,
+            )
+
+            with (
+                mock.patch.object(bench, "load_model", return_value=("model", "tokenizer")),
+                mock.patch.object(
+                    bench,
+                    "embed_texts",
+                    side_effect=[
+                        [[1.0, 0.0]],
+                        [[0.0, 1.0], [0.5, 0.5]],
+                    ],
+                ) as embed_texts,
+            ):
+                payload = bench.retrieval_payload(args)
+
+        self.assertEqual(payload["dataset_name"], "mini-retrieval-v1")
+        self.assertEqual(payload["queries"], [{"id": "q1", "embedding": [1.0, 0.0]}])
+        self.assertEqual(
+            payload["documents"],
+            [
+                {"id": "d1", "embedding": [0.0, 1.0]},
+                {"id": "d2", "embedding": [0.5, 0.5]},
+            ],
+        )
+        self.assertEqual(
+            embed_texts.call_args_list[0].args[2],
+            [{"kind": "query", "text": "How does Rust avoid garbage collection?"}],
+        )
+        self.assertEqual(
+            embed_texts.call_args_list[1].args[2],
+            [
+                {"kind": "document", "text": "Rust ownership protects memory safety."},
+                {"kind": "document", "text": "Vector databases power semantic search."},
+            ],
+        )
 
 
 if __name__ == "__main__":

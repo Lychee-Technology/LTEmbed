@@ -46,6 +46,11 @@ on:
         required: false
         default: true
         type: boolean
+      include_retrieval_eval:
+        description: Include small retrieval ranking eval
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   benchmark:
@@ -169,6 +174,9 @@ jobs:
           fi
           if [ "${{ inputs.include_correctness }}" != "true" ]; then
             EXTRA_ARGS+=(--no-include-correctness)
+          fi
+          if [ "${{ inputs.include_retrieval_eval }}" != "true" ]; then
+            EXTRA_ARGS+=(--no-include-retrieval-eval)
           fi
           if [ -n "${{ inputs.scenario }}" ]; then
             EXTRA_ARGS+=(--scenario "${{ inputs.scenario }}")

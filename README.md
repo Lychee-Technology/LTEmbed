@@ -2,6 +2,11 @@
 
 LTEmbed is a Rust embedding library centered on [`OnnxEngine`](./src/engine.rs). The default path uses ONNX Runtime (`ort`) with a builder-produced `ort_bundle/` for `jinaai/jina-embeddings-v5-text-nano-retrieval`.
 
+## Backend Branches
+
+- `main` is the ONNX Runtime / `ort_bundle` line.
+- The legacy matrixmultiply backend and related ARM64 tuning experiments live on the `matrixmultiply` branch.
+
 ## Bundle Layout
 
 Expected local bundle contents:

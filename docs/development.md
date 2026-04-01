@@ -6,6 +6,11 @@ This repository pins Rust via `rust-toolchain.toml`.
 
 Use the pinned toolchain for local development so that `rustfmt`, `clippy`, and CI all agree.
 
+## Branch Intent
+
+- `main` is the ORT-only branch and should stay focused on `OnnxEngine` plus `ort_bundle` workflows.
+- Use the `matrixmultiply` branch for the legacy matrixmultiply backend, kernel tuning, and related benchmark experiments.
+
 ## Install Git Hooks
 
 Run:

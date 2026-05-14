@@ -3,8 +3,9 @@ use ltembed::engine::{
     EmbedBatchProfile, EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig,
 };
 use ltembed::error::LTEmbedError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,6 +15,7 @@ enum Mode {
     Warm,
     Cold,
     Correctness,
+    Retrieval,
     Other(String),
 }
 
@@ -23,6 +25,7 @@ impl From<&str> for Mode {
             "warm" => Mode::Warm,
             "cold" => Mode::Cold,
             "correctness" => Mode::Correctness,
+            "retrieval" => Mode::Retrieval,
             other => Mode::Other(other.to_string()),
         }
     }
@@ -33,6 +36,7 @@ struct Args {
     mode: Mode,
     scenario: Option<String>,
     ort_bundle_dir: PathBuf,
+    retrieval_eval_path: Option<PathBuf>,
     output_dimension: usize,
     l2_normalize: bool,
     warmup: usize,
@@ -74,6 +78,54 @@ struct ColdPayload {
     stats: LatencyStats,
 }
 
+#[derive(Serialize)]
+struct RetrievalEmbedding {
+    id: String,
+    embedding: Vec<f32>,
+}
+
+#[derive(Serialize)]
+struct RetrievalResult {
+    dataset_name: String,
+    queries: Vec<RetrievalEmbedding>,
+    documents: Vec<RetrievalEmbedding>,
+}
+
+#[derive(Serialize)]
+struct RetrievalPayload {
+    implementation: &'static str,
+    implementation_version: String,
+    results: Vec<RetrievalResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalEvalDocument {
+    id: String,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalEvalQuery {
+    id: String,
+    text: String,
+    #[serde(rename = "relevant_document_ids")]
+    #[allow(dead_code)]
+    relevant_document_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetrievalEvalCase {
+    name: String,
+    documents: Vec<RetrievalEvalDocument>,
+    queries: Vec<RetrievalEvalQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RetrievalEvalSpec {
+    Suite { cases: Vec<RetrievalEvalCase> },
+}
+
 #[derive(Debug, Default)]
 struct ProfileAccumulator {
     samples: usize,
@@ -96,6 +148,7 @@ where
     let mut mode = None;
     let mut scenario = None;
     let mut ort_bundle_dir = None;
+    let mut retrieval_eval_path = None;
     let mut output_dimension = None;
     let mut l2_normalize = None;
     let mut warmup = 10usize;
@@ -109,6 +162,7 @@ where
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
             "--ort-bundle-dir" => ort_bundle_dir = iter.next().map(PathBuf::from),
+            "--retrieval-eval-path" => retrieval_eval_path = iter.next().map(PathBuf::from),
             "--output-dimension" => {
                 output_dimension = Some(
                     iter.next()
@@ -163,6 +217,7 @@ where
         scenario,
         ort_bundle_dir: ort_bundle_dir
             .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
+        retrieval_eval_path,
         output_dimension: output_dimension
             .ok_or_else(|| "missing required --output-dimension".to_string())?,
         l2_normalize: l2_normalize.ok_or_else(|| "missing required --l2-normalize".to_string())?,
@@ -215,6 +270,28 @@ fn required_scenario(args: &Args) -> io::Result<&str> {
     args.scenario
         .as_deref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing --scenario"))
+}
+
+fn required_retrieval_eval_path(args: &Args) -> io::Result<&Path> {
+    args.retrieval_eval_path
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing --retrieval-eval-path"))
+}
+
+fn load_retrieval_eval_cases(path: &Path) -> io::Result<Vec<RetrievalEvalCase>> {
+    let contents = fs::read_to_string(path)?;
+    let spec: RetrievalEvalSpec = serde_json::from_str(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    match spec {
+        RetrievalEvalSpec::Suite { cases } => Ok(cases),
+    }
+}
+
+fn embed_retrieval_inputs(
+    engine: &OnnxEngine,
+    inputs: Vec<EmbeddingInput<'_>>,
+) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+    engine.embed_batch(&inputs)
 }
 
 fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
@@ -435,6 +512,60 @@ fn run_correctness_mode(
     })
 }
 
+fn run_retrieval_mode(
+    args: &Args,
+    implementation_version: &str,
+) -> Result<RetrievalPayload, Box<dyn std::error::Error>> {
+    let engine = engine_from_bundle_dir(args)?;
+    let retrieval_eval_path = required_retrieval_eval_path(args)?;
+    let cases = load_retrieval_eval_cases(retrieval_eval_path)?;
+
+    Ok(RetrievalPayload {
+        implementation: "ltembed",
+        implementation_version: implementation_version.to_string(),
+        results: cases
+            .into_iter()
+            .map(|case| {
+                let query_embeddings = embed_retrieval_inputs(
+                    &engine,
+                    case.queries
+                        .iter()
+                        .map(|query| EmbeddingInput::query(query.text.as_str()))
+                        .collect(),
+                )?;
+                let document_embeddings = embed_retrieval_inputs(
+                    &engine,
+                    case.documents
+                        .iter()
+                        .map(|document| EmbeddingInput::document(document.text.as_str()))
+                        .collect(),
+                )?;
+                Ok(RetrievalResult {
+                    dataset_name: case.name,
+                    queries: case
+                        .queries
+                        .into_iter()
+                        .zip(query_embeddings)
+                        .map(|(query, embedding)| RetrievalEmbedding {
+                            id: query.id,
+                            embedding,
+                        })
+                        .collect(),
+                    documents: case
+                        .documents
+                        .into_iter()
+                        .zip(document_embeddings)
+                        .map(|(document, embedding)| RetrievalEmbedding {
+                            id: document.id,
+                            embedding,
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, LTEmbedError>>()?,
+    })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let _threads = args.threads;
@@ -452,6 +583,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Mode::Correctness => serde_json::to_writer(
             io::stdout(),
             &run_correctness_mode(&args, &implementation_version)?,
+        )?,
+        Mode::Retrieval => serde_json::to_writer(
+            io::stdout(),
+            &run_retrieval_mode(&args, &implementation_version)?,
         )?,
         Mode::Other(other) => {
             return Err(io::Error::new(
@@ -750,6 +885,140 @@ mod tests {
                     {
                         "scenario": "single/medium",
                         "embeddings": [[0.1_f32, 0.2_f32], [0.3_f32, 0.4_f32]]
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_args_maps_retrieval_mode_to_typed_variant() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "retrieval",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--retrieval-eval-path",
+            "scripts/retrieval_eval_cases.json",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Retrieval);
+    }
+
+    #[test]
+    fn test_parse_args_accepts_retrieval_eval_path_for_retrieval_mode() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "retrieval",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--retrieval-eval-path",
+            "scripts/retrieval_eval_cases.json",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Retrieval);
+        assert_eq!(
+            args.retrieval_eval_path.as_deref(),
+            Some(Path::new("scripts/retrieval_eval_cases.json"))
+        );
+    }
+
+    #[test]
+    fn test_load_retrieval_eval_cases_reads_queries_and_documents() {
+        let path = std::env::temp_dir().join("ltembed-retrieval-eval-cases.json");
+        fs::write(
+            &path,
+            r#"{
+                "cases": [
+                    {
+                        "name": "mini-retrieval-v1",
+                        "documents": [{"id": "d1", "text": "Rust ownership protects memory safety."}],
+                        "queries": [{"id": "q1", "text": "How does Rust avoid a garbage collector?", "relevant_document_ids": ["d1"]}]
+                    },
+                    {
+                        "name": "mini-retrieval-hard-v1",
+                        "documents": [{"id": "d2", "text": "ANN indexes power vector retrieval."}],
+                        "queries": [{"id": "q2", "text": "What supports nearest-neighbor search over embeddings?", "relevant_document_ids": ["d2"]}]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let cases = load_retrieval_eval_cases(&path).unwrap();
+
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "mini-retrieval-v1");
+        assert_eq!(cases[0].documents.len(), 1);
+        assert_eq!(cases[0].documents[0].id, "d1");
+        assert_eq!(cases[1].name, "mini-retrieval-hard-v1");
+        assert_eq!(cases[1].queries[0].relevant_document_ids, vec!["d2"]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_required_retrieval_eval_path_rejects_missing_path() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "retrieval",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        let err = required_retrieval_eval_path(&args).unwrap_err();
+
+        assert_eq!(err.to_string(), "missing --retrieval-eval-path");
+    }
+
+    #[test]
+    fn test_retrieval_payload_serializes_current_json_shape() {
+        let payload = RetrievalPayload {
+            implementation: "ltembed",
+            implementation_version: "test-sha".to_string(),
+            results: vec![RetrievalResult {
+                dataset_name: "mini-retrieval-v1".to_string(),
+                queries: vec![RetrievalEmbedding {
+                    id: "q1".to_string(),
+                    embedding: vec![0.1, 0.2],
+                }],
+                documents: vec![RetrievalEmbedding {
+                    id: "d1".to_string(),
+                    embedding: vec![0.3, 0.4],
+                }],
+            }],
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "implementation": "ltembed",
+                "implementation_version": "test-sha",
+                "results": [
+                    {
+                        "dataset_name": "mini-retrieval-v1",
+                        "queries": [{"id": "q1", "embedding": [0.1_f32, 0.2_f32]}],
+                        "documents": [{"id": "d1", "embedding": [0.3_f32, 0.4_f32]}]
                     }
                 ]
             })

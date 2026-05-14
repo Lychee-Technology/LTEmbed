@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 DEFAULT_MODEL_SOURCE = "huggingface"
 DEFAULT_CORRECTNESS_THRESHOLD = 0.98
+DEFAULT_RETRIEVAL_EVAL_PATH = ROOT / "scripts" / "retrieval_eval_cases.json"
 RUNNER_LABELS_ENV = "BENCHMARK_RUNNER_LABELS"
 
 SHORT_TEXT = {"kind": "query", "text": "Hello, world!"}
@@ -218,6 +219,17 @@ def scenario_from_name(name: str) -> Scenario:
         raise ValueError(f"unknown scenario: {name}") from exc
 
 
+def load_retrieval_eval_cases(path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    cases = list(payload["cases"]) if "cases" in payload else [payload]
+    for case in cases:
+        if not isinstance(case.get("name"), str):
+            raise ValueError("retrieval eval case missing 'name'")
+    if not cases:
+        raise ValueError("no retrieval eval cases found")
+    return cases
+
+
 def cargo_run_prefix(cargo_features: str = "") -> list[str]:
     command = ["cargo"]
     command.extend(["run", "--quiet", "--release"])
@@ -347,17 +359,60 @@ def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def ltembed_retrieval_command(args: argparse.Namespace) -> list[str]:
+    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
+    command.extend([
+        "--bin",
+        "benchmark_ltembed",
+        "--",
+        "--mode",
+        "retrieval",
+        "--ort-bundle-dir",
+        str(args.ort_bundle_dir),
+        "--retrieval-eval-path",
+        str(args.retrieval_eval_path),
+        "--output-dimension",
+        str(args.output_dimension),
+        "--l2-normalize",
+        "true" if args.l2_normalize else "false",
+        "--threads",
+        str(args.threads),
+    ])
+    return command
+
+
+def pytorch_retrieval_command(args: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable,
+        str(ROOT / "scripts" / "bench_pytorch.py"),
+        "--mode",
+        "retrieval",
+        "--model-name-or-path",
+        str(args.model_dir),
+        "--retrieval-eval-path",
+        str(args.retrieval_eval_path),
+        "--output-dimension",
+        str(args.output_dimension),
+        "--l2-normalize",
+        "true" if args.l2_normalize else "false",
+        "--threads",
+        str(args.threads),
+    ]
+
+
 RUNNERS = {
     "ltembed": {
         "warm": ltembed_warm_command,
         "cold": ltembed_cold_command,
         "correctness": ltembed_correctness_command,
+        "retrieval": ltembed_retrieval_command,
         "version": lambda: git_sha(),
     },
     "pytorch": {
         "warm": pytorch_warm_command,
         "cold": pytorch_cold_command,
         "correctness": pytorch_correctness_command,
+        "retrieval": pytorch_retrieval_command,
         "version": lambda: "",
     },
 }
@@ -610,6 +665,99 @@ def collect_correctness_rows(
     return rows, payloads
 
 
+def compute_retrieval_metrics(
+    retrieval_case: dict[str, Any],
+    *,
+    query_embeddings: dict[str, list[float]],
+    document_embeddings: dict[str, list[float]],
+) -> dict[str, Any]:
+    query_results = []
+    for query in retrieval_case["queries"]:
+        query_id = str(query["id"])
+        query_emb = query_embeddings[query_id]
+        relevant_ids = set(str(doc_id) for doc_id in query["relevant_document_ids"])
+        if len(relevant_ids) == 0:
+            continue
+
+        similarities = [
+            (doc_id, cosine_similarity(query_emb, doc_emb))
+            for doc_id, doc_emb in document_embeddings.items()
+        ]
+        similarities.sort(key=lambda item: item[1], reverse=True)
+
+        rank = None
+        for i, (doc_id, _) in enumerate(similarities):
+            if doc_id in relevant_ids:
+                rank = i + 1
+                break
+
+        query_results.append(
+            {
+                "query_id": query_id,
+                "relevant_document_ids": sorted(relevant_ids),
+                "rank_of_first_relevant": rank,
+                "relevant_at_1": 1.0 if rank is not None and rank <= 1 else 0.0,
+                "relevant_at_3": 1.0 if rank is not None and rank <= 3 else 0.0,
+                "reciprocal_rank": 1.0 / rank if rank is not None else 0.0,
+            }
+        )
+
+    query_count = len(query_results)
+    return {
+        "query_count": query_count,
+        "recall_at_1": sum(q["relevant_at_1"] for q in query_results) / query_count if query_count > 0 else 0.0,
+        "recall_at_3": sum(q["relevant_at_3"] for q in query_results) / query_count if query_count > 0 else 0.0,
+        "mrr_at_3": sum(q["reciprocal_rank"] for q in query_results) / query_count if query_count > 0 else 0.0,
+    }
+
+
+def collect_retrieval_eval_rows(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    timestamp_utc: str,
+    host: dict[str, str],
+    git_revision: str,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    retrieval_cases = load_retrieval_eval_cases(args.retrieval_eval_path)
+    cases_by_name = {str(case["name"]): case for case in retrieval_cases}
+    rows: list[dict[str, str]] = []
+    payloads: dict[str, Any] = {}
+
+    for implementation, runner in RUNNERS.items():
+        payload = run_json_command(runner["retrieval"](args))
+        payloads[implementation] = payload
+        version = resolved_implementation_version(implementation, payload)
+        for result in payload["results"]:
+            case = cases_by_name[str(result["dataset_name"])]
+            metrics = compute_retrieval_metrics(
+                case,
+                query_embeddings={str(item["id"]): item["embedding"] for item in result["queries"]},
+                document_embeddings={str(item["id"]): item["embedding"] for item in result["documents"]},
+            )
+            base_fields = base_row_fields(
+                run_id=run_id,
+                timestamp_utc=timestamp_utc,
+                model_id=args.model_id,
+                model_source=args.model_source,
+                implementation=implementation,
+                implementation_version=version,
+                git_revision=git_revision,
+                scenario_name=str(case["name"]),
+                batch_size=len(case["documents"]),
+                text_profile="retrieval_eval",
+                mode="retrieval_eval",
+                threads=args.threads,
+                warmup_iters=0,
+                timed_iters=0,
+                host=host,
+            )
+            row = stats_row_from_runner(base_fields=base_fields, stats=metrics)
+            row["notes"] = resolved_notes(implementation, payload, args)
+            rows.append(row)
+    return rows, payloads
+
+
 def summary_lines(
     *,
     args: argparse.Namespace,
@@ -617,6 +765,7 @@ def summary_lines(
     warm_payloads: dict[str, dict[str, Any]],
     cold_payloads: dict[str, dict[str, Any]] | None,
     correctness_payloads: dict[str, Any] | None,
+    retrieval_payloads: dict[str, Any] | None = None,
 ) -> list[str]:
     lines = [
         f"run_id={args.run_id}",
@@ -640,6 +789,8 @@ def summary_lines(
         lines.append("cold_start=enabled")
     if correctness_payloads is not None:
         lines.append("correctness=enabled")
+    if retrieval_payloads is not None:
+        lines.append("retrieval_eval=enabled")
     return lines
 
 
@@ -659,11 +810,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)
+    parser.add_argument(
+        "--scenario",
+        help="Optional single scenario name to run instead of the full suite.",
+    )
     parser.add_argument("--output-dimension", type=int, default=512)
     parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--retrieval-eval-path",
+        type=Path,
+        default=DEFAULT_RETRIEVAL_EVAL_PATH,
+    )
     parser.add_argument(
         "--ltembed-cargo-features",
         default="",
@@ -671,6 +831,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--include-retrieval-eval", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
     parser.add_argument(
         "--output-csv",
@@ -734,6 +895,17 @@ def _run(
         )
         rows.extend(correctness_rows)
 
+    retrieval_payloads = None
+    if args.include_retrieval_eval:
+        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(
+            args=args,
+            run_id=args.run_id,
+            timestamp_utc=timestamp,
+            host=host,
+            git_revision=git_revision,
+        )
+        rows.extend(retrieval_rows)
+
     write_csv_report(rows, args.output_csv)
 
     lines = summary_lines(
@@ -742,6 +914,7 @@ def _run(
         warm_payloads=warm_payloads,
         cold_payloads=cold_payloads,
         correctness_payloads=correctness_payloads,
+        retrieval_payloads=retrieval_payloads,
     )
     args.output_summary.parent.mkdir(parents=True, exist_ok=True)
     args.output_summary.write_text("\n".join(lines) + "\n", encoding="utf-8")

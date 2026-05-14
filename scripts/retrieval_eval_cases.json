@@ -1,0 +1,96 @@
+{
+  "cases": [
+    {
+      "name": "mini-retrieval-v1",
+      "documents": [
+        {
+          "id": "rust_ownership",
+          "text": "Rust ownership and borrowing let the compiler enforce memory safety without a garbage collector."
+        },
+        {
+          "id": "java_gc",
+          "text": "Java uses a garbage collector to reclaim unreachable objects automatically."
+        },
+        {
+          "id": "postgres_mvcc",
+          "text": "PostgreSQL uses MVCC so reads and writes can proceed concurrently inside transactions."
+        },
+        {
+          "id": "mysql_indexes",
+          "text": "MySQL can accelerate keyword lookups with B-tree indexes and full-text search."
+        },
+        {
+          "id": "redis_cache",
+          "text": "Redis keeps frequently accessed data in memory for sub-millisecond response times."
+        },
+        {
+          "id": "vector_search",
+          "text": "Embedding vectors power semantic search and ANN retrieval across unstructured text."
+        }
+      ],
+      "queries": [
+        {
+          "id": "q_rust",
+          "text": "How does Rust avoid a garbage collector while keeping memory safe?",
+          "relevant_document_ids": ["rust_ownership"]
+        },
+        {
+          "id": "q_vector",
+          "text": "What supports nearest-neighbor search over embeddings?",
+          "relevant_document_ids": ["vector_search"]
+        },
+        {
+          "id": "q_cache",
+          "text": "What in-memory store delivers sub-millisecond responses?",
+          "relevant_document_ids": ["redis_cache"]
+        }
+      ]
+    },
+    {
+      "name": "mini-retrieval-hard-v1",
+      "documents": [
+        {
+          "id": "hard_rust_gc",
+          "text": "Rust uses ownership and borrowing instead of a garbage collector."
+        },
+        {
+          "id": "hard_java_gc",
+          "text": "Java uses a garbage collector for automatic memory management."
+        },
+        {
+          "id": "hard_go_gc",
+          "text": "Go uses a concurrent garbage collector with low pause times."
+        },
+        {
+          "id": "hard_vector",
+          "text": "ANN indexes accelerate dense vector retrieval for embedding-based search."
+        },
+        {
+          "id": "hard_bm25",
+          "text": "BM25 ranks search results using term frequency and inverse document frequency."
+        },
+        {
+          "id": "hard_hybrid",
+          "text": "Hybrid search combines lexical BM25 with dense ANN similarity scores."
+        }
+      ],
+      "queries": [
+        {
+          "id": "q_hard_no_gc",
+          "text": "Which language manages memory safety without any form of garbage collection?",
+          "relevant_document_ids": ["hard_rust_gc"]
+        },
+        {
+          "id": "q_hard_ann",
+          "text": "What retrieval method uses approximate nearest neighbor indexes?",
+          "relevant_document_ids": ["hard_vector"]
+        },
+        {
+          "id": "q_hard_hybrid",
+          "text": "What approach merges lexical matching with dense embedding similarity?",
+          "relevant_document_ids": ["hard_hybrid"]
+        }
+      ]
+    }
+  ]
+}

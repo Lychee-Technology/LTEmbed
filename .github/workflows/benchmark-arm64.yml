@@ -46,6 +46,15 @@ on:
         required: false
         default: true
         type: boolean
+      include_retrieval_eval:
+        description: Include small retrieval ranking eval
+        required: false
+        default: true
+        type: boolean
+      retrieval_eval_path:
+        description: Retrieval eval dataset path relative to the repository root
+        required: false
+        default: "scripts/retrieval_eval_cases.json"
 
 jobs:
   benchmark:
@@ -176,6 +185,9 @@ jobs:
           if [ -n "${{ inputs.scenario }}" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --scenario ${{ inputs.scenario }}"
           fi
+          if [ "${{ inputs.include_retrieval_eval }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-include-retrieval-eval"
+          fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
             --ort-bundle-dir "$ORT_BUNDLE_DIR" \
@@ -185,6 +197,7 @@ jobs:
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
+            --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
             --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
             --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
             $EXTRA_ARGS

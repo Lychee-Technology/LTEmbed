@@ -5,12 +5,32 @@ use ltembed::engine::{
 use ltembed::error::LTEmbedError;
 use serde::Serialize;
 use std::env;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[derive(Debug, PartialEq)]
+enum Mode {
+    Warm,
+    Cold,
+    Correctness,
+    Other(String),
+}
+
+impl From<&str> for Mode {
+    fn from(value: &str) -> Self {
+        match value {
+            "warm" => Mode::Warm,
+            "cold" => Mode::Cold,
+            "correctness" => Mode::Correctness,
+            other => Mode::Other(other.to_string()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Args {
-    mode: String,
+    mode: Mode,
     scenario: Option<String>,
     ort_bundle_dir: PathBuf,
     output_dimension: usize,
@@ -136,7 +156,10 @@ where
     }
 
     Ok(Args {
-        mode: mode.ok_or_else(|| "missing required --mode".to_string())?,
+        mode: Mode::from(
+            mode.ok_or_else(|| "missing required --mode".to_string())?
+                .as_str(),
+        ),
         scenario,
         ort_bundle_dir: ort_bundle_dir
             .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
@@ -179,6 +202,19 @@ fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
             l2_normalize: args.l2_normalize,
         },
     )
+}
+
+fn resolve_scenarios(
+    args: &Args,
+) -> io::Result<Vec<&'static ltembed::benchmarking::BenchmarkScenario>> {
+    selected_scenarios(args.scenario.as_deref())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
+}
+
+fn required_scenario(args: &Args) -> io::Result<&str> {
+    args.scenario
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing --scenario"))
 }
 
 fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
@@ -333,83 +369,93 @@ fn emit_profile_summary(line: &str) {
     eprintln!("{line}");
 }
 
+fn run_warm_mode(
+    args: &Args,
+    implementation_version: &str,
+) -> Result<WarmPayload, Box<dyn std::error::Error>> {
+    let engine = engine_from_bundle_dir(args)?;
+    let mut results = Vec::new();
+    let scenarios = resolve_scenarios(args)?;
+    for scenario in scenarios {
+        emit_progress("warm", scenario.name, "start");
+        let (stats, profile_line) =
+            measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
+        emit_progress("warm", scenario.name, "done");
+        if let Some(profile_line) = profile_line {
+            emit_profile_summary(&profile_line);
+        }
+        results.push(StatsEntry {
+            scenario: scenario.name.to_string(),
+            stats,
+        });
+    }
+    Ok(WarmPayload {
+        implementation: "ltembed",
+        implementation_version: implementation_version.to_string(),
+        results,
+    })
+}
+
+fn run_cold_mode(
+    args: &Args,
+    implementation_version: &str,
+) -> Result<ColdPayload, Box<dyn std::error::Error>> {
+    let scenario_name = required_scenario(args)?;
+    emit_progress("cold", scenario_name, "start");
+    let stats = measure_cold_stats(args, scenario_name)?;
+    emit_progress("cold", scenario_name, "done");
+    Ok(ColdPayload {
+        implementation: "ltembed",
+        implementation_version: implementation_version.to_string(),
+        scenario: scenario_name.to_string(),
+        stats,
+    })
+}
+
+fn run_correctness_mode(
+    args: &Args,
+    implementation_version: &str,
+) -> Result<CorrectnessPayload, Box<dyn std::error::Error>> {
+    let engine = engine_from_bundle_dir(args)?;
+    let mut results = Vec::new();
+    let scenarios = resolve_scenarios(args)?;
+    for scenario in scenarios {
+        emit_progress("correctness", scenario.name, "start");
+        let embeddings = run_scenario(&engine, scenario.name)?;
+        emit_progress("correctness", scenario.name, "done");
+        results.push(EmbeddingsEntry {
+            scenario: scenario.name.to_string(),
+            embeddings,
+        });
+    }
+    Ok(CorrectnessPayload {
+        implementation: "ltembed",
+        implementation_version: implementation_version.to_string(),
+        results,
+    })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args =
-        parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    let args = parse_args().map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let _threads = args.threads;
     let implementation_version = git_sha();
 
-    match args.mode.as_str() {
-        "warm" => {
-            let engine = engine_from_bundle_dir(&args)?;
-            let mut results = Vec::new();
-            let scenarios = selected_scenarios(args.scenario.as_deref())
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-            for scenario in scenarios {
-                emit_progress("warm", scenario.name, "start");
-                let (stats, profile_line) =
-                    measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
-                emit_progress("warm", scenario.name, "done");
-                if let Some(profile_line) = profile_line {
-                    emit_profile_summary(&profile_line);
-                }
-                results.push(StatsEntry {
-                    scenario: scenario.name.to_string(),
-                    stats,
-                });
-            }
-            serde_json::to_writer(
-                std::io::stdout(),
-                &WarmPayload {
-                    implementation: "ltembed",
-                    implementation_version,
-                    results,
-                },
-            )?;
-        }
-        "cold" => {
-            let scenario_name = args.scenario.as_deref().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing --scenario")
-            })?;
-            emit_progress("cold", scenario_name, "start");
-            let stats = measure_cold_stats(&args, scenario_name)?;
-            emit_progress("cold", scenario_name, "done");
-            serde_json::to_writer(
-                std::io::stdout(),
-                &ColdPayload {
-                    implementation: "ltembed",
-                    implementation_version,
-                    scenario: scenario_name.to_string(),
-                    stats,
-                },
-            )?;
-        }
-        "correctness" => {
-            let engine = engine_from_bundle_dir(&args)?;
-            let mut results = Vec::new();
-            let scenarios = selected_scenarios(args.scenario.as_deref())
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-            for scenario in scenarios {
-                emit_progress("correctness", scenario.name, "start");
-                let embeddings = run_scenario(&engine, scenario.name)?;
-                emit_progress("correctness", scenario.name, "done");
-                results.push(EmbeddingsEntry {
-                    scenario: scenario.name.to_string(),
-                    embeddings,
-                });
-            }
-            serde_json::to_writer(
-                std::io::stdout(),
-                &CorrectnessPayload {
-                    implementation: "ltembed",
-                    implementation_version,
-                    results,
-                },
-            )?;
-        }
-        other => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
+    match &args.mode {
+        Mode::Warm => serde_json::to_writer(
+            io::stdout(),
+            &run_warm_mode(&args, &implementation_version)?,
+        )?,
+        Mode::Cold => serde_json::to_writer(
+            io::stdout(),
+            &run_cold_mode(&args, &implementation_version)?,
+        )?,
+        Mode::Correctness => serde_json::to_writer(
+            io::stdout(),
+            &run_correctness_mode(&args, &implementation_version)?,
+        )?,
+        Mode::Other(other) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
                 format!("unknown mode: {other}"),
             )
             .into())
@@ -422,6 +468,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_args_maps_warm_mode_to_typed_variant() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Warm);
+    }
+
+    #[test]
+    fn test_parse_args_maps_cold_mode_to_typed_variant() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "cold",
+            "--scenario",
+            "single/medium",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Cold);
+    }
+
+    #[test]
+    fn test_parse_args_maps_correctness_mode_to_typed_variant() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "correctness",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Correctness);
+    }
+
+    #[test]
+    fn test_parse_args_preserves_unknown_mode_for_main_validation() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "unknown",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        assert_eq!(args.mode, Mode::Other("unknown".to_string()));
+    }
 
     #[test]
     fn test_parse_args_accepts_optional_scenario_for_warm_mode() {
@@ -440,11 +561,76 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(args.mode, "warm");
+        assert_eq!(args.mode, Mode::Warm);
         assert_eq!(args.scenario.as_deref(), Some("single/medium"));
         assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
+    }
+
+    #[test]
+    fn test_required_scenario_rejects_missing_cold_scenario() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "cold",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        let err = required_scenario(&args).unwrap_err();
+
+        assert_eq!(err.to_string(), "missing --scenario");
+    }
+
+    #[test]
+    fn test_run_cold_mode_preserves_invalid_input_error_message() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "cold",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        match run_cold_mode(&args, "test-sha") {
+            Ok(_) => panic!("expected missing --scenario error"),
+            Err(err) => {
+                assert_eq!(err.to_string(), "missing --scenario");
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_scenarios_rejects_unknown_scenario_without_io_prefix() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--scenario",
+            "missing/scenario",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+        ])
+        .unwrap();
+
+        let err = resolve_scenarios(&args).unwrap_err();
+
+        assert_eq!(err.to_string(), "unknown scenario: missing/scenario");
     }
 
     #[test]
@@ -493,6 +679,80 @@ mod tests {
         assert_eq!(
             line,
             "profile single/short samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
+        );
+    }
+
+    #[test]
+    fn test_warm_payload_serializes_current_json_shape() {
+        let payload = WarmPayload {
+            implementation: "ltembed",
+            implementation_version: "test-sha".to_string(),
+            results: vec![StatsEntry {
+                scenario: "single/medium".to_string(),
+                stats: LatencyStats::from_samples_ms(&[12.0, 18.0]).unwrap(),
+            }],
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(value["implementation"], json!("ltembed"));
+        assert_eq!(value["implementation_version"], json!("test-sha"));
+        assert_eq!(value["results"][0]["scenario"], json!("single/medium"));
+        assert!(value["results"][0]["stats"]["mean_ms"].is_number());
+        assert!(value["results"][0]["stats"]["median_ms"].is_number());
+        assert!(value["results"][0]["stats"]["p95_ms"].is_number());
+        assert!(value["results"][0]["stats"]["p99_ms"].is_number());
+        assert!(value["results"][0]["stats"]["min_ms"].is_number());
+        assert!(value["results"][0]["stats"]["max_ms"].is_number());
+    }
+
+    #[test]
+    fn test_cold_payload_serializes_current_json_shape() {
+        let payload = ColdPayload {
+            implementation: "ltembed",
+            implementation_version: "test-sha".to_string(),
+            scenario: "single/medium".to_string(),
+            stats: LatencyStats::from_samples_ms(&[25.0]).unwrap(),
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(value["implementation"], json!("ltembed"));
+        assert_eq!(value["implementation_version"], json!("test-sha"));
+        assert_eq!(value["scenario"], json!("single/medium"));
+        assert!(value["stats"]["mean_ms"].is_number());
+        assert!(value["stats"]["median_ms"].is_number());
+        assert!(value["stats"]["p95_ms"].is_number());
+        assert!(value["stats"]["p99_ms"].is_number());
+        assert!(value["stats"]["min_ms"].is_number());
+        assert!(value["stats"]["max_ms"].is_number());
+    }
+
+    #[test]
+    fn test_correctness_payload_serializes_current_json_shape() {
+        let payload = CorrectnessPayload {
+            implementation: "ltembed",
+            implementation_version: "test-sha".to_string(),
+            results: vec![EmbeddingsEntry {
+                scenario: "single/medium".to_string(),
+                embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+            }],
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "implementation": "ltembed",
+                "implementation_version": "test-sha",
+                "results": [
+                    {
+                        "scenario": "single/medium",
+                        "embeddings": [[0.1_f32, 0.2_f32], [0.3_f32, 0.4_f32]]
+                    }
+                ]
+            })
         );
     }
 }

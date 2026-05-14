@@ -13,12 +13,15 @@ Expected local bundle contents:
 
 - `ort_bundle/model.ort`
 - `ort_bundle/tokenizer.json`
-- `ort_bundle/libonnxruntime.so`
 - `ort_bundle/build-info.json`
+
+The ONNX Runtime dynamic library (`libonnxruntime.so`) is located separately,
+not required to be in the bundle directory.
 
 Runtime notes:
 
-- `OnnxEngine::from_bundle_dir(...)` loads the ORT dynamic library from the bundle itself.
+- `OnnxEngine::from_bundle_dir_with_dylib(...)` takes a bundle directory and
+  an explicit path to `libonnxruntime.so`.
 - `OnnxEngineConfig` controls the returned embedding dimension and whether outputs are L2-normalized.
 - The engine validates bundle metadata at startup and returns `ModelLoad` on missing files or incompatible metadata.
 
@@ -28,8 +31,9 @@ Runtime notes:
 use ltembed::engine::{EmbeddingInput, OnnxEngine, OnnxEngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = OnnxEngine::from_bundle_dir(
+    let engine = OnnxEngine::from_bundle_dir_with_dylib(
         "ort_bundle",
+        "ort_bundle/libonnxruntime.so",
         OnnxEngineConfig {
             output_dimension: 512,
             l2_normalize: true,

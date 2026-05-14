@@ -18,7 +18,6 @@ pub const DOCUMENT_PREFIX: &str = "Document: ";
 
 const MODEL_FILE: &str = "model.ort";
 const TOKENIZER_FILE: &str = "tokenizer.json";
-const ORT_DYLIB_FILE: &str = "libonnxruntime.so";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,29 +145,24 @@ impl OnnxEngine {
         )
     }
 
-    pub fn from_bundle_dir(
+    pub fn from_bundle_dir_with_dylib(
         bundle_dir: impl AsRef<Path>,
+        dylib_path: impl AsRef<Path>,
         config: OnnxEngineConfig,
     ) -> Result<Self, LTEmbedError> {
         let bundle_dir = bundle_dir.as_ref();
+        let dylib_path = dylib_path.as_ref();
         let model_path = bundle_dir.join(MODEL_FILE);
         let tokenizer_path = bundle_dir.join(TOKENIZER_FILE);
-        let dylib_path = bundle_dir.join(ORT_DYLIB_FILE);
         let build_info_path = bundle_dir.join(BUILD_INFO_FILE);
 
         require_file(&model_path, "ORT model")?;
         require_file(&tokenizer_path, "tokenizer")?;
-        require_file(&dylib_path, "ORT dynamic library")?;
+        require_file(dylib_path, "ORT dynamic library")?;
         require_file(&build_info_path, "build-info metadata")?;
 
         let spec = ModelSpec::from_build_info(&build_info_path)?;
-        Self::build(
-            &model_path,
-            &tokenizer_path,
-            Some(&dylib_path),
-            spec,
-            config,
-        )
+        Self::build(&model_path, &tokenizer_path, Some(dylib_path), spec, config)
     }
 
     fn build(

@@ -42,14 +42,16 @@ fn find_bundle_dir(start_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let bundle_dir = find_bundle_dir(&std::env::current_dir()?)?;
+    let dylib_path = bundle_dir.join(ORT_DYLIB_FILE);
 
     require_file(&bundle_dir.join(MODEL_FILE))?;
     require_file(&bundle_dir.join(TOKENIZER_FILE))?;
-    require_file(&bundle_dir.join(ORT_DYLIB_FILE))?;
+    require_file(&dylib_path)?;
     require_file(&bundle_dir.join(BUILD_INFO_FILE))?;
 
-    let engine = OnnxEngine::from_bundle_dir(
+    let engine = OnnxEngine::from_bundle_dir_with_dylib(
         &bundle_dir,
+        &dylib_path,
         OnnxEngineConfig {
             output_dimension: 512,
             l2_normalize: true,

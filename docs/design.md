@@ -12,7 +12,8 @@ The target model is `jinaai/jina-embeddings-v5-text-nano-retrieval`, loaded from
 
 ## Public Contract
 
-`OnnxEngine::from_bundle_dir(bundle_dir, config)` loads `model.ort`, `tokenizer.json`, `libonnxruntime.so`, and `build-info.json`, then validates:
+`OnnxEngine::from_bundle_dir_with_dylib(bundle_dir, dylib_path, config)` loads
+`model.ort`, `tokenizer.json`, `libonnxruntime.so`, and `build-info.json`, then validates:
 
 - required inputs: `input_ids`, `attention_mask`
 - required output: `last_hidden_state`
@@ -24,8 +25,9 @@ The target model is `jinaai/jina-embeddings-v5-text-nano-retrieval`, loaded from
 ```rust
 use ltembed::engine::{EmbeddingInput, OnnxEngine, OnnxEngineConfig};
 
-let engine = OnnxEngine::from_bundle_dir(
+let engine = OnnxEngine::from_bundle_dir_with_dylib(
     "ort_bundle",
+    "ort_bundle/libonnxruntime.so",
     OnnxEngineConfig {
         output_dimension: 512,
         l2_normalize: true,

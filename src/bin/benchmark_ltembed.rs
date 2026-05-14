@@ -170,8 +170,10 @@ fn git_sha() -> String {
 }
 
 fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
-    OnnxEngine::from_bundle_dir(
+    let dylib_path = args.ort_bundle_dir.join("libonnxruntime.so");
+    OnnxEngine::from_bundle_dir_with_dylib(
         Path::new(&args.ort_bundle_dir),
+        &dylib_path,
         OnnxEngineConfig {
             output_dimension: args.output_dimension,
             l2_normalize: args.l2_normalize,

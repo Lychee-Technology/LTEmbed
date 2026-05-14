@@ -18,6 +18,7 @@ import time
 import numpy as np
 import torch
 import transformers
+from pathlib import Path
 from transformers import AutoModel, AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
@@ -25,6 +26,7 @@ from transformers.utils import logging as transformers_logging
 RAW_DIM = 768
 OUTPUT_DIM = 512
 MAX_LENGTH = 8192
+DEFAULT_RETRIEVAL_EVAL_PATH = Path(__file__).resolve().with_name("retrieval_eval_cases.json")
 
 SHORT = {"kind": "query", "text": "Hello, world!"}
 MEDIUM = {
@@ -280,11 +282,70 @@ def correctness_payload(args) -> dict[str, object]:
     }
 
 
+def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "cases" in payload:
+        return list(payload["cases"])
+    return [payload]
+
+
+def retrieval_payload(args) -> dict[str, object]:
+    cases = load_retrieval_eval_cases(args.retrieval_eval_path)
+    model, tokenizer = load_model(args.model_name_or_path)
+
+    return {
+        "implementation": "pytorch",
+        "implementation_version": torch.__version__,
+        "transformers_version": transformers.__version__,
+        "results": [
+            {
+                "dataset_name": str(case["name"]),
+                "queries": [
+                    {
+                        "id": str(query["id"]),
+                        "embedding": embedding,
+                    }
+                    for query, embedding in zip(
+                        case["queries"],
+                        embed_texts(
+                            model,
+                            tokenizer,
+                            [{"kind": "query", "text": str(query["text"])} for query in case["queries"]],
+                            output_dimension=args.output_dimension,
+                            l2_normalize=args.l2_normalize,
+                        ),
+                        strict=True,
+                    )
+                ],
+                "documents": [
+                    {
+                        "id": str(document["id"]),
+                        "embedding": embedding,
+                    }
+                    for document, embedding in zip(
+                        case["documents"],
+                        embed_texts(
+                            model,
+                            tokenizer,
+                            [{"kind": "document", "text": str(document["text"])} for document in case["documents"]],
+                            output_dimension=args.output_dimension,
+                            l2_normalize=args.l2_normalize,
+                        ),
+                        strict=True,
+                    )
+                ],
+            }
+            for case in cases
+        ],
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["warm", "cold", "correctness"], required=True)
+    parser.add_argument("--mode", choices=["warm", "cold", "correctness", "retrieval"], required=True)
     parser.add_argument("--scenario")
     parser.add_argument("--model-name-or-path", required=True)
+    parser.add_argument("--retrieval-eval-path", type=Path, default=DEFAULT_RETRIEVAL_EVAL_PATH)
     parser.add_argument("--output-dimension", type=int, default=OUTPUT_DIM)
     parser.add_argument("--l2-normalize", type=parse_bool_arg, default=True)
     parser.add_argument("--threads", type=int, default=1)
@@ -302,6 +363,8 @@ def main():
         payload = warm_payload(args)
     elif args.mode == "cold":
         payload = cold_payload(args)
+    elif args.mode == "retrieval":
+        payload = retrieval_payload(args)
     else:
         payload = correctness_payload(args)
 

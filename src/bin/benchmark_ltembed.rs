@@ -170,8 +170,10 @@ fn git_sha() -> String {
 }
 
 fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
+    let model_path = args.ort_bundle_dir.join("model.ort");
     OnnxEngine::from_bundle_dir(
         Path::new(&args.ort_bundle_dir),
+        &model_path,
         OnnxEngineConfig {
             output_dimension: args.output_dimension,
             l2_normalize: args.l2_normalize,

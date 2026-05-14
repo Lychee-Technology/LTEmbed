@@ -25,8 +25,10 @@ fn bundle_available() -> bool {
 
 fn make_engine() -> OnnxEngine {
     let bundle_dir = bundle_dir().expect("LTEMBED_TEST_BUNDLE_DIR must be set for bundle tests");
+    let model_path = bundle_dir.join("model.ort");
     OnnxEngine::from_bundle_dir(
-        bundle_dir,
+        &bundle_dir,
+        &model_path,
         OnnxEngineConfig {
             output_dimension: EMBEDDING_DIMENSION,
             l2_normalize: true,
@@ -134,24 +136,10 @@ fn test_missing_model_file_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
     write_build_info(&temp_dir, valid_build_info_json());
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
-
-    fs::remove_dir_all(temp_dir).unwrap();
-}
-
-#[test]
-fn test_missing_ort_dylib_returns_model_load_error() {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    write_build_info(&temp_dir, valid_build_info_json());
-
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let model_path = temp_dir.join("model.ort");
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -161,11 +149,11 @@ fn test_missing_ort_dylib_returns_model_load_error() {
 fn test_missing_tokenizer_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
     write_build_info(&temp_dir, valid_build_info_json());
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -176,10 +164,10 @@ fn test_missing_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -190,11 +178,11 @@ fn test_malformed_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
     write_build_info(&temp_dir, "{not-json");
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -205,8 +193,8 @@ fn test_invalid_input_kind_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
     write_build_info(
         &temp_dir,
         r#"{
@@ -224,7 +212,7 @@ fn test_invalid_input_kind_returns_model_load_error() {
 }"#,
     );
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -235,8 +223,8 @@ fn test_invalid_pooling_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
     write_build_info(
         &temp_dir,
         r#"{
@@ -254,7 +242,7 @@ fn test_invalid_pooling_returns_model_load_error() {
 }"#,
     );
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, OnnxEngineConfig::default());
+    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
     assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -265,12 +253,13 @@ fn test_output_dimension_larger_than_raw_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    fs::write(temp_dir.join("model.ort"), "stub").unwrap();
-    fs::write(temp_dir.join("libonnxruntime.so"), "stub").unwrap();
+    let model_path = temp_dir.join("model.ort");
+    fs::write(&model_path, "stub").unwrap();
     write_build_info(&temp_dir, valid_build_info_json());
 
     let result = OnnxEngine::from_bundle_dir(
         &temp_dir,
+        &model_path,
         OnnxEngineConfig {
             output_dimension: 769,
             l2_normalize: true,

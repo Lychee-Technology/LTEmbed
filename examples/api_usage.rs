@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 use ltembed::engine::{EmbeddingInput, OnnxEngine, OnnxEngineConfig};
 
 const BUNDLE_DIR: &str = "ort_bundle";
-const MODEL_FILE: &str = "model.ort";
 const TOKENIZER_FILE: &str = "tokenizer.json";
-const ORT_DYLIB_FILE: &str = "libonnxruntime.so";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
 fn require_file(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -21,14 +19,9 @@ fn find_bundle_dir(start_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     for candidate_root in start_dir.ancestors() {
         let bundle_dir = candidate_root.join(BUNDLE_DIR);
         let tokenizer_path = bundle_dir.join(TOKENIZER_FILE);
-        let model_path = bundle_dir.join(MODEL_FILE);
-        let ort_dylib_path = bundle_dir.join(ORT_DYLIB_FILE);
+        let model_path = bundle_dir.join("model.ort");
         let build_info_path = bundle_dir.join(BUILD_INFO_FILE);
-        if tokenizer_path.exists()
-            && model_path.exists()
-            && ort_dylib_path.exists()
-            && build_info_path.exists()
-        {
+        if tokenizer_path.exists() && model_path.exists() && build_info_path.exists() {
             return Ok(bundle_dir);
         }
     }
@@ -42,14 +35,15 @@ fn find_bundle_dir(start_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let bundle_dir = find_bundle_dir(&std::env::current_dir()?)?;
+    let model_path = bundle_dir.join("model.ort");
 
-    require_file(&bundle_dir.join(MODEL_FILE))?;
+    require_file(&model_path)?;
     require_file(&bundle_dir.join(TOKENIZER_FILE))?;
-    require_file(&bundle_dir.join(ORT_DYLIB_FILE))?;
     require_file(&bundle_dir.join(BUILD_INFO_FILE))?;
 
     let engine = OnnxEngine::from_bundle_dir(
         &bundle_dir,
+        &model_path,
         OnnxEngineConfig {
             output_dimension: 512,
             l2_normalize: true,
@@ -103,7 +97,6 @@ mod tests {
         fs::create_dir_all(&worktree_dir).unwrap();
         fs::write(repo_bundle.join("tokenizer.json"), "{}").unwrap();
         fs::write(repo_bundle.join("model.ort"), "stub").unwrap();
-        fs::write(repo_bundle.join("libonnxruntime.so"), "stub").unwrap();
         fs::write(repo_bundle.join("build-info.json"), "{}").unwrap();
 
         let resolved = find_bundle_dir(&worktree_dir).unwrap();

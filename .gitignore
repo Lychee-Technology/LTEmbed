@@ -49,4 +49,5 @@ assets/vocab.txt
 .venv/
 
 perf-results/
+.cache/
 

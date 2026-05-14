@@ -428,13 +428,13 @@ impl ModelSpec {
         })?;
 
         let metadata = build_info.model_metadata;
-        if metadata.input_kind != "retrieval" {
+        if metadata.input_kind != "retrieval" && metadata.input_kind != "text" {
             return Err(LTEmbedError::ModelLoad(format!(
                 "Unsupported input_kind '{}' for bundle target '{}'",
                 metadata.input_kind, build_info.target_id
             )));
         }
-        if metadata.pooling != "last_token" {
+        if metadata.pooling != "last_token" && metadata.pooling != "lasttoken" {
             return Err(LTEmbedError::ModelLoad(format!(
                 "Unsupported pooling '{}' for bundle target '{}'",
                 metadata.pooling, build_info.target_id

@@ -22,6 +22,20 @@ on:
         description: Output embedding dimension after post-processing
         required: false
         default: "512"
+      l2_normalize:
+        description: Apply L2 normalization after post-processing
+        required: false
+        default: true
+        type: boolean
+      scenario:
+        description: Optional single scenario to benchmark
+        required: false
+        default: ""
+      raw_compare_only:
+        description: Run raw embedding compare instead of the benchmark harness
+        required: false
+        default: false
+        type: boolean
       include_cold_start:
         description: Include cold start measurements
         required: false
@@ -144,16 +158,23 @@ jobs:
         run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
 
       - name: Run Unified Benchmark Harness
+        if: ${{ inputs.raw_compare_only != true }}
         run: |
           export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
           export LTEMBED_PROFILE="1"
           export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
           EXTRA_ARGS=""
+          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-l2-normalize"
+          fi
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
           fi
           if [ "${{ inputs.include_correctness }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-include-correctness"
+          fi
+          if [ -n "${{ inputs.scenario }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --scenario ${{ inputs.scenario }}"
           fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
@@ -168,6 +189,44 @@ jobs:
             --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
             $EXTRA_ARGS
 
+      - name: Run Raw Embedding Compare
+        if: ${{ inputs.raw_compare_only == true }}
+        run: |
+          mkdir -p artifacts
+          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
+          if [ "${{ inputs.scenario }}" = "" ]; then
+            SCENARIO="single/medium"
+          else
+            SCENARIO="${{ inputs.scenario }}"
+          fi
+          LTEMBED_NORMALIZE_VALUE="true"
+          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
+            LTEMBED_NORMALIZE_VALUE="false"
+          fi
+          python3 scripts/bench_pytorch.py \
+            --mode correctness \
+            --scenario "$SCENARIO" \
+            --model-name-or-path "$MODEL_DIR" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
+            --threads "${{ inputs.threads }}" \
+            > artifacts/pytorch-correctness.json
+          cargo run --quiet --release --bin benchmark_ltembed -- \
+            --mode correctness \
+            --scenario "$SCENARIO" \
+            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
+            --threads "${{ inputs.threads }}" \
+            > artifacts/ltembed-correctness.json
+          python3 scripts/compare_embedding_outputs.py \
+            --ltembed-json artifacts/ltembed-correctness.json \
+            --pytorch-json artifacts/pytorch-correctness.json \
+            --scenario "$SCENARIO" \
+            --output-json artifacts/raw-embedding-compare.json \
+            --output-text artifacts/raw-embedding-compare.txt
+
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -176,3 +235,5 @@ jobs:
           path: |
             artifacts/benchmark-report.csv
             artifacts/benchmark-summary.txt
+            artifacts/raw-embedding-compare.json
+            artifacts/raw-embedding-compare.txt

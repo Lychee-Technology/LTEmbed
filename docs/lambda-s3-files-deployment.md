@@ -46,7 +46,8 @@ lib/
   libonnxruntime.so           # custom minimal-build .so
 ```
 
-Supported by `OnnxEngine::from_bundle_dir_with_dylib(...)`:
+Supported by `OnnxEngine::from_bundle_dir(bundle_dir, model_path, config)`.
+The dylib is resolved automatically from `ORT_DYLIB_PATH` env var.
 
 ```rust
 use ltembed::engine::{EmbeddingInput, OnnxEngine, OnnxEngineConfig};
@@ -63,11 +64,10 @@ fn get_engine() -> &'static AppState {
     STATE.get_or_init(|| {
         let bundle_dir = std::env::var("LTEMBED_BUNDLE_DIR")
             .unwrap_or_else(|_| "/mnt/s3files/ltembed/bundle/ort_bundle".into());
-        let dylib_path = std::env::var("ORT_DYLIB_PATH")
-            .unwrap_or_else(|_| "/var/task/lib/libonnxruntime.so".into());
-        let engine = OnnxEngine::from_bundle_dir_with_dylib(
+        let model_path = PathBuf::from(&bundle_dir).join("model.ort");
+        let engine = OnnxEngine::from_bundle_dir(
             &bundle_dir,
-            &dylib_path,
+            &model_path,
             OnnxEngineConfig {
                 output_dimension: 512,
                 l2_normalize: true,

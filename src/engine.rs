@@ -16,7 +16,6 @@ pub const MAX_LENGTH: usize = 8192;
 pub const QUERY_PREFIX: &str = "Query: ";
 pub const DOCUMENT_PREFIX: &str = "Document: ";
 
-const MODEL_FILE: &str = "model.ort";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
@@ -145,24 +144,30 @@ impl OnnxEngine {
         )
     }
 
-    pub fn from_bundle_dir_with_dylib(
+    pub fn from_bundle_dir(
         bundle_dir: impl AsRef<Path>,
-        dylib_path: impl AsRef<Path>,
+        model_path: impl AsRef<Path>,
         config: OnnxEngineConfig,
     ) -> Result<Self, LTEmbedError> {
         let bundle_dir = bundle_dir.as_ref();
-        let dylib_path = dylib_path.as_ref();
-        let model_path = bundle_dir.join(MODEL_FILE);
+        let model_path = model_path.as_ref();
         let tokenizer_path = bundle_dir.join(TOKENIZER_FILE);
         let build_info_path = bundle_dir.join(BUILD_INFO_FILE);
 
-        require_file(&model_path, "ORT model")?;
+        require_file(model_path, "ORT model")?;
         require_file(&tokenizer_path, "tokenizer")?;
-        require_file(dylib_path, "ORT dynamic library")?;
         require_file(&build_info_path, "build-info metadata")?;
 
+        let dylib_path = resolve_dylib_path(bundle_dir);
+
         let spec = ModelSpec::from_build_info(&build_info_path)?;
-        Self::build(&model_path, &tokenizer_path, Some(dylib_path), spec, config)
+        Self::build(
+            model_path,
+            &tokenizer_path,
+            dylib_path.as_deref(),
+            spec,
+            config,
+        )
     }
 
     fn build(
@@ -510,6 +515,19 @@ fn ensure_ort_initialized(dylib_path: Option<&Path>) -> Result<(), LTEmbedError>
         ))),
         Err(message) => Err(LTEmbedError::ModelLoad(message.clone())),
     }
+}
+
+fn resolve_dylib_path(bundle_dir: &Path) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let bundle_dylib = bundle_dir.join("libonnxruntime.so");
+    if bundle_dylib.exists() {
+        return Some(bundle_dylib);
+    }
+    None
 }
 
 fn resolve_ort_source(dylib_path: Option<&Path>) -> OrtInitSource {

@@ -73,7 +73,7 @@ jobs:
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: sudo apt-get install -y libssl-dev pkg-config
@@ -87,7 +87,7 @@ jobs:
           python-version: "3.13"
 
       - name: Cache Cargo Registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -98,7 +98,7 @@ jobs:
             ${{ runner.os }}-arm64-cargo-
 
       - name: Cache Pip
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-arm64-pip-${{ hashFiles('.github/workflows/benchmark-arm64.yml') }}
@@ -106,14 +106,14 @@ jobs:
             ${{ runner.os }}-arm64-pip-
 
       - name: Cache Model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.MODEL_DIR }}
           key: ${{ runner.os }}-arm64-model-jina-v2
 
       - name: Cache ORT Bundle
         id: cache-ort-bundle
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.ORT_BUNDLE_DIR }}
           key: ${{ runner.os }}-arm64-ort-bundle-v1.0.15-jina-retrieval-int8

@@ -241,7 +241,7 @@ jobs:
             --output-text artifacts/raw-embedding-compare.txt
 
       - name: Upload Benchmark Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-arm64-results
           retention-days: 1

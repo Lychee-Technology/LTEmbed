@@ -109,7 +109,7 @@ jobs:
           echo "name=${OUTPUT_NAME}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.bundle.outputs.name }}
           path: ${{ steps.bundle.outputs.path }}

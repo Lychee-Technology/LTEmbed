@@ -1,6 +1,6 @@
 // src/traits/tokenizer.rs
 
-use crate::error::LTEmbedError;
+use crate::error::{LTEmbedError, ModelLoadError};
 
 /// Output of a tokenization call. All three vecs have the same length.
 #[derive(Debug, Clone)]
@@ -56,8 +56,11 @@ fn tokenizer_outputs_from_encodings(
 impl HFTokenizer {
     /// Load from a `tokenizer.json` file path.
     pub fn from_file(path: &str) -> Result<Self, LTEmbedError> {
-        let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| LTEmbedError::ModelLoad(format!("Failed to load tokenizer: {e}")))?;
+        let inner = tokenizers::Tokenizer::from_file(path).map_err(|e| {
+            LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                "Failed to load tokenizer: {e}"
+            )))
+        })?;
         Ok(Self { inner })
     }
 

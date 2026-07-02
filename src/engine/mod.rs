@@ -20,7 +20,7 @@ pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
 
 use bundle::{require_file, resolve_dylib_path, ModelSpec};
-use inference::{postprocess_embedding, prefixed_text};
+use inference::{pack_batch, pool_last_token, prefixed_text, validate_hidden_shape};
 use ort_init::ensure_ort_initialized;
 use session_io::{effective_sequence_length, SessionIo};
 
@@ -159,17 +159,7 @@ impl OnnxEngine {
         collect_profile: bool,
     ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
         if inputs.is_empty() {
-            let profile = collect_profile.then_some(EmbedBatchProfile {
-                batch_size: 0,
-                sequence_length: 0,
-                prefix_ms: 0.0,
-                tokenize_ms: 0.0,
-                tensorize_ms: 0.0,
-                run_ms: 0.0,
-                extract_ms: 0.0,
-                postprocess_ms: 0.0,
-                total_ms: 0.0,
-            });
+            let profile = collect_profile.then(EmbedBatchProfile::empty);
             return Ok((Vec::new(), profile));
         }
 
@@ -192,24 +182,10 @@ impl OnnxEngine {
             .map(|item| item.input_ids.len())
             .max()
             .unwrap_or(0);
-        let seq_len = effective_sequence_length(self.io.sequence_length, batch_max_seq_len)?;
+        let seq_len = effective_sequence_length(self.io.sequence_length(), batch_max_seq_len)?;
 
         let tensorize_start = Instant::now();
-        let mut input_ids = vec![0_i64; batch_size * seq_len];
-        let mut attention_mask = vec![0_i64; batch_size * seq_len];
-
-        for (batch_idx, item) in encoded.iter().enumerate() {
-            for (token_idx, (&token, &mask)) in item
-                .input_ids
-                .iter()
-                .zip(item.attention_mask.iter())
-                .enumerate()
-            {
-                let offset = batch_idx * seq_len + token_idx;
-                input_ids[offset] = token as i64;
-                attention_mask[offset] = mask as i64;
-            }
-        }
+        let (input_ids, attention_mask) = pack_batch(&encoded, seq_len);
 
         let input_ids_tensor = TensorRef::from_array_view(([batch_size, seq_len], &input_ids[..]))
             .map_err(|err| {
@@ -231,59 +207,34 @@ impl OnnxEngine {
         let run_start = Instant::now();
         let outputs = session
             .run(ort::inputs! {
-                self.io.input_ids.as_str() => input_ids_tensor,
-                self.io.attention_mask.as_str() => attention_mask_tensor,
+                self.io.input_ids_name() => input_ids_tensor,
+                self.io.attention_mask_name() => attention_mask_tensor,
             })
             .map_err(|err| LTEmbedError::Inference(format!("ORT inference failed: {err}")))?;
         let run_ms = run_start.elapsed().as_secs_f64() * 1_000.0;
         let extract_start = Instant::now();
-        let (hidden_shape, hidden_data) = outputs[self.io.last_hidden_state.as_str()]
+        let (hidden_shape, hidden_data) = outputs[self.io.output_name()]
             .try_extract_tensor::<f32>()
             .map_err(|err| {
                 LTEmbedError::Inference(format!("Failed to extract ORT output tensor: {err}"))
             })?;
-        if hidden_shape.len() != 3 {
-            return Err(LTEmbedError::Inference(format!(
-                "expected rank-3 hidden states, got shape {hidden_shape:?}"
-            )));
-        }
-        if hidden_shape[0] as usize != batch_size || hidden_shape[1] as usize != seq_len {
-            return Err(LTEmbedError::Inference(format!(
-                "unexpected hidden state shape {hidden_shape:?}, expected [{batch_size}, {seq_len}, {}]",
-                self.spec.raw_embedding_dimension
-            )));
-        }
-        if hidden_shape[2] as usize != self.spec.raw_embedding_dimension {
-            return Err(LTEmbedError::Inference(format!(
-                "expected raw embedding dimension {}, got {}",
-                self.spec.raw_embedding_dimension, hidden_shape[2]
-            )));
-        }
+        validate_hidden_shape(
+            hidden_shape,
+            batch_size,
+            seq_len,
+            self.spec.raw_embedding_dimension,
+        )?;
         let extract_ms = extract_start.elapsed().as_secs_f64() * 1_000.0;
 
         let postprocess_start = Instant::now();
-        let mut embeddings = Vec::with_capacity(batch_size);
-        for batch_idx in 0..batch_size {
-            let mask_start = batch_idx * seq_len;
-            let mask_end = mask_start + seq_len;
-            let mask_slice = &attention_mask[mask_start..mask_end];
-            let last_token_idx =
-                mask_slice
-                    .iter()
-                    .rposition(|mask| *mask == 1)
-                    .ok_or_else(|| {
-                        LTEmbedError::Inference("attention mask contains only padding".into())
-                    })?;
-            let hidden_offset =
-                (batch_idx * seq_len + last_token_idx) * self.spec.raw_embedding_dimension;
-            let raw =
-                &hidden_data[hidden_offset..hidden_offset + self.spec.raw_embedding_dimension];
-            embeddings.push(postprocess_embedding(
-                raw,
-                self.spec.raw_embedding_dimension,
-                self.config,
-            )?);
-        }
+        let embeddings = pool_last_token(
+            hidden_data,
+            &attention_mask,
+            batch_size,
+            seq_len,
+            self.spec.raw_embedding_dimension,
+            self.config,
+        )?;
         let postprocess_ms = postprocess_start.elapsed().as_secs_f64() * 1_000.0;
         let total_ms = overall_start.elapsed().as_secs_f64() * 1_000.0;
         let profile = collect_profile.then_some(EmbedBatchProfile {

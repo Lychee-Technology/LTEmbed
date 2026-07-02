@@ -4,13 +4,33 @@ use crate::error::LTEmbedError;
 
 #[derive(Debug)]
 pub(crate) struct SessionIo {
-    pub(crate) input_ids: String,
-    pub(crate) attention_mask: String,
-    pub(crate) last_hidden_state: String,
-    pub(crate) sequence_length: Option<usize>,
+    input_ids: String,
+    attention_mask: String,
+    last_hidden_state: String,
+    sequence_length: Option<usize>,
 }
 
 impl SessionIo {
+    /// Name of the model's `input_ids` input, as discovered from the session.
+    pub(crate) fn input_ids_name(&self) -> &str {
+        &self.input_ids
+    }
+
+    /// Name of the model's `attention_mask` input, as discovered from the session.
+    pub(crate) fn attention_mask_name(&self) -> &str {
+        &self.attention_mask
+    }
+
+    /// Name of the model's `last_hidden_state` output, as discovered from the session.
+    pub(crate) fn output_name(&self) -> &str {
+        &self.last_hidden_state
+    }
+
+    /// Fixed model sequence length, or `None` when the model accepts a dynamic length.
+    pub(crate) fn sequence_length(&self) -> Option<usize> {
+        self.sequence_length
+    }
+
     pub(crate) fn from_session(
         session: &Session,
         raw_embedding_dimension: usize,

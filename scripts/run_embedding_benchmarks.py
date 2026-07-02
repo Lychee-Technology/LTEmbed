@@ -66,6 +66,10 @@ CSV_FIELDNAMES = [
     "min_ms",
     "max_ms",
     "cosine_similarity_vs_pytorch",
+    "query_count",
+    "recall_at_1",
+    "recall_at_3",
+    "mrr_at_3",
     "status",
     "notes",
 ]
@@ -532,6 +536,20 @@ def stats_row_from_runner(
     return row
 
 
+def retrieval_eval_row_from_metrics(
+    *,
+    base_fields: dict[str, str],
+    metrics: dict[str, Any],
+) -> dict[str, str]:
+    row = {field: "" for field in CSV_FIELDNAMES}
+    row.update(base_fields)
+    row["query_count"] = str(int(metrics["query_count"]))
+    row["recall_at_1"] = f"{float(metrics['recall_at_1']):.6f}"
+    row["recall_at_3"] = f"{float(metrics['recall_at_3']):.6f}"
+    row["mrr_at_3"] = f"{float(metrics['mrr_at_3']):.6f}"
+    return row
+
+
 def collect_warm_rows(
     *,
     args: argparse.Namespace,
@@ -725,7 +743,10 @@ def collect_retrieval_eval_rows(
     payloads: dict[str, Any] = {}
 
     for implementation, runner in RUNNERS.items():
-        payload = run_json_command(runner["retrieval"](args))
+        payload = run_json_command(
+            runner["retrieval"](args),
+            f"{implementation} retrieval",
+        )
         payloads[implementation] = payload
         version = resolved_implementation_version(implementation, payload)
         for result in payload["results"]:
@@ -735,6 +756,12 @@ def collect_retrieval_eval_rows(
                 query_embeddings={str(item["id"]): item["embedding"] for item in result["queries"]},
                 document_embeddings={str(item["id"]): item["embedding"] for item in result["documents"]},
             )
+            scenario = Scenario(
+                name=str(case["name"]),
+                batch_size=len(case["documents"]),
+                text_profile="retrieval_eval",
+                texts=(),
+            )
             base_fields = base_row_fields(
                 run_id=run_id,
                 timestamp_utc=timestamp_utc,
@@ -743,16 +770,14 @@ def collect_retrieval_eval_rows(
                 implementation=implementation,
                 implementation_version=version,
                 git_revision=git_revision,
-                scenario_name=str(case["name"]),
-                batch_size=len(case["documents"]),
-                text_profile="retrieval_eval",
+                scenario=scenario,
                 mode="retrieval_eval",
                 threads=args.threads,
                 warmup_iters=0,
                 timed_iters=0,
                 host=host,
             )
-            row = stats_row_from_runner(base_fields=base_fields, stats=metrics)
+            row = retrieval_eval_row_from_metrics(base_fields=base_fields, metrics=metrics)
             row["notes"] = resolved_notes(implementation, payload, args)
             rows.append(row)
     return rows, payloads

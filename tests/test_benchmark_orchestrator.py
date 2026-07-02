@@ -2,6 +2,7 @@ import csv
 import contextlib
 import importlib.util
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -229,6 +230,118 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("START pytorch warm", stderr.getvalue())
         self.assertIn("DONE pytorch warm", stderr.getvalue())
         run_mock.assert_called_once()
+
+
+    def test_collect_retrieval_eval_rows_produces_correct_csv_row(self):
+        bench = load_module()
+
+        retrieval_json = {
+            "cases": [
+                {
+                    "name": "mini-retrieval-v1",
+                    "documents": [
+                        {"id": "d1", "text": "Rust ownership protects memory safety."},
+                        {"id": "d2", "text": "Java uses a garbage collector."},
+                    ],
+                    "queries": [
+                        {
+                            "id": "q1",
+                            "text": "How does Rust avoid a garbage collector?",
+                            "relevant_document_ids": ["d1"],
+                        },
+                        {
+                            "id": "q2",
+                            "text": "What supports nearest-neighbor search?",
+                            "relevant_document_ids": ["d2"],
+                        },
+                    ],
+                }
+            ]
+        }
+
+        mock_payload = {
+            "implementation": "ltembed",
+            "implementation_version": "abc123",
+            "results": [
+                {
+                    "dataset_name": "mini-retrieval-v1",
+                    "queries": [
+                        {"id": "q1", "embedding": [0.0, 1.0, 0.0]},
+                        {"id": "q2", "embedding": [0.0, 1.0, 0.0]},
+                    ],
+                    "documents": [
+                        {"id": "d1", "embedding": [0.0, 0.0, 1.0]},
+                        {"id": "d2", "embedding": [0.0, 1.0, 0.0]},
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            retrieval_path = tmp / "retrieval_eval_cases.json"
+            retrieval_path.write_text(json.dumps(retrieval_json), encoding="utf-8")
+
+            args = SimpleNamespace(
+                run_id="run-1",
+                model_id="test-model",
+                model_source="huggingface",
+                retrieval_eval_path=retrieval_path,
+                threads=1,
+                warmup=0,
+                iters=0,
+            )
+
+            host = {
+                "host_os": "linux",
+                "host_arch": "arm64",
+                "cpu_model": "test-cpu",
+                "runner_labels": "",
+            }
+
+            with mock.patch.dict(
+                bench.RUNNERS,
+                {
+                    "ltembed": {
+                        "retrieval": lambda _a: ["ltembed-retrieval-cmd"],
+                        "version": lambda: "abc123",
+                    },
+                    "pytorch": {
+                        "retrieval": lambda _a: ["pytorch-retrieval-cmd"],
+                        "version": lambda: "",
+                    },
+                },
+            ), mock.patch.object(
+                bench,
+                "run_json_command",
+                return_value=mock_payload,
+            ) as run_mock:
+                rows, payloads = bench.collect_retrieval_eval_rows(
+                    args=args,
+                    run_id="run-1",
+                    timestamp_utc="2026-01-01T00:00:00+00:00",
+                    host=host,
+                    git_revision="abc123",
+                )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(run_mock.call_count, 2)
+
+        labels = [call_args[0][1] for call_args in run_mock.call_args_list]
+        self.assertIn("ltembed retrieval", labels)
+        self.assertIn("pytorch retrieval", labels)
+
+        row = rows[0]
+        self.assertEqual(row["scenario"], "mini-retrieval-v1")
+        self.assertEqual(row["mode"], "retrieval_eval")
+        self.assertEqual(row["batch_size"], "2")
+        self.assertEqual(row["text_profile"], "retrieval_eval")
+        self.assertEqual(row["mean_ms"], "")
+        self.assertEqual(row["query_count"], "2")
+        self.assertEqual(row["recall_at_1"], "0.500000")
+        self.assertEqual(row["recall_at_3"], "1.000000")
+        self.assertEqual(row["mrr_at_3"], "0.750000")
+        self.assertEqual(row["cosine_similarity_vs_pytorch"], "")
 
 
 if __name__ == "__main__":

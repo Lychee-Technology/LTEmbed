@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::error::{LTEmbedError, ModelLoadError};
 
+use super::ort_init::env_dylib_path;
 use super::{DOCUMENT_PREFIX, MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION};
 
 #[derive(Debug, Clone)]
@@ -98,14 +99,8 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<(), LTEmbedError>
 }
 
 pub(crate) fn resolve_dylib_path(bundle_dir: &Path) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    let bundle_dylib = bundle_dir.join("libonnxruntime.so");
-    if bundle_dylib.exists() {
-        return Some(bundle_dylib);
-    }
-    None
+    env_dylib_path().or_else(|| {
+        let bundle_dylib = bundle_dir.join("libonnxruntime.so");
+        bundle_dylib.exists().then_some(bundle_dylib)
+    })
 }

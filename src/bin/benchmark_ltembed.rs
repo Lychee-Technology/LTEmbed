@@ -2,7 +2,7 @@ use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenario
 use ltembed::engine::{
     EmbedBatchProfile, EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig,
 };
-use ltembed::error::LTEmbedError;
+use ltembed::error::{InferenceError, LTEmbedError};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -305,7 +305,9 @@ fn run_scenario_profiled(
 ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
     let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, true)?;
     let profile = profile.ok_or_else(|| {
-        LTEmbedError::Inference("profiling requested but no profile was collected".into())
+        LTEmbedError::Inference(InferenceError::Internal(
+            "profiling requested but no profile was collected".to_string(),
+        ))
     })?;
     Ok((embeddings, profile))
 }
@@ -315,8 +317,9 @@ fn run_scenario_maybe_profiled(
     scenario_name: &str,
     collect_profile: bool,
 ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
-    let scenario = scenario_by_name(scenario_name)
-        .ok_or_else(|| LTEmbedError::Inference("unknown scenario".into()))?;
+    let scenario = scenario_by_name(scenario_name).ok_or_else(|| {
+        LTEmbedError::Inference(InferenceError::Internal("unknown scenario".to_string()))
+    })?;
     let benchmark_inputs = scenario_inputs(scenario);
     let inputs = benchmark_inputs
         .iter()
@@ -422,7 +425,7 @@ fn measure_warm_stats(
     }
 
     let stats = LatencyStats::from_samples_ms(&samples)
-        .map_err(|err| LTEmbedError::Inference(err.into()))?;
+        .map_err(|err| LTEmbedError::Inference(InferenceError::Internal(err)))?;
     let profile_line = accumulator.and_then(|accumulator| accumulator.summary_line(scenario_name));
     Ok((stats, profile_line))
 }
@@ -432,7 +435,7 @@ fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, 
     let engine = engine_from_bundle_dir(args)?;
     let _ = run_scenario(&engine, scenario_name)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
-        .map_err(|err| LTEmbedError::Inference(err.into()))
+        .map_err(|err| LTEmbedError::Inference(InferenceError::Internal(err)))
 }
 
 fn progress_label(mode: &str, scenario_name: &str, state: &str) -> String {

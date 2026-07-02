@@ -49,15 +49,14 @@ impl std::fmt::Debug for OnnxEngine {
 
 impl OnnxEngine {
     pub fn new(model_path: &str, tokenizer_path: &str) -> Result<Self, LTEmbedError> {
+        let model_path = Path::new(model_path);
+        let tokenizer_path = Path::new(tokenizer_path);
+        require_file(model_path, "model")?;
+        require_file(tokenizer_path, "tokenizer")?;
+
         let spec = ModelSpec::jina_defaults();
         let config = OnnxEngineConfig::default();
-        Self::build(
-            Path::new(model_path),
-            Path::new(tokenizer_path),
-            None,
-            spec,
-            config,
-        )
+        Self::build(model_path, tokenizer_path, None, spec, config)
     }
 
     pub fn from_bundle_dir(
@@ -93,8 +92,6 @@ impl OnnxEngine {
         spec: ModelSpec,
         config: OnnxEngineConfig,
     ) -> Result<Self, LTEmbedError> {
-        require_file(model_path, "model")?;
-        require_file(tokenizer_path, "tokenizer")?;
         config.validate(spec.raw_embedding_dimension)?;
 
         ensure_ort_initialized(dylib_path)?;

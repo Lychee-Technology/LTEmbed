@@ -41,8 +41,15 @@ fn resolve_ort_source(dylib_path: Option<&Path>) -> OrtInitSource {
         return OrtInitSource::DynamicLibrary(path.to_path_buf());
     }
 
+    match env_dylib_path() {
+        Some(path) => OrtInitSource::DynamicLibrary(path),
+        None => OrtInitSource::System,
+    }
+}
+
+pub(crate) fn env_dylib_path() -> Option<PathBuf> {
     match std::env::var("ORT_DYLIB_PATH") {
-        Ok(path) if !path.is_empty() => OrtInitSource::DynamicLibrary(PathBuf::from(path)),
-        _ => OrtInitSource::System,
+        Ok(path) if !path.is_empty() => Some(PathBuf::from(path)),
+        _ => None,
     }
 }

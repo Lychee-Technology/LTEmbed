@@ -220,10 +220,11 @@ mod tests {
     }
 
     fn tokenizer_output(input_ids: Vec<u32>, attention_mask: Vec<u32>) -> TokenizerOutput {
+        let token_type_ids = vec![0; input_ids.len()];
         TokenizerOutput {
             input_ids,
             attention_mask,
-            token_type_ids: vec![0; 0],
+            token_type_ids,
         }
     }
 

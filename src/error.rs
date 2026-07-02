@@ -85,18 +85,6 @@ pub enum InferenceError {
     Internal(String),
 }
 
-impl From<&str> for InferenceError {
-    fn from(message: &str) -> Self {
-        Self::Internal(message.to_string())
-    }
-}
-
-impl From<String> for InferenceError {
-    fn from(message: String) -> Self {
-        Self::Internal(message)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

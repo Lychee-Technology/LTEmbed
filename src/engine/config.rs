@@ -1,4 +1,4 @@
-use crate::error::LTEmbedError;
+use crate::error::{LTEmbedError, ModelLoadError};
 
 use super::EMBEDDING_DIMENSION;
 
@@ -20,15 +20,15 @@ impl Default for OnnxEngineConfig {
 impl OnnxEngineConfig {
     pub(crate) fn validate(self, raw_embedding_dimension: usize) -> Result<(), LTEmbedError> {
         if self.output_dimension == 0 {
-            return Err(LTEmbedError::ModelLoad(
+            return Err(LTEmbedError::ModelLoad(ModelLoadError::Config(
                 "output_dimension must be greater than zero".into(),
-            ));
+            )));
         }
         if self.output_dimension > raw_embedding_dimension {
-            return Err(LTEmbedError::ModelLoad(format!(
+            return Err(LTEmbedError::ModelLoad(ModelLoadError::Config(format!(
                 "output_dimension {} exceeds raw embedding dimension {}",
                 self.output_dimension, raw_embedding_dimension
-            )));
+            ))));
         }
         Ok(())
     }
@@ -47,6 +47,9 @@ mod tests {
         }
         .validate(RAW_EMBEDDING_DIMENSION)
         .unwrap_err();
-        assert!(matches!(err, LTEmbedError::ModelLoad(_)));
+        assert!(matches!(
+            err,
+            LTEmbedError::ModelLoad(ModelLoadError::Config(_))
+        ));
     }
 }

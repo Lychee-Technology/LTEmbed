@@ -1,6 +1,6 @@
 use ort::session::Session;
 
-use crate::error::LTEmbedError;
+use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
 
 #[derive(Debug)]
 pub(crate) struct SessionIo {
@@ -40,40 +40,46 @@ impl SessionIo {
             .iter()
             .find(|input| input.name() == "input_ids")
             .ok_or_else(|| {
-                LTEmbedError::ModelLoad("ORT model is missing required input `input_ids`".into())
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(
+                    "ORT model is missing required input `input_ids`".into(),
+                ))
             })?;
         let attention_mask = session
             .inputs()
             .iter()
             .find(|input| input.name() == "attention_mask")
             .ok_or_else(|| {
-                LTEmbedError::ModelLoad(
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(
                     "ORT model is missing required input `attention_mask`".into(),
-                )
+                ))
             })?;
         let last_hidden_state = session
             .outputs()
             .iter()
             .find(|output| output.name() == "last_hidden_state")
             .ok_or_else(|| {
-                LTEmbedError::ModelLoad(
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(
                     "ORT model is missing required output `last_hidden_state`".into(),
-                )
+                ))
             })?;
         let raw_dim = last_hidden_state
             .dtype()
             .tensor_shape()
             .and_then(|shape| shape.last().copied());
         if raw_dim != Some(raw_embedding_dimension as i64) {
-            return Err(LTEmbedError::ModelLoad(format!(
+            return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
                 "ORT model output `last_hidden_state` must expose raw embedding dimension {raw_embedding_dimension}, got {raw_dim:?}"
-            )));
+            ))));
         }
         let input_ids_shape = input_ids.dtype().tensor_shape().ok_or_else(|| {
-            LTEmbedError::ModelLoad("ORT model input `input_ids` must be a tensor".into())
+            LTEmbedError::ModelLoad(ModelLoadError::Runtime(
+                "ORT model input `input_ids` must be a tensor".into(),
+            ))
         })?;
         let attention_mask_shape = attention_mask.dtype().tensor_shape().ok_or_else(|| {
-            LTEmbedError::ModelLoad("ORT model input `attention_mask` must be a tensor".into())
+            LTEmbedError::ModelLoad(ModelLoadError::Runtime(
+                "ORT model input `attention_mask` must be a tensor".into(),
+            ))
         })?;
         let sequence_length =
             resolved_model_sequence_length(input_ids_shape, attention_mask_shape)?;
@@ -89,16 +95,18 @@ impl SessionIo {
 
 fn model_sequence_length(shape: &[i64]) -> Result<Option<usize>, LTEmbedError> {
     if shape.len() != 2 {
-        return Err(LTEmbedError::ModelLoad(format!(
+        return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
             "ORT model input must be rank-2, got shape {shape:?}"
-        )));
+        ))));
     }
 
     match shape[1] {
         dim if dim < 0 => Ok(None),
-        dim => usize::try_from(dim)
-            .map(Some)
-            .map_err(|_| LTEmbedError::ModelLoad(format!("Invalid ORT input shape {shape:?}"))),
+        dim => usize::try_from(dim).map(Some).map_err(|_| {
+            LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                "Invalid ORT input shape {shape:?}"
+            )))
+        }),
     }
 }
 
@@ -111,9 +119,9 @@ fn resolved_model_sequence_length(
 
     match (input_sequence_length, attention_mask_sequence_length) {
         (Some(input_len), Some(mask_len)) if input_len != mask_len => Err(LTEmbedError::ModelLoad(
-            format!(
+            ModelLoadError::Runtime(format!(
                 "ORT model inputs `input_ids` and `attention_mask` must expose compatible sequence lengths, got {input_ids_shape:?} and {attention_mask_shape:?}"
-            ),
+            )),
         )),
         (Some(input_len), Some(_)) => Ok(Some(input_len)),
         (Some(input_len), None) => Ok(Some(input_len)),
@@ -127,11 +135,12 @@ pub(crate) fn effective_sequence_length(
     batch_max_sequence_length: usize,
 ) -> Result<usize, LTEmbedError> {
     match model_sequence_length {
-        Some(model_len) if batch_max_sequence_length > model_len => Err(LTEmbedError::Inference(
-            format!(
-                "encoded input length {batch_max_sequence_length} exceeds ORT model sequence length {model_len}"
-            ),
-        )),
+        Some(model_len) if batch_max_sequence_length > model_len => {
+            Err(LTEmbedError::Inference(InferenceError::SequenceTooLong {
+                encoded: batch_max_sequence_length,
+                model: model_len,
+            }))
+        }
         Some(model_len) => Ok(model_len),
         None => Ok(batch_max_sequence_length),
     }

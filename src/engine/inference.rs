@@ -1,4 +1,4 @@
-use crate::error::LTEmbedError;
+use crate::error::{InferenceError, LTEmbedError};
 use crate::traits::tokenizer::TokenizerOutput;
 
 use super::bundle::ModelSpec;
@@ -74,19 +74,23 @@ pub(crate) fn validate_hidden_shape(
     raw_embedding_dimension: usize,
 ) -> Result<(), LTEmbedError> {
     if hidden_shape.len() != 3 {
-        return Err(LTEmbedError::Inference(format!(
-            "expected rank-3 hidden states, got shape {hidden_shape:?}"
+        return Err(LTEmbedError::Inference(InferenceError::OutputShape(
+            format!("expected rank-3 hidden states, got shape {hidden_shape:?}"),
         )));
     }
     if hidden_shape[0] as usize != batch_size || hidden_shape[1] as usize != seq_len {
-        return Err(LTEmbedError::Inference(format!(
-            "unexpected hidden state shape {hidden_shape:?}, expected [{batch_size}, {seq_len}, {raw_embedding_dimension}]"
+        return Err(LTEmbedError::Inference(InferenceError::OutputShape(
+            format!(
+                "unexpected hidden state shape {hidden_shape:?}, expected [{batch_size}, {seq_len}, {raw_embedding_dimension}]"
+            ),
         )));
     }
     if hidden_shape[2] as usize != raw_embedding_dimension {
-        return Err(LTEmbedError::Inference(format!(
-            "expected raw embedding dimension {}, got {}",
-            raw_embedding_dimension, hidden_shape[2]
+        return Err(LTEmbedError::Inference(InferenceError::OutputShape(
+            format!(
+                "expected raw embedding dimension {}, got {}",
+                raw_embedding_dimension, hidden_shape[2]
+            ),
         )));
     }
     Ok(())
@@ -110,9 +114,7 @@ pub(crate) fn pool_last_token(
         let last_token_idx = mask_slice
             .iter()
             .rposition(|mask| *mask == 1)
-            .ok_or_else(|| {
-                LTEmbedError::Inference("attention mask contains only padding".into())
-            })?;
+            .ok_or(LTEmbedError::Inference(InferenceError::AllPadding))?;
         let hidden_offset = (batch_idx * seq_len + last_token_idx) * raw_embedding_dimension;
         let raw = &hidden_data[hidden_offset..hidden_offset + raw_embedding_dimension];
         embeddings.push(postprocess_embedding(raw, raw_embedding_dimension, config)?);
@@ -126,9 +128,11 @@ pub(crate) fn postprocess_embedding(
     config: OnnxEngineConfig,
 ) -> Result<Vec<f32>, LTEmbedError> {
     if raw_embedding.len() != raw_embedding_dimension {
-        return Err(LTEmbedError::Inference(format!(
-            "expected raw embedding dimension {raw_embedding_dimension}, got {}",
-            raw_embedding.len()
+        return Err(LTEmbedError::Inference(InferenceError::OutputShape(
+            format!(
+                "expected raw embedding dimension {raw_embedding_dimension}, got {}",
+                raw_embedding.len()
+            ),
         )));
     }
 
@@ -209,7 +213,10 @@ mod tests {
             OnnxEngineConfig::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, LTEmbedError::Inference(_)));
+        assert!(matches!(
+            err,
+            LTEmbedError::Inference(InferenceError::OutputShape(_))
+        ));
     }
 
     fn tokenizer_output(input_ids: Vec<u32>, attention_mask: Vec<u32>) -> TokenizerOutput {
@@ -239,13 +246,19 @@ mod tests {
     #[test]
     fn test_validate_hidden_shape_rejects_wrong_rank() {
         let err = validate_hidden_shape(&[2, 3], 2, 3, 768).unwrap_err();
-        assert!(matches!(err, LTEmbedError::Inference(_)));
+        assert!(matches!(
+            err,
+            LTEmbedError::Inference(InferenceError::OutputShape(_))
+        ));
     }
 
     #[test]
     fn test_validate_hidden_shape_rejects_wrong_dimension() {
         let err = validate_hidden_shape(&[2, 3, 512], 2, 3, 768).unwrap_err();
-        assert!(matches!(err, LTEmbedError::Inference(_)));
+        assert!(matches!(
+            err,
+            LTEmbedError::Inference(InferenceError::OutputShape(_))
+        ));
     }
 
     #[test]
@@ -283,6 +296,9 @@ mod tests {
             OnnxEngineConfig::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, LTEmbedError::Inference(_)));
+        assert!(matches!(
+            err,
+            LTEmbedError::Inference(InferenceError::AllPadding)
+        ));
     }
 }

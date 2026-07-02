@@ -421,7 +421,8 @@ fn measure_warm_stats(
         samples.push(start.elapsed().as_secs_f64() * 1_000.0);
     }
 
-    let stats = LatencyStats::from_samples_ms(&samples).map_err(LTEmbedError::Inference)?;
+    let stats = LatencyStats::from_samples_ms(&samples)
+        .map_err(|err| LTEmbedError::Inference(err.into()))?;
     let profile_line = accumulator.and_then(|accumulator| accumulator.summary_line(scenario_name));
     Ok((stats, profile_line))
 }
@@ -431,7 +432,7 @@ fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, 
     let engine = engine_from_bundle_dir(args)?;
     let _ = run_scenario(&engine, scenario_name)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
-        .map_err(LTEmbedError::Inference)
+        .map_err(|err| LTEmbedError::Inference(err.into()))
 }
 
 fn progress_label(mode: &str, scenario_name: &str, state: &str) -> String {

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::error::LTEmbedError;
+use crate::error::{LTEmbedError, ModelLoadError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OrtInitSource {
@@ -26,11 +26,13 @@ pub(crate) fn ensure_ort_initialized(dylib_path: Option<&Path>) -> Result<(), LT
     match initialized {
         Ok(source) if *source == requested => Ok(()),
         Ok(OrtInitSource::DynamicLibrary(_)) if requested == OrtInitSource::System => Ok(()),
-        Ok(source) => Err(LTEmbedError::ModelLoad(format!(
+        Ok(source) => Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
             "ORT is already initialized for {:?}, cannot reinitialize with {:?}",
             source, requested
+        )))),
+        Err(message) => Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(
+            message.clone(),
         ))),
-        Err(message) => Err(LTEmbedError::ModelLoad(message.clone())),
     }
 }
 

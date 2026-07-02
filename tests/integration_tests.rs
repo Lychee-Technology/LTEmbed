@@ -2,7 +2,7 @@ use approx::assert_relative_eq;
 use ltembed::engine::{
     EmbeddingInput, OnnxEngine, OnnxEngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
 };
-use ltembed::error::LTEmbedError;
+use ltembed::error::{LTEmbedError, ModelLoadError};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -140,7 +140,10 @@ fn test_missing_model_file_returns_model_load_error() {
 
     let model_path = temp_dir.join("model.ort");
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -154,7 +157,10 @@ fn test_missing_tokenizer_returns_model_load_error() {
     write_build_info(&temp_dir, valid_build_info_json());
 
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -168,7 +174,10 @@ fn test_missing_build_info_returns_model_load_error() {
     fs::write(&model_path, "stub").unwrap();
 
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -183,7 +192,10 @@ fn test_malformed_build_info_returns_model_load_error() {
     write_build_info(&temp_dir, "{not-json");
 
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::Metadata(_))
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -213,7 +225,10 @@ fn test_invalid_input_kind_returns_model_load_error() {
     );
 
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::UnsupportedInputKind { .. })
+    ));
     fs::remove_dir_all(temp_dir).unwrap();
 }
 
@@ -272,7 +287,10 @@ fn test_invalid_pooling_returns_model_load_error() {
     );
 
     let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::UnsupportedPooling { .. })
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -294,7 +312,10 @@ fn test_output_dimension_larger_than_raw_returns_model_load_error() {
             l2_normalize: true,
         },
     );
-    assert!(matches!(result.unwrap_err(), LTEmbedError::ModelLoad(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        LTEmbedError::ModelLoad(ModelLoadError::Config(_))
+    ));
 
     fs::remove_dir_all(temp_dir).unwrap();
 }

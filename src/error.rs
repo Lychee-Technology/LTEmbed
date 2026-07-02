@@ -1,16 +1,18 @@
 // src/error.rs
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum LTEmbedError {
     #[error("Model load failed: {0}")]
-    ModelLoad(String),
+    ModelLoad(#[from] ModelLoadError),
 
     #[error("Tokenization failed: {0}")]
     Tokenization(String),
 
     #[error("Inference failed: {0}")]
-    Inference(String),
+    Inference(#[from] InferenceError),
 
     #[error("Input too long: {tokens} tokens exceeds the {max} token limit")]
     InputTooLong { tokens: usize, max: usize },
@@ -22,14 +24,111 @@ pub enum LTEmbedError {
     Json(#[from] serde_json::Error),
 }
 
+/// Failure classes surfaced while loading a bundle and building an engine.
+///
+/// The high-value, caller-matchable cases (`MissingFile`,
+/// `UnsupportedInputKind`, `UnsupportedPooling`) are modeled explicitly; the
+/// remaining ORT / metadata / config failures are grouped into broader buckets.
+#[derive(Debug, Error)]
+pub enum ModelLoadError {
+    #[error("{label} file not found: {path}")]
+    MissingFile { label: String, path: PathBuf },
+
+    #[error("Unsupported input_kind '{input_kind}' for bundle target '{target}'")]
+    UnsupportedInputKind { input_kind: String, target: String },
+
+    #[error("Unsupported pooling '{pooling}' for bundle target '{target}'")]
+    UnsupportedPooling { pooling: String, target: String },
+
+    /// build-info read or parse failure.
+    #[error("{0}")]
+    Metadata(String),
+
+    /// `OnnxEngineConfig` validation failure.
+    #[error("{0}")]
+    Config(String),
+
+    /// ORT initialization, session build, model-I/O discovery, or tokenizer load failure.
+    #[error("{0}")]
+    Runtime(String),
+}
+
+/// Failure classes surfaced while running inference on an already-loaded engine.
+///
+/// `SequenceTooLong`, `AllPadding`, and `OutputShape` are the cases most useful
+/// to match precisely; the remainder are broader buckets.
+#[derive(Debug, Error)]
+pub enum InferenceError {
+    #[error("encoded input length {encoded} exceeds ORT model sequence length {model}")]
+    SequenceTooLong { encoded: usize, model: usize },
+
+    #[error("attention mask contains only padding")]
+    AllPadding,
+
+    /// Model output rank / dimension mismatch.
+    #[error("{0}")]
+    OutputShape(String),
+
+    /// Tensor conversion or extraction failure.
+    #[error("{0}")]
+    Tensor(String),
+
+    /// `Session::run` failure.
+    #[error("{0}")]
+    OrtRun(String),
+
+    #[error("ORT session mutex poisoned")]
+    MutexPoisoned,
+
+    /// Internal invariant violation.
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl From<&str> for InferenceError {
+    fn from(message: &str) -> Self {
+        Self::Internal(message.to_string())
+    }
+}
+
+impl From<String> for InferenceError {
+    fn from(message: String) -> Self {
+        Self::Internal(message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_model_load_error_display() {
-        let e = LTEmbedError::ModelLoad("file not found".to_string());
+        let e = LTEmbedError::ModelLoad(ModelLoadError::Runtime("file not found".to_string()));
         assert_eq!(e.to_string(), "Model load failed: file not found");
+    }
+
+    #[test]
+    fn test_missing_file_error_display() {
+        let e = LTEmbedError::ModelLoad(ModelLoadError::MissingFile {
+            label: "tokenizer".to_string(),
+            path: PathBuf::from("/tmp/tokenizer.json"),
+        });
+        assert_eq!(
+            e.to_string(),
+            "Model load failed: tokenizer file not found: /tmp/tokenizer.json"
+        );
+    }
+
+    #[test]
+    fn test_inference_error_display() {
+        let e = LTEmbedError::Inference(InferenceError::SequenceTooLong {
+            encoded: 9000,
+            model: 8192,
+        });
+        assert_eq!(
+            e.to_string(),
+            "Inference failed: encoded input length 9000 exceeds ORT model sequence length 8192"
+        );
     }
 
     #[test]

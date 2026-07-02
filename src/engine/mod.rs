@@ -5,7 +5,7 @@ use std::time::Instant;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::TensorRef;
 
-use crate::error::LTEmbedError;
+use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
 use crate::traits::tokenizer::HFTokenizer;
 
 mod bundle;
@@ -101,20 +101,28 @@ impl OnnxEngine {
         let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy())?;
         let session = Session::builder()
             .map_err(|err| {
-                LTEmbedError::ModelLoad(format!("Failed to create ORT session builder: {err}"))
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "Failed to create ORT session builder: {err}"
+                )))
             })?
             .with_intra_threads(1)
             .map_err(|err| {
-                LTEmbedError::ModelLoad(format!("Failed to configure ORT session: {err}"))
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "Failed to configure ORT session: {err}"
+                )))
             })?
             .with_optimization_level(GraphOptimizationLevel::Disable)
             .map_err(|err| {
-                LTEmbedError::ModelLoad(format!(
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
                     "Failed to disable ORT runtime optimization: {err}"
-                ))
+                )))
             })?
             .commit_from_file(model_path)
-            .map_err(|err| LTEmbedError::ModelLoad(format!("Failed to load ORT model: {err}")))?;
+            .map_err(|err| {
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "Failed to load ORT model: {err}"
+                )))
+            })?;
         let io = SessionIo::from_session(&session, spec.raw_embedding_dimension)?;
 
         Ok(Self {
@@ -131,7 +139,9 @@ impl OnnxEngine {
         embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| LTEmbedError::Inference("expected one embedding".into()))
+            .ok_or(LTEmbedError::Inference(InferenceError::Internal(
+                "expected one embedding".into(),
+            )))
     }
 
     pub fn embed_batch(
@@ -147,9 +157,9 @@ impl OnnxEngine {
         inputs: &[EmbeddingInput<'_>],
     ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
         let (embeddings, profile) = self.embed_batch_impl(inputs, true)?;
-        let profile = profile.ok_or_else(|| {
-            LTEmbedError::Inference("profiling requested but no profile was collected".into())
-        })?;
+        let profile = profile.ok_or(LTEmbedError::Inference(InferenceError::Internal(
+            "profiling requested but no profile was collected".into(),
+        )))?;
         Ok((embeddings, profile))
     }
 
@@ -189,34 +199,43 @@ impl OnnxEngine {
 
         let input_ids_tensor = TensorRef::from_array_view(([batch_size, seq_len], &input_ids[..]))
             .map_err(|err| {
-                LTEmbedError::Inference(format!("Failed to convert input_ids tensor: {err}"))
+                LTEmbedError::Inference(InferenceError::Tensor(format!(
+                    "Failed to convert input_ids tensor: {err}"
+                )))
             })?;
-        let attention_mask_tensor = TensorRef::from_array_view((
-            [batch_size, seq_len],
-            &attention_mask[..],
-        ))
-        .map_err(|err| {
-            LTEmbedError::Inference(format!("Failed to convert attention_mask tensor: {err}"))
-        })?;
+        let attention_mask_tensor =
+            TensorRef::from_array_view(([batch_size, seq_len], &attention_mask[..])).map_err(
+                |err| {
+                    LTEmbedError::Inference(InferenceError::Tensor(format!(
+                        "Failed to convert attention_mask tensor: {err}"
+                    )))
+                },
+            )?;
         let tensorize_ms = tensorize_start.elapsed().as_secs_f64() * 1_000.0;
 
         let mut session = self
             .session
             .lock()
-            .map_err(|_| LTEmbedError::Inference("ORT session mutex poisoned".into()))?;
+            .map_err(|_| LTEmbedError::Inference(InferenceError::MutexPoisoned))?;
         let run_start = Instant::now();
         let outputs = session
             .run(ort::inputs! {
                 self.io.input_ids_name() => input_ids_tensor,
                 self.io.attention_mask_name() => attention_mask_tensor,
             })
-            .map_err(|err| LTEmbedError::Inference(format!("ORT inference failed: {err}")))?;
+            .map_err(|err| {
+                LTEmbedError::Inference(InferenceError::OrtRun(format!(
+                    "ORT inference failed: {err}"
+                )))
+            })?;
         let run_ms = run_start.elapsed().as_secs_f64() * 1_000.0;
         let extract_start = Instant::now();
         let (hidden_shape, hidden_data) = outputs[self.io.output_name()]
             .try_extract_tensor::<f32>()
             .map_err(|err| {
-                LTEmbedError::Inference(format!("Failed to extract ORT output tensor: {err}"))
+                LTEmbedError::Inference(InferenceError::Tensor(format!(
+                    "Failed to extract ORT output tensor: {err}"
+                )))
             })?;
         validate_hidden_shape(
             hidden_shape,

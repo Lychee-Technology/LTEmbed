@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::LTEmbedError;
+use crate::error::{LTEmbedError, ModelLoadError};
 
 use super::{DOCUMENT_PREFIX, MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION};
 
@@ -47,30 +47,34 @@ impl ModelSpec {
 
     pub(crate) fn from_build_info(path: &Path) -> Result<Self, LTEmbedError> {
         let raw = fs::read_to_string(path).map_err(|err| {
-            LTEmbedError::ModelLoad(format!(
+            LTEmbedError::ModelLoad(ModelLoadError::Metadata(format!(
                 "Failed to read build-info metadata at {}: {err}",
                 path.display()
-            ))
+            )))
         })?;
         let build_info: BuildInfo = serde_json::from_str(&raw).map_err(|err| {
-            LTEmbedError::ModelLoad(format!(
+            LTEmbedError::ModelLoad(ModelLoadError::Metadata(format!(
                 "Failed to parse build-info metadata at {}: {err}",
                 path.display()
-            ))
+            )))
         })?;
 
         let metadata = build_info.model_metadata;
         if metadata.input_kind != "retrieval" && metadata.input_kind != "text" {
-            return Err(LTEmbedError::ModelLoad(format!(
-                "Unsupported input_kind '{}' for bundle target '{}'",
-                metadata.input_kind, build_info.target_id
-            )));
+            return Err(LTEmbedError::ModelLoad(
+                ModelLoadError::UnsupportedInputKind {
+                    input_kind: metadata.input_kind,
+                    target: build_info.target_id,
+                },
+            ));
         }
         if metadata.pooling != "last_token" && metadata.pooling != "lasttoken" {
-            return Err(LTEmbedError::ModelLoad(format!(
-                "Unsupported pooling '{}' for bundle target '{}'",
-                metadata.pooling, build_info.target_id
-            )));
+            return Err(LTEmbedError::ModelLoad(
+                ModelLoadError::UnsupportedPooling {
+                    pooling: metadata.pooling,
+                    target: build_info.target_id,
+                },
+            ));
         }
 
         Ok(Self {
@@ -87,10 +91,10 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<(), LTEmbedError>
         return Ok(());
     }
 
-    Err(LTEmbedError::ModelLoad(format!(
-        "{label} file not found: {}",
-        path.display()
-    )))
+    Err(LTEmbedError::ModelLoad(ModelLoadError::MissingFile {
+        label: label.to_string(),
+        path: path.to_path_buf(),
+    }))
 }
 
 pub(crate) fn resolve_dylib_path(bundle_dir: &Path) -> Option<PathBuf> {

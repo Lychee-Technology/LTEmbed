@@ -207,10 +207,22 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
         self.assertIn('export LTEMBED_PROFILE="1"', workflow)
 
-    def test_resolved_notes_is_empty_for_current_runners(self):
+
+    def test_build_benchmark_command_passes_custom_threads_for_ltembed(self):
         bench = load_module()
-        self.assertEqual(bench.resolved_notes("ltembed", {}), "")
-        self.assertEqual(bench.resolved_notes("pytorch", {"backend": "ignored"}), "")
+        args = SimpleNamespace(
+            ort_bundle_dir=Path("ort_bundle"),
+            output_dimension=512,
+            l2_normalize=True,
+            warmup=5,
+            iters=10,
+            threads=4,
+            scenario=None,
+            ltembed_cargo_features="",
+        )
+        command = bench.build_benchmark_command("ltembed", "warm", args)
+        self.assertIn("--threads", command)
+        self.assertIn("4", command)
 
     def test_run_json_command_logs_labeled_start_and_finish_messages(self):
         bench = load_module()

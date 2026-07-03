@@ -351,13 +351,6 @@ def resolved_implementation_version(implementation: str, payload: dict[str, Any]
     return str(payload.get("implementation_version", ""))
 
 
-def resolved_notes(
-    implementation: str,
-    payload: dict[str, Any],
-    args: argparse.Namespace | None = None,
-) -> str:
-    return ""
-
 
 def log_progress(label: str, state: str, elapsed_seconds: float | None = None) -> None:
     timestamp = utc_now()
@@ -492,7 +485,7 @@ def collect_warm_rows(
                 timed_iters=args.iters,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=entry["stats"])
-            row["notes"] = resolved_notes(implementation, payload, args)
+
             rows.append(row)
     return rows, results
 
@@ -523,7 +516,7 @@ def collect_cold_rows(
                 timed_iters=1,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=payload["stats"])
-            row["notes"] = resolved_notes(implementation, payload, args)
+
             rows.append(row)
     return rows, results
 
@@ -572,7 +565,7 @@ def collect_correctness_rows(
                     cosine_similarity=average_similarity,
                     threshold=args.correctness_threshold,
                 )
-            row["notes"] = resolved_notes(implementation, payload, args)
+
             rows.append(row)
     return rows, payloads
 
@@ -664,7 +657,7 @@ def collect_retrieval_eval_rows(
                 timed_iters=0,
             )
             row = retrieval_eval_row_from_metrics(base_fields=base_fields, metrics=metrics)
-            row["notes"] = resolved_notes(implementation, payload, args)
+
             rows.append(row)
     return rows, payloads
 

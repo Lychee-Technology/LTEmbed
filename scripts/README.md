@@ -21,3 +21,4 @@ Important assumptions:
 - `--ort-bundle-dir` points at a directory containing `model.ort`, `tokenizer.json`, `libonnxruntime.so`, and `build-info.json`
 - `--output-dimension` and `--l2-normalize` describe LTEmbed post-processing explicitly
 - correctness thresholds should account for quantized ONNX output vs. Python reference
+- `--threads` is passed to PyTorch as `torch.set_num_threads(...)` and to LTEmbed as ONNX Runtime `with_intra_threads(...)`; the CSV `threads` column records this requested runner thread count

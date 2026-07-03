@@ -56,13 +56,22 @@ impl OnnxEngine {
 
         let spec = ModelSpec::jina_defaults();
         let config = OnnxEngineConfig::default();
-        Self::build(model_path, tokenizer_path, None, spec, config)
+        Self::build(model_path, tokenizer_path, None, spec, config, 1)
     }
 
     pub fn from_bundle_dir(
         bundle_dir: impl AsRef<Path>,
         model_path: impl AsRef<Path>,
         config: OnnxEngineConfig,
+    ) -> Result<Self, LTEmbedError> {
+        Self::from_bundle_dir_with_intra_threads(bundle_dir, model_path, config, 1)
+    }
+
+    pub fn from_bundle_dir_with_intra_threads(
+        bundle_dir: impl AsRef<Path>,
+        model_path: impl AsRef<Path>,
+        config: OnnxEngineConfig,
+        intra_threads: usize,
     ) -> Result<Self, LTEmbedError> {
         let bundle_dir = bundle_dir.as_ref();
         let model_path = model_path.as_ref();
@@ -82,7 +91,17 @@ impl OnnxEngine {
             dylib_path.as_deref(),
             spec,
             config,
+            intra_threads,
         )
+    }
+
+    fn validate_intra_threads(intra_threads: usize) -> Result<(), LTEmbedError> {
+        if intra_threads == 0 {
+            return Err(LTEmbedError::ModelLoad(ModelLoadError::Config(
+                "intra_threads must be greater than zero".into(),
+            )));
+        }
+        Ok(())
     }
 
     fn build(
@@ -91,8 +110,10 @@ impl OnnxEngine {
         dylib_path: Option<&Path>,
         spec: ModelSpec,
         config: OnnxEngineConfig,
+        intra_threads: usize,
     ) -> Result<Self, LTEmbedError> {
         config.validate(spec.raw_embedding_dimension)?;
+        Self::validate_intra_threads(intra_threads)?;
 
         ensure_ort_initialized(dylib_path)?;
         let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy())?;
@@ -102,7 +123,7 @@ impl OnnxEngine {
                     "Failed to create ORT session builder: {err}"
                 )))
             })?
-            .with_intra_threads(1)
+            .with_intra_threads(intra_threads)
             .map_err(|err| {
                 LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
                     "Failed to configure ORT session: {err}"

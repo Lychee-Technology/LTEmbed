@@ -340,11 +340,13 @@ fn run_scenario_maybe_profiled(
     }
 }
 
+fn profiling_enabled_from_value(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true" | "TRUE" | "yes" | "YES"))
+}
+
 fn profiling_enabled_from_env() -> bool {
-    matches!(
-        env::var("LTEMBED_PROFILE").ok().as_deref(),
-        Some("1" | "true" | "TRUE" | "yes" | "YES")
-    )
+    let value = env::var("LTEMBED_PROFILE").ok();
+    profiling_enabled_from_value(value.as_deref())
 }
 
 fn profile_summary_line(scenario_name: &str, samples: usize, profile: EmbedBatchProfile) -> String {
@@ -784,20 +786,20 @@ mod tests {
     }
 
     #[test]
-    fn test_profiling_enabled_from_env_defaults_to_false() {
-        unsafe { std::env::remove_var("LTEMBED_PROFILE") };
-        assert!(!profiling_enabled_from_env());
+    fn test_profiling_enabled_from_value_defaults_to_false() {
+        assert!(!profiling_enabled_from_value(None));
+        assert!(!profiling_enabled_from_value(Some("")));
+        assert!(!profiling_enabled_from_value(Some("0")));
+        assert!(!profiling_enabled_from_value(Some("false")));
     }
 
     #[test]
-    fn test_profiling_enabled_from_env_accepts_one_and_true() {
-        unsafe { std::env::set_var("LTEMBED_PROFILE", "1") };
-        assert!(profiling_enabled_from_env());
-
-        unsafe { std::env::set_var("LTEMBED_PROFILE", "true") };
-        assert!(profiling_enabled_from_env());
-
-        unsafe { std::env::remove_var("LTEMBED_PROFILE") };
+    fn test_profiling_enabled_from_value_accepts_enabled_values() {
+        assert!(profiling_enabled_from_value(Some("1")));
+        assert!(profiling_enabled_from_value(Some("true")));
+        assert!(profiling_enabled_from_value(Some("TRUE")));
+        assert!(profiling_enabled_from_value(Some("yes")));
+        assert!(profiling_enabled_from_value(Some("YES")));
     }
 
     #[test]

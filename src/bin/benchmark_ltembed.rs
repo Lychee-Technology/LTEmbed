@@ -203,7 +203,10 @@ where
                     .next()
                     .ok_or_else(|| "missing value for --threads".to_string())?
                     .parse()
-                    .map_err(|_| "invalid value for --threads".to_string())?
+                    .map_err(|_| "invalid value for --threads".to_string())?;
+                if threads == 0 {
+                    return Err("--threads must be greater than zero".to_string());
+                }
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -249,13 +252,14 @@ fn git_sha() -> String {
 
 fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
     let model_path = args.ort_bundle_dir.join("model.ort");
-    OnnxEngine::from_bundle_dir(
+    OnnxEngine::from_bundle_dir_with_intra_threads(
         Path::new(&args.ort_bundle_dir),
         &model_path,
         OnnxEngineConfig {
             output_dimension: args.output_dimension,
             l2_normalize: args.l2_normalize,
         },
+        args.threads,
     )
 }
 
@@ -572,7 +576,6 @@ fn run_retrieval_mode(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let _threads = args.threads;
     let implementation_version = git_sha();
 
     match &args.mode {
@@ -1027,5 +1030,43 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn test_parse_args_accepts_threads() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+            "--threads",
+            "4",
+        ])
+        .unwrap();
+        assert_eq!(args.threads, 4);
+    }
+
+    #[test]
+    fn test_parse_args_rejects_zero_threads() {
+        let err = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--ort-bundle-dir",
+            "ort_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+            "--threads",
+            "0",
+        ])
+        .unwrap_err();
+        assert!(err.contains("--threads"));
     }
 }

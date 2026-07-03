@@ -332,6 +332,7 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertIn("pytorch retrieval", labels)
 
         row = rows[0]
+        self.assertEqual(row["implementation"], "ltembed")
         self.assertEqual(row["scenario"], "mini-retrieval-v1")
         self.assertEqual(row["mode"], "retrieval_eval")
         self.assertEqual(row["batch_size"], "2")
@@ -342,6 +343,30 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertEqual(row["recall_at_3"], "1.000000")
         self.assertEqual(row["mrr_at_3"], "0.750000")
         self.assertEqual(row["cosine_similarity_vs_pytorch"], "")
+
+    def test_compute_retrieval_metrics_zeroes_reciprocal_rank_beyond_3(self):
+        bench = load_module()
+
+        retrieval_case = {
+            "queries": [
+                {"id": "q1", "relevant_document_ids": ["d_rel"]},
+            ],
+        }
+        metrics = bench.compute_retrieval_metrics(
+            retrieval_case,
+            query_embeddings={"q1": [1.0, 0.0, 0.0]},
+            document_embeddings={
+                "d1": [1.0, 0.0, 0.0],
+                "d2": [0.9, 0.1, 0.0],
+                "d3": [0.8, 0.2, 0.0],
+                "d_rel": [0.0, 1.0, 0.0],
+            },
+        )
+
+        self.assertEqual(metrics["query_count"], 1)
+        self.assertEqual(metrics["recall_at_1"], 0.0)
+        self.assertEqual(metrics["recall_at_3"], 0.0)
+        self.assertEqual(metrics["mrr_at_3"], 0.0)
 
 
 if __name__ == "__main__":

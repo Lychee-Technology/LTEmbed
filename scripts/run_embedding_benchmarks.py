@@ -716,7 +716,7 @@ def compute_retrieval_metrics(
                 "rank_of_first_relevant": rank,
                 "relevant_at_1": 1.0 if rank is not None and rank <= 1 else 0.0,
                 "relevant_at_3": 1.0 if rank is not None and rank <= 3 else 0.0,
-                "reciprocal_rank": 1.0 / rank if rank is not None else 0.0,
+                "reciprocal_rank": 1.0 / rank if rank is not None and rank <= 3 else 0.0,
             }
         )
 

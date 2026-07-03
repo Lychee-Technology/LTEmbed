@@ -24,6 +24,8 @@ Runtime notes:
   path to `model.ort`.
 - `OnnxEngineConfig` controls the returned embedding dimension and whether outputs are L2-normalized.
 - The engine validates bundle metadata at startup and returns `ModelLoad` on missing files or incompatible metadata.
+- The engine runs with 1 ONNX Runtime intra-op thread by default;
+  `OnnxEngine::from_bundle_dir_with_intra_threads(...)` sets it explicitly (`0` is rejected with `ModelLoad`).
 
 ## API
 

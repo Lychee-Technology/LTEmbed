@@ -67,6 +67,15 @@ impl OnnxEngine {
         Self::from_bundle_dir_with_intra_threads(bundle_dir, model_path, config, 1)
     }
 
+    /// Like [`OnnxEngine::from_bundle_dir`] (which delegates here with
+    /// `intra_threads = 1`), but lets the caller set the number of ONNX Runtime
+    /// intra-op threads passed to `with_intra_threads(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LTEmbedError::ModelLoad(ModelLoadError::Config)` if
+    /// `intra_threads` is `0`, in addition to the bundle-validation errors
+    /// returned by [`OnnxEngine::from_bundle_dir`].
     pub fn from_bundle_dir_with_intra_threads(
         bundle_dir: impl AsRef<Path>,
         model_path: impl AsRef<Path>,

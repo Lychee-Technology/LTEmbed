@@ -22,3 +22,4 @@ Important assumptions:
 - `--output-dimension` and `--l2-normalize` describe LTEmbed post-processing explicitly
 - correctness thresholds should account for quantized ONNX output vs. Python reference
 - `--threads` is passed to PyTorch as `torch.set_num_threads(...)` and to LTEmbed as ONNX Runtime `with_intra_threads(...)`; the CSV `threads` column records this requested runner thread count
+- Historical note: before this fix, LTEmbed rows recorded the requested `--threads` value in the CSV while the engine actually ran with 1 intra-op thread; LTEmbed rows with `threads > 1` produced before the fix are mislabeled and must not be compared against post-fix runs (relevant when using `compare_benchmarks.py` across runs)

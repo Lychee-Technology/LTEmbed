@@ -315,6 +315,11 @@ mod tests {
             },
         )
         .unwrap();
+        // A zero vector stays zero — identical to the deleted l2_normalize_inplace
+        // (0 * 1/1e-12 = 0). The two implementations only diverged for tiny non-zero
+        // norms in (0, 1e-12): the helper divided by the 1e-12 floor (under-normalizing),
+        // the engine divides by the true norm. This test pins the engine's zero-vector
+        // behavior so the cleanup cannot change it.
         assert_eq!(embedding, vec![0.0_f32; 512]);
     }
 }

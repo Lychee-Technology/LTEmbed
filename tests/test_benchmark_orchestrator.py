@@ -207,7 +207,6 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
 
         self.assertIn('export LTEMBED_PROFILE="1"', workflow)
 
-
     def test_build_benchmark_command_passes_custom_threads_for_ltembed(self):
         bench = load_module()
         args = SimpleNamespace(

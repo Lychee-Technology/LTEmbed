@@ -351,7 +351,6 @@ def resolved_implementation_version(implementation: str, payload: dict[str, Any]
     return str(payload.get("implementation_version", ""))
 
 
-
 def log_progress(label: str, state: str, elapsed_seconds: float | None = None) -> None:
     timestamp = utc_now()
     suffix = ""
@@ -427,6 +426,7 @@ def base_row_fields(
         "max_ms": "",
         "cosine_similarity_vs_pytorch": "",
         "status": "pass",
+        # rows never override notes; the CSV column is always empty
         "notes": "",
     }
 
@@ -485,7 +485,6 @@ def collect_warm_rows(
                 timed_iters=args.iters,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=entry["stats"])
-
             rows.append(row)
     return rows, results
 
@@ -516,7 +515,6 @@ def collect_cold_rows(
                 timed_iters=1,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=payload["stats"])
-
             rows.append(row)
     return rows, results
 
@@ -565,7 +563,6 @@ def collect_correctness_rows(
                     cosine_similarity=average_similarity,
                     threshold=args.correctness_threshold,
                 )
-
             rows.append(row)
     return rows, payloads
 
@@ -657,7 +654,6 @@ def collect_retrieval_eval_rows(
                 timed_iters=0,
             )
             row = retrieval_eval_row_from_metrics(base_fields=base_fields, metrics=metrics)
-
             rows.append(row)
     return rows, payloads
 

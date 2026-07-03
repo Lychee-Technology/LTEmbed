@@ -93,6 +93,27 @@ class Scenario(dict):
         return self["texts"]
 
 
+class RunContext:
+    """Run-level fields shared by all row builders."""
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        timestamp_utc: str,
+        model_id: str,
+        model_source: str,
+        git_revision: str,
+        host: dict[str, str],
+    ):
+        self.run_id = run_id
+        self.timestamp_utc = timestamp_utc
+        self.model_id = model_id
+        self.model_source = model_source
+        self.git_revision = git_revision
+        self.host = host
+
+
 SCENARIOS = [
     Scenario(name="single/short", batch_size=1, text_profile="short", texts=(SHORT_TEXT,)),
     Scenario(name="single/medium", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)),
@@ -242,181 +263,83 @@ def cargo_run_prefix(cargo_features: str = "") -> list[str]:
     return command
 
 
-def ltembed_warm_command(args: argparse.Namespace) -> list[str]:
-    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
-    command.extend([
-        "--bin",
-        "benchmark_ltembed",
-        "--",
+def build_benchmark_command(
+    implementation: str,
+    mode: str,
+    args: argparse.Namespace,
+    scenario_name: str = "",
+) -> list[str]:
+    if implementation == "ltembed":
+        command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
+        command.extend(
+            ["--bin", "benchmark_ltembed", "--", "--mode", mode]
+        )
+        command.extend(
+            [
+                "--ort-bundle-dir",
+                str(args.ort_bundle_dir),
+                "--output-dimension",
+                str(args.output_dimension),
+                "--l2-normalize",
+                "true" if args.l2_normalize else "false",
+                "--threads",
+                str(args.threads),
+            ]
+        )
+        if mode == "warm":
+            command.extend(
+                ["--warmup", str(args.warmup), "--iters", str(args.iters)]
+            )
+            if getattr(args, "scenario", None):
+                command.extend(["--scenario", str(args.scenario)])
+        elif mode == "cold":
+            command.extend(["--scenario", scenario_name])
+        elif mode == "retrieval":
+            command.extend(
+                ["--retrieval-eval-path", str(args.retrieval_eval_path)]
+            )
+        return command
+
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "bench_pytorch.py"),
         "--mode",
-        "warm",
-        "--ort-bundle-dir",
-        str(args.ort_bundle_dir),
+        mode,
+        "--model-name-or-path",
+        str(args.model_dir),
         "--output-dimension",
         str(args.output_dimension),
         "--l2-normalize",
         "true" if args.l2_normalize else "false",
-        "--warmup",
-        str(args.warmup),
-        "--iters",
-        str(args.iters),
         "--threads",
         str(args.threads),
-    ])
-    if getattr(args, "scenario", None):
-        command.extend(["--scenario", str(args.scenario)])
+    ]
+    if mode == "warm":
+        command.extend(
+            ["--warmup", str(args.warmup), "--iters", str(args.iters)]
+        )
+    elif mode == "cold":
+        command.extend(["--scenario", scenario_name])
+    elif mode == "retrieval":
+        command.extend(
+            ["--retrieval-eval-path", str(args.retrieval_eval_path)]
+        )
     return command
-
-
-def ltembed_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", "")) + [
-        "--bin",
-        "benchmark_ltembed",
-        "--",
-        "--mode",
-        "cold",
-        "--scenario",
-        scenario_name,
-        "--ort-bundle-dir",
-        str(args.ort_bundle_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def ltembed_correctness_command(args: argparse.Namespace) -> list[str]:
-    return cargo_run_prefix(getattr(args, "ltembed_cargo_features", "")) + [
-        "--bin",
-        "benchmark_ltembed",
-        "--",
-        "--mode",
-        "correctness",
-        "--ort-bundle-dir",
-        str(args.ort_bundle_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def pytorch_warm_command(args: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable,
-        str(ROOT / "scripts" / "bench_pytorch.py"),
-        "--mode",
-        "warm",
-        "--model-name-or-path",
-        str(args.model_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--warmup",
-        str(args.warmup),
-        "--iters",
-        str(args.iters),
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def pytorch_cold_command(args: argparse.Namespace, scenario_name: str) -> list[str]:
-    return [
-        sys.executable,
-        str(ROOT / "scripts" / "bench_pytorch.py"),
-        "--mode",
-        "cold",
-        "--scenario",
-        scenario_name,
-        "--model-name-or-path",
-        str(args.model_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def pytorch_correctness_command(args: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable,
-        str(ROOT / "scripts" / "bench_pytorch.py"),
-        "--mode",
-        "correctness",
-        "--model-name-or-path",
-        str(args.model_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
-
-
-def ltembed_retrieval_command(args: argparse.Namespace) -> list[str]:
-    command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
-    command.extend([
-        "--bin",
-        "benchmark_ltembed",
-        "--",
-        "--mode",
-        "retrieval",
-        "--ort-bundle-dir",
-        str(args.ort_bundle_dir),
-        "--retrieval-eval-path",
-        str(args.retrieval_eval_path),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ])
-    return command
-
-
-def pytorch_retrieval_command(args: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable,
-        str(ROOT / "scripts" / "bench_pytorch.py"),
-        "--mode",
-        "retrieval",
-        "--model-name-or-path",
-        str(args.model_dir),
-        "--retrieval-eval-path",
-        str(args.retrieval_eval_path),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
 
 
 RUNNERS = {
     "ltembed": {
-        "warm": ltembed_warm_command,
-        "cold": ltembed_cold_command,
-        "correctness": ltembed_correctness_command,
-        "retrieval": ltembed_retrieval_command,
+        "warm": lambda args: build_benchmark_command("ltembed", "warm", args),
+        "cold": lambda args, scenario_name: build_benchmark_command("ltembed", "cold", args, scenario_name),
+        "correctness": lambda args: build_benchmark_command("ltembed", "correctness", args),
+        "retrieval": lambda args: build_benchmark_command("ltembed", "retrieval", args),
         "version": lambda: git_sha(),
     },
     "pytorch": {
-        "warm": pytorch_warm_command,
-        "cold": pytorch_cold_command,
-        "correctness": pytorch_correctness_command,
-        "retrieval": pytorch_retrieval_command,
+        "warm": lambda args: build_benchmark_command("pytorch", "warm", args),
+        "cold": lambda args, scenario_name: build_benchmark_command("pytorch", "cold", args, scenario_name),
+        "correctness": lambda args: build_benchmark_command("pytorch", "correctness", args),
+        "retrieval": lambda args: build_benchmark_command("pytorch", "retrieval", args),
         "version": lambda: "",
     },
 }
@@ -475,32 +398,27 @@ def run_json_command(command: list[str], label: str) -> dict[str, Any]:
 
 def base_row_fields(
     *,
-    run_id: str,
-    timestamp_utc: str,
-    model_id: str,
-    model_source: str,
+    ctx: RunContext,
     implementation: str,
     implementation_version: str,
-    git_revision: str,
     scenario: Scenario,
     mode: str,
     threads: int,
     warmup_iters: int,
     timed_iters: int,
-    host: dict[str, str],
 ) -> dict[str, str]:
     return {
-        "run_id": run_id,
-        "timestamp_utc": timestamp_utc,
-        "host_os": host["host_os"],
-        "host_arch": host["host_arch"],
-        "cpu_model": host["cpu_model"],
-        "runner_labels": host["runner_labels"],
-        "model_id": model_id,
-        "model_source": model_source,
+        "run_id": ctx.run_id,
+        "timestamp_utc": ctx.timestamp_utc,
+        "host_os": ctx.host["host_os"],
+        "host_arch": ctx.host["host_arch"],
+        "cpu_model": ctx.host["cpu_model"],
+        "runner_labels": ctx.host["runner_labels"],
+        "model_id": ctx.model_id,
+        "model_source": ctx.model_source,
         "implementation": implementation,
         "implementation_version": implementation_version,
-        "git_sha": git_revision,
+        "git_sha": ctx.git_revision,
         "scenario": scenario.name,
         "mode": mode,
         "batch_size": str(scenario.batch_size),
@@ -553,10 +471,7 @@ def retrieval_eval_row_from_metrics(
 def collect_warm_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {}
@@ -567,19 +482,14 @@ def collect_warm_rows(
         for entry in payload["results"]:
             scenario = scenario_from_name(entry["scenario"])
             base_fields = base_row_fields(
-                run_id=run_id,
-                timestamp_utc=timestamp_utc,
-                model_id=args.model_id,
-                model_source=args.model_source,
+                ctx=ctx,
                 implementation=implementation,
                 implementation_version=version,
-                git_revision=git_revision,
                 scenario=scenario,
                 mode="warm_latency",
                 threads=args.threads,
                 warmup_iters=args.warmup,
                 timed_iters=args.iters,
-                host=host,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=entry["stats"])
             row["notes"] = resolved_notes(implementation, payload, args)
@@ -590,10 +500,7 @@ def collect_warm_rows(
 def collect_cold_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
@@ -606,19 +513,14 @@ def collect_cold_rows(
             results[implementation][scenario.name] = payload
             version = resolved_implementation_version(implementation, payload)
             base_fields = base_row_fields(
-                run_id=run_id,
-                timestamp_utc=timestamp_utc,
-                model_id=args.model_id,
-                model_source=args.model_source,
+                ctx=ctx,
                 implementation=implementation,
                 implementation_version=version,
-                git_revision=git_revision,
                 scenario=scenario,
                 mode="cold_start",
                 threads=args.threads,
                 warmup_iters=0,
                 timed_iters=1,
-                host=host,
             )
             row = stats_row_from_runner(base_fields=base_fields, stats=payload["stats"])
             row["notes"] = resolved_notes(implementation, payload, args)
@@ -629,10 +531,7 @@ def collect_cold_rows(
 def collect_correctness_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
@@ -648,19 +547,14 @@ def collect_correctness_rows(
         for entry in payload["results"]:
             scenario = scenario_from_name(entry["scenario"])
             base_fields = base_row_fields(
-                run_id=run_id,
-                timestamp_utc=timestamp_utc,
-                model_id=args.model_id,
-                model_source=args.model_source,
+                ctx=ctx,
                 implementation=implementation,
                 implementation_version=version,
-                git_revision=git_revision,
                 scenario=scenario,
                 mode="correctness",
                 threads=args.threads,
                 warmup_iters=0,
                 timed_iters=0,
-                host=host,
             )
             if implementation == "pytorch":
                 row = build_correctness_row(base_fields=base_fields, cosine_similarity=1.0, threshold=1.0)
@@ -732,10 +626,7 @@ def compute_retrieval_metrics(
 def collect_retrieval_eval_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     retrieval_cases = load_retrieval_eval_cases(args.retrieval_eval_path)
     cases_by_name = {str(case["name"]): case for case in retrieval_cases}
@@ -763,19 +654,14 @@ def collect_retrieval_eval_rows(
                 texts=(),
             )
             base_fields = base_row_fields(
-                run_id=run_id,
-                timestamp_utc=timestamp_utc,
-                model_id=args.model_id,
-                model_source=args.model_source,
+                ctx=ctx,
                 implementation=implementation,
                 implementation_version=version,
-                git_revision=git_revision,
                 scenario=scenario,
                 mode="retrieval_eval",
                 threads=args.threads,
                 warmup_iters=0,
                 timed_iters=0,
-                host=host,
             )
             row = retrieval_eval_row_from_metrics(base_fields=base_fields, metrics=metrics)
             row["notes"] = resolved_notes(implementation, payload, args)
@@ -889,46 +775,31 @@ def _run(
     host: dict[str, str],
     rows: list[dict[str, str]],
 ) -> int:
-    warm_rows, warm_payloads = collect_warm_rows(
-        args=args,
+    ctx = RunContext(
         run_id=args.run_id,
         timestamp_utc=timestamp,
-        host=host,
+        model_id=args.model_id,
+        model_source=args.model_source,
         git_revision=git_revision,
+        host=host,
     )
+
+    warm_rows, warm_payloads = collect_warm_rows(args=args, ctx=ctx)
     rows.extend(warm_rows)
 
     cold_payloads = None
     if args.include_cold_start:
-        cold_rows, cold_payloads = collect_cold_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        cold_rows, cold_payloads = collect_cold_rows(args=args, ctx=ctx)
         rows.extend(cold_rows)
 
     correctness_payloads = None
     if args.include_correctness:
-        correctness_rows, correctness_payloads = collect_correctness_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        correctness_rows, correctness_payloads = collect_correctness_rows(args=args, ctx=ctx)
         rows.extend(correctness_rows)
 
     retrieval_payloads = None
     if args.include_retrieval_eval:
-        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(args=args, ctx=ctx)
         rows.extend(retrieval_rows)
 
     write_csv_report(rows, args.output_csv)

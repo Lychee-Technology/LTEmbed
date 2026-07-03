@@ -471,21 +471,10 @@ def retrieval_eval_row_from_metrics(
 def collect_warm_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {}
-    ctx = RunContext(
-        run_id=run_id,
-        timestamp_utc=timestamp_utc,
-        model_id=args.model_id,
-        model_source=args.model_source,
-        git_revision=git_revision,
-        host=host,
-    )
     for implementation, runner in RUNNERS.items():
         payload = run_json_command(runner["warm"](args), f"{implementation} warm")
         results[implementation] = payload
@@ -511,21 +500,10 @@ def collect_warm_rows(
 def collect_cold_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
-    ctx = RunContext(
-        run_id=run_id,
-        timestamp_utc=timestamp_utc,
-        model_id=args.model_id,
-        model_source=args.model_source,
-        git_revision=git_revision,
-        host=host,
-    )
     for scenario in SCENARIOS:
         for implementation, runner in RUNNERS.items():
             payload = run_json_command(
@@ -553,21 +531,10 @@ def collect_cold_rows(
 def collect_correctness_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
-    ctx = RunContext(
-        run_id=run_id,
-        timestamp_utc=timestamp_utc,
-        model_id=args.model_id,
-        model_source=args.model_source,
-        git_revision=git_revision,
-        host=host,
-    )
     for implementation, runner in RUNNERS.items():
         payloads[implementation] = run_json_command(
             runner["correctness"](args),
@@ -659,23 +626,12 @@ def compute_retrieval_metrics(
 def collect_retrieval_eval_rows(
     *,
     args: argparse.Namespace,
-    run_id: str,
-    timestamp_utc: str,
-    host: dict[str, str],
-    git_revision: str,
+    ctx: RunContext,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     retrieval_cases = load_retrieval_eval_cases(args.retrieval_eval_path)
     cases_by_name = {str(case["name"]): case for case in retrieval_cases}
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
-    ctx = RunContext(
-        run_id=run_id,
-        timestamp_utc=timestamp_utc,
-        model_id=args.model_id,
-        model_source=args.model_source,
-        git_revision=git_revision,
-        host=host,
-    )
 
     for implementation, runner in RUNNERS.items():
         payload = run_json_command(
@@ -819,46 +775,31 @@ def _run(
     host: dict[str, str],
     rows: list[dict[str, str]],
 ) -> int:
-    warm_rows, warm_payloads = collect_warm_rows(
-        args=args,
+    ctx = RunContext(
         run_id=args.run_id,
         timestamp_utc=timestamp,
-        host=host,
+        model_id=args.model_id,
+        model_source=args.model_source,
         git_revision=git_revision,
+        host=host,
     )
+
+    warm_rows, warm_payloads = collect_warm_rows(args=args, ctx=ctx)
     rows.extend(warm_rows)
 
     cold_payloads = None
     if args.include_cold_start:
-        cold_rows, cold_payloads = collect_cold_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        cold_rows, cold_payloads = collect_cold_rows(args=args, ctx=ctx)
         rows.extend(cold_rows)
 
     correctness_payloads = None
     if args.include_correctness:
-        correctness_rows, correctness_payloads = collect_correctness_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        correctness_rows, correctness_payloads = collect_correctness_rows(args=args, ctx=ctx)
         rows.extend(correctness_rows)
 
     retrieval_payloads = None
     if args.include_retrieval_eval:
-        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(
-            args=args,
-            run_id=args.run_id,
-            timestamp_utc=timestamp,
-            host=host,
-            git_revision=git_revision,
-        )
+        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(args=args, ctx=ctx)
         rows.extend(retrieval_rows)
 
     write_csv_report(rows, args.output_csv)

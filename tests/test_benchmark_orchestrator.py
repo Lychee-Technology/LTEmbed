@@ -316,13 +316,15 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
                 "run_json_command",
                 return_value=mock_payload,
             ) as run_mock:
-                rows, payloads = bench.collect_retrieval_eval_rows(
-                    args=args,
+                ctx = bench.RunContext(
                     run_id="run-1",
                     timestamp_utc="2026-01-01T00:00:00+00:00",
-                    host=host,
+                    model_id=args.model_id,
+                    model_source=args.model_source,
                     git_revision="abc123",
+                    host=host,
                 )
+                rows, payloads = bench.collect_retrieval_eval_rows(args=args, ctx=ctx)
 
         self.assertEqual(len(rows), 2)
         self.assertEqual(run_mock.call_count, 2)

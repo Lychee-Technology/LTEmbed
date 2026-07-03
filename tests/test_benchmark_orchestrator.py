@@ -603,15 +603,35 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
                 self.assertEqual(ret_lt["recall_at_3"], "1.000000")
                 self.assertEqual(ret_lt["mrr_at_3"], "0.750000")
 
-                # summary
-                self.assertTrue(output_summary.exists())
-                summary_text = output_summary.read_text()
-                self.assertIn("run_id=golden-001", summary_text)
-                self.assertIn("cold_start=enabled", summary_text)
-                self.assertIn("correctness=enabled", summary_text)
-                self.assertIn("retrieval_eval=enabled", summary_text)
-                self.assertIn("ltembed_version=sha123", summary_text)
-                self.assertIn("pytorch_version=2.5.0", summary_text)
+                # written CSV must match the collected rows exactly
+                with output_csv.open(newline="") as fh:
+                    reader = csv.DictReader(fh)
+                    self.assertEqual(reader.fieldnames, bench.CSV_FIELDNAMES)
+                    csv_rows = list(reader)
+                expected_csv_rows = [
+                    {field: row.get(field, "") for field in bench.CSV_FIELDNAMES}
+                    for row in rows
+                ]
+                self.assertEqual(csv_rows, expected_csv_rows)
+
+                # summary must match line for line
+                self.assertEqual(
+                    output_summary.read_text().splitlines(),
+                    [
+                        "run_id=golden-001",
+                        "git_sha=abc123",
+                        "model_id=test-model",
+                        "model_source=huggingface",
+                        f"python_version={bench.python_version()}",
+                        f"rust_version={bench.rust_version()}",
+                        "ltembed_version=sha123",
+                        "pytorch_version=2.5.0",
+                        "transformers_version=4.45.0",
+                        "cold_start=enabled",
+                        "correctness=enabled",
+                        "retrieval_eval=enabled",
+                    ],
+                )
 
 
 if __name__ == "__main__":

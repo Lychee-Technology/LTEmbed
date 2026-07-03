@@ -112,13 +112,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir() -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        static UNIQUE_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}-{counter}"))
+        let counter = UNIQUE_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("ltembed-bundle-unit-tests-{nanos}-{counter}"))
     }
 
     #[test]

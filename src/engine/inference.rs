@@ -302,4 +302,19 @@ mod tests {
             LTEmbedError::Inference(InferenceError::AllPadding)
         ));
     }
+
+    #[test]
+    fn test_postprocess_embedding_preserves_zero_vector_after_normalization() {
+        let raw = vec![0.0_f32; RAW_EMBEDDING_DIMENSION];
+        let embedding = postprocess_embedding(
+            &raw,
+            RAW_EMBEDDING_DIMENSION,
+            OnnxEngineConfig {
+                output_dimension: 512,
+                l2_normalize: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(embedding, vec![0.0_f32; 512]);
+    }
 }

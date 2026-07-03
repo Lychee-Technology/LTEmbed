@@ -233,36 +233,6 @@ fn test_invalid_input_kind_returns_model_load_error() {
 }
 
 #[test]
-fn test_legacy_q4f16_metadata_aliases_load() {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
-    write_build_info(
-        &temp_dir,
-        r#"{
-  "target_id": "legacy-q4f16",
-  "model_metadata": {
-    "model_format": "ort",
-    "pooling": "lasttoken",
-    "input_kind": "text",
-    "query_prefix": "Query: ",
-    "document_prefix": "Document: ",
-    "raw_embedding_dimension": 768,
-    "output_embedding_dimension": 768,
-    "max_length": 8192
-  }
-}"#,
-    );
-
-    // Must not fail: legacy aliases "text" and "lasttoken" are accepted.
-    let _result =
-        OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default()).unwrap();
-    fs::remove_dir_all(temp_dir).unwrap();
-}
-
-#[test]
 fn test_invalid_pooling_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();

@@ -104,3 +104,54 @@ pub(crate) fn resolve_dylib_path(bundle_dir: &Path) -> Option<PathBuf> {
         bundle_dylib.exists().then_some(bundle_dylib)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}-{counter}"))
+    }
+
+    #[test]
+    fn test_legacy_q4f16_metadata_aliases_are_accepted() {
+        let temp_dir = unique_temp_dir();
+        fs::create_dir_all(&temp_dir).unwrap();
+        let build_info_path = temp_dir.join("build-info.json");
+
+        fs::write(
+            &build_info_path,
+            r#"{
+  "target_id": "legacy-q4f16",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "lasttoken",
+    "input_kind": "text",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
+        )
+        .unwrap();
+
+        let spec = ModelSpec::from_build_info(&build_info_path).unwrap();
+
+        assert_eq!(spec.query_prefix, "Query: ");
+        assert_eq!(spec.document_prefix, "Document: ");
+        assert_eq!(spec.raw_embedding_dimension, RAW_EMBEDDING_DIMENSION);
+        assert_eq!(spec.max_length, MAX_LENGTH);
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+}

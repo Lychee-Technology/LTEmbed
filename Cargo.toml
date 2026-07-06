@@ -10,7 +10,16 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
+# default-features off: `download-binaries` (compile-time onnxruntime fetch) and
+# `tls-native` (ureq → openssl-sys) are useless under load-dynamic — the dylib
+# ships in the ort bundle — and break consumers on runners without OpenSSL headers.
+ort = { version = "2.0.0-rc.12", default-features = false, features = [
+    "std",
+    "ndarray",
+    "tracing",
+    "api-24",
+    "load-dynamic",
+] }
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
 tokenizers = "0.22"

@@ -172,7 +172,7 @@ def build_report(results: list[dict[str, Any]]) -> str:
     parts.append("")
     parts.append(
         "_Cosine columns compare each quant's embeddings against the full-precision PyTorch "
-        "(FP32) model on the same jane-austen text; higher is closer to the reference._"
+        "(FP32) model on the same CN/EN sentences; higher is closer to the reference._"
     )
     parts.append("")
     return "\n".join(parts)

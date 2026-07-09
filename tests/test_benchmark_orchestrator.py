@@ -398,8 +398,11 @@ class RunTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         modes = [r["mode"] for r in rows]
-        self.assertEqual(modes.count("warm_latency"), 4)   # 2 impls x 2 scenarios
-        self.assertEqual(modes.count("cold_start"), 4)     # 2 impls x 2 scenarios
+        # latency is ltembed-only in every mode; pytorch never runs a latency pass.
+        self.assertEqual(modes.count("warm_latency"), 2)   # ltembed only x 2 scenarios
+        self.assertEqual(modes.count("cold_start"), 2)     # ltembed only x 2 scenarios
+        self.assertTrue(all(r["implementation"] == "ltembed"
+                             for r in rows if r["mode"] in ("warm_latency", "cold_start")))
         # correctness is derived from retrieval documents, ltembed-only (2 docs: _zh, _en)
         correctness_rows = [r for r in rows if r["mode"] == "correctness"]
         self.assertEqual(len(correctness_rows), 2)

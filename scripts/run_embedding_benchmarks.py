@@ -826,12 +826,13 @@ def _run(
 
     resolve_fixture_if_present(args)
 
-    # Reference-consume mode: PyTorch (a quant-independent baseline) never runs here. Latency
-    # passes are ltembed-only; correctness/retrieval load the PyTorch baseline from the reference.
+    # PyTorch never runs a latency pass in any mode (it only provides retrieval embeddings, either
+    # live via embedding_impls or pre-computed in the reference). Latency passes are always
+    # ltembed-only; correctness/retrieval load the PyTorch baseline from the reference when present.
     reference: dict[str, Any] | None = None
     if getattr(args, "reference_path", None) is not None:
         reference = json.loads(Path(args.reference_path).read_text(encoding="utf-8"))
-    latency_impls = ["ltembed"] if reference is not None else ["ltembed", "pytorch"]
+    latency_impls = ["ltembed"]
     embedding_impls = ["ltembed", "pytorch"]
 
     warm_rows, warm_payloads = collect_warm_rows(args=args, ctx=ctx, implementations=latency_impls)

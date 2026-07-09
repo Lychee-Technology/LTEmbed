@@ -17,7 +17,6 @@ use std::time::Instant;
 enum Mode {
     Warm,
     Cold,
-    Correctness,
     Retrieval,
     Other(String),
 }
@@ -27,7 +26,6 @@ impl From<&str> for Mode {
         match value {
             "warm" => Mode::Warm,
             "cold" => Mode::Cold,
-            "correctness" => Mode::Correctness,
             "retrieval" => Mode::Retrieval,
             other => Mode::Other(other.to_string()),
         }
@@ -113,23 +111,10 @@ struct StatsEntry {
 }
 
 #[derive(Serialize)]
-struct EmbeddingsEntry {
-    scenario: String,
-    embeddings: Vec<Vec<f32>>,
-}
-
-#[derive(Serialize)]
 struct WarmPayload {
     implementation: &'static str,
     implementation_version: String,
     results: Vec<StatsEntry>,
-}
-
-#[derive(Serialize)]
-struct CorrectnessPayload {
-    implementation: &'static str,
-    implementation_version: String,
-    results: Vec<EmbeddingsEntry>,
 }
 
 #[derive(Serialize)]
@@ -571,30 +556,6 @@ fn run_cold_mode(
     })
 }
 
-fn run_correctness_mode(
-    args: &Args,
-    fixture: Option<&ResolvedFixture>,
-    implementation_version: &str,
-) -> Result<CorrectnessPayload, Box<dyn std::error::Error>> {
-    let engine = engine_from_bundle_dir(args)?;
-    let mut results = Vec::new();
-    let scenarios = resolve_scenarios(args)?;
-    for scenario in scenarios {
-        emit_progress("correctness", scenario.name, "start");
-        let embeddings = run_scenario(&engine, scenario.name, fixture)?;
-        emit_progress("correctness", scenario.name, "done");
-        results.push(EmbeddingsEntry {
-            scenario: scenario.name.to_string(),
-            embeddings,
-        });
-    }
-    Ok(CorrectnessPayload {
-        implementation: "ltembed",
-        implementation_version: implementation_version.to_string(),
-        results,
-    })
-}
-
 fn run_retrieval_mode(
     args: &Args,
     implementation_version: &str,
@@ -668,10 +629,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout(),
             &run_cold_mode(&args, fixture, &implementation_version)?,
         )?,
-        Mode::Correctness => serde_json::to_writer(
-            io::stdout(),
-            &run_correctness_mode(&args, fixture, &implementation_version)?,
-        )?,
         Mode::Retrieval => serde_json::to_writer(
             io::stdout(),
             &run_retrieval_mode(&args, &implementation_version)?,
@@ -718,7 +675,7 @@ mod tests {
             "--mode",
             "cold",
             "--scenario",
-            "single/medium",
+            "single/zh",
             "--bundle-dir",
             "gguf_bundle",
             "--output-dimension",
@@ -729,24 +686,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.mode, Mode::Cold);
-    }
-
-    #[test]
-    fn test_parse_args_maps_correctness_mode_to_typed_variant() {
-        let args = parse_args_from([
-            "benchmark_ltembed",
-            "--mode",
-            "correctness",
-            "--bundle-dir",
-            "gguf_bundle",
-            "--output-dimension",
-            "512",
-            "--l2-normalize",
-            "true",
-        ])
-        .unwrap();
-
-        assert_eq!(args.mode, Mode::Correctness);
     }
 
     #[test]
@@ -774,7 +713,7 @@ mod tests {
             "--mode",
             "warm",
             "--scenario",
-            "single/medium",
+            "single/zh",
             "--bundle-dir",
             "gguf_bundle",
             "--output-dimension",
@@ -785,7 +724,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.mode, Mode::Warm);
-        assert_eq!(args.scenario.as_deref(), Some("single/medium"));
+        assert_eq!(args.scenario.as_deref(), Some("single/zh"));
         assert_eq!(args.bundle_dir, PathBuf::from("gguf_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
@@ -859,8 +798,8 @@ mod tests {
     #[test]
     fn test_progress_label_includes_mode_scenario_and_state() {
         assert_eq!(
-            progress_label("correctness", "batch/mixed/8", "start"),
-            "correctness batch/mixed/8 start"
+            progress_label("warm", "single/zh", "start"),
+            "warm single/zh start"
         );
     }
 
@@ -884,7 +823,7 @@ mod tests {
     #[test]
     fn test_profile_summary_line_renders_parseable_key_values() {
         let line = profile_summary_line(
-            "single/short",
+            "single/zh",
             3,
             EmbedBatchProfile {
                 batch_size: 1,
@@ -901,7 +840,7 @@ mod tests {
 
         assert_eq!(
             line,
-            "profile single/short samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
+            "profile single/zh samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
         );
     }
 
@@ -911,7 +850,7 @@ mod tests {
             implementation: "ltembed",
             implementation_version: "test-sha".to_string(),
             results: vec![StatsEntry {
-                scenario: "single/medium".to_string(),
+                scenario: "single/zh".to_string(),
                 stats: LatencyStats::from_samples_ms(&[12.0, 18.0]).unwrap(),
             }],
         };
@@ -920,7 +859,7 @@ mod tests {
 
         assert_eq!(value["implementation"], json!("ltembed"));
         assert_eq!(value["implementation_version"], json!("test-sha"));
-        assert_eq!(value["results"][0]["scenario"], json!("single/medium"));
+        assert_eq!(value["results"][0]["scenario"], json!("single/zh"));
         assert!(value["results"][0]["stats"]["mean_ms"].is_number());
         assert!(value["results"][0]["stats"]["median_ms"].is_number());
         assert!(value["results"][0]["stats"]["p95_ms"].is_number());
@@ -934,7 +873,7 @@ mod tests {
         let payload = ColdPayload {
             implementation: "ltembed",
             implementation_version: "test-sha".to_string(),
-            scenario: "single/medium".to_string(),
+            scenario: "single/zh".to_string(),
             stats: LatencyStats::from_samples_ms(&[25.0]).unwrap(),
         };
 
@@ -942,41 +881,13 @@ mod tests {
 
         assert_eq!(value["implementation"], json!("ltembed"));
         assert_eq!(value["implementation_version"], json!("test-sha"));
-        assert_eq!(value["scenario"], json!("single/medium"));
+        assert_eq!(value["scenario"], json!("single/zh"));
         assert!(value["stats"]["mean_ms"].is_number());
         assert!(value["stats"]["median_ms"].is_number());
         assert!(value["stats"]["p95_ms"].is_number());
         assert!(value["stats"]["p99_ms"].is_number());
         assert!(value["stats"]["min_ms"].is_number());
         assert!(value["stats"]["max_ms"].is_number());
-    }
-
-    #[test]
-    fn test_correctness_payload_serializes_current_json_shape() {
-        let payload = CorrectnessPayload {
-            implementation: "ltembed",
-            implementation_version: "test-sha".to_string(),
-            results: vec![EmbeddingsEntry {
-                scenario: "single/medium".to_string(),
-                embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
-            }],
-        };
-
-        let value = serde_json::to_value(payload).unwrap();
-
-        assert_eq!(
-            value,
-            json!({
-                "implementation": "ltembed",
-                "implementation_version": "test-sha",
-                "results": [
-                    {
-                        "scenario": "single/medium",
-                        "embeddings": [[0.1_f32, 0.2_f32], [0.3_f32, 0.4_f32]]
-                    }
-                ]
-            })
-        );
     }
 
     #[test]
@@ -1157,55 +1068,46 @@ mod tests {
     #[test]
     fn test_scenario_inputs_resolved_uses_fixture_when_present() {
         let fixture: ResolvedFixture = serde_json::from_str(
-            r#"{
-                "scenarios": {
-                    "single/short": [{"kind": "query", "text": "It is a truth universally acknowledged"}],
-                    "batch/mixed/8": [
-                        {"kind": "query", "text": "q text"},
-                        {"kind": "document", "text": "d text"}
-                    ]
-                }
-            }"#,
+            r#"{ "scenarios": {
+                "single/zh": [{"kind": "query", "text": "他感冒了"}],
+                "single/en": [{"kind": "document", "text": "He caught a cold."}]
+            } }"#,
         )
         .unwrap();
-
-        let inputs = scenario_inputs_resolved("single/short", Some(&fixture)).unwrap();
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].kind, EmbeddingInputKind::Query);
-        assert_eq!(inputs[0].text, "It is a truth universally acknowledged");
-
-        let mixed = scenario_inputs_resolved("batch/mixed/8", Some(&fixture)).unwrap();
-        assert_eq!(mixed.len(), 2);
-        assert_eq!(mixed[1].kind, EmbeddingInputKind::Document);
-        assert_eq!(mixed[1].text, "d text");
+        let zh = scenario_inputs_resolved("single/zh", Some(&fixture)).unwrap();
+        assert_eq!(zh.len(), 1);
+        assert_eq!(zh[0].kind, EmbeddingInputKind::Query);
+        let en = scenario_inputs_resolved("single/en", Some(&fixture)).unwrap();
+        assert_eq!(en.len(), 1);
+        assert_eq!(en[0].kind, EmbeddingInputKind::Document);
     }
 
     #[test]
     fn test_scenario_inputs_resolved_falls_back_to_builtin_without_fixture() {
-        let inputs = scenario_inputs_resolved("single/short", None).unwrap();
+        let inputs = scenario_inputs_resolved("single/zh", None).unwrap();
         assert_eq!(
             inputs,
-            scenario_inputs(scenario_by_name("single/short").unwrap())
+            scenario_inputs(scenario_by_name("single/zh").unwrap())
         );
     }
 
     #[test]
     fn test_scenario_inputs_resolved_errors_on_missing_scenario_in_fixture() {
         let fixture: ResolvedFixture =
-            serde_json::from_str(r#"{"scenarios": {"single/short": []}}"#).unwrap();
-        let err = scenario_inputs_resolved("single/medium", Some(&fixture)).unwrap_err();
+            serde_json::from_str(r#"{"scenarios": {"single/zh": []}}"#).unwrap();
+        let err = scenario_inputs_resolved("single/en", Some(&fixture)).unwrap_err();
         assert!(err
             .to_string()
-            .contains("fixture is missing scenario: single/medium"));
+            .contains("fixture is missing scenario: single/en"));
     }
 
     #[test]
     fn test_scenario_inputs_resolved_errors_on_unknown_kind() {
         let fixture: ResolvedFixture = serde_json::from_str(
-            r#"{"scenarios": {"single/short": [{"kind": "passage", "text": "x"}]}}"#,
+            r#"{"scenarios": {"single/zh": [{"kind": "passage", "text": "x"}]}}"#,
         )
         .unwrap();
-        let err = scenario_inputs_resolved("single/short", Some(&fixture)).unwrap_err();
+        let err = scenario_inputs_resolved("single/zh", Some(&fixture)).unwrap_err();
         assert!(err.to_string().contains("unknown kind: passage"));
     }
 

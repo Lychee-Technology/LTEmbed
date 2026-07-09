@@ -11,6 +11,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep Cargo's home inside the workspace so actions/cache archives paths with zero `../`
+  # hops. Home-relative caches bake in a fixed number of parent-dir traversals at save time,
+  # which breaks restore when the runner's workspace depth differs (e.g. a cache saved on a
+  # self-hosted runner failing to extract on a GitHub-hosted one).
+  CARGO_HOME: ${{ github.workspace }}/.cargo
   # Prebuilt static llama.cpp archives the crate links against (see build.rs). The crate
   # cannot build without these, so every job fetches + verifies them and exports
   # STATIC_LLAMA_DIR before running cargo.
@@ -20,7 +25,7 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
@@ -33,12 +38,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo/registry
+            .cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       - name: Fetch prebuilt static llama.cpp artifacts
         env:
@@ -59,7 +64,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v6
@@ -73,12 +78,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo/registry
+            .cargo/git
             target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-lint-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-lint-
+            ${{ runner.os }}-cargo-lint-v2-
 
       - name: Fetch prebuilt static llama.cpp artifacts
         env:

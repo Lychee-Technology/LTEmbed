@@ -40,12 +40,11 @@ def ltembed_args(**overrides):
 
 
 class CommandBuilderTests(unittest.TestCase):
-    def test_scenarios_include_batch_mixed_profile(self):
+    def test_scenarios_are_single_zh_and_en(self):
         bench = load_module()
-        scenario = bench.scenario_from_name("batch/mixed/8")
-        self.assertEqual(scenario.name, "batch/mixed/8")
-        self.assertEqual(scenario.batch_size, 8)
-        self.assertEqual(scenario.text_profile, "mixed")
+        self.assertEqual([s.name for s in bench.SCENARIOS], ["single/zh", "single/en"])
+        self.assertTrue(all(s.batch_size == 1 for s in bench.SCENARIOS))
+        self.assertEqual(bench.scenario_from_name("single/zh").text_profile, "zh")
 
     def test_ltembed_command_uses_bundle_dir_and_mode(self):
         bench = load_module()
@@ -105,52 +104,6 @@ class CommandBuilderTests(unittest.TestCase):
         command = bench.build_benchmark_command("pytorch", "retrieval", args)
         self.assertIn("--retrieval-eval-path", command)
         self.assertIn("cn_en.json", command)
-
-
-class CorpusAndFixtureTests(unittest.TestCase):
-    def test_load_corpus_texts_sorts_by_length_and_skips_empty(self):
-        bench = load_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "corpus.jsonl"
-            path.write_text(
-                "\n".join(
-                    [
-                        json.dumps({"text": "medium chunk here", "token_count": 50, "position": 1}),
-                        json.dumps({"text": "", "token_count": 5, "position": 2}),
-                        json.dumps({"text": "tiny", "token_count": 3, "position": 3}),
-                        "   ",
-                        json.dumps({"text": "the longest chunk", "token_count": 900, "position": 4}),
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            texts = bench.load_corpus_texts(path)
-        self.assertEqual(texts, ["tiny", "medium chunk here", "the longest chunk"])
-
-    def test_resolve_fixture_selects_distinct_batches_and_kinds(self):
-        bench = load_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "corpus.jsonl"
-            path.write_text(
-                "\n".join(
-                    json.dumps({"text": f"chunk number {i}", "token_count": i, "position": i})
-                    for i in range(1, 41)
-                ),
-                encoding="utf-8",
-            )
-            fixture = bench.resolve_fixture(path, bench.SCENARIOS)
-
-        scenarios = fixture["scenarios"]
-        self.assertEqual(list(scenarios.keys()), [s.name for s in bench.SCENARIOS])
-        self.assertEqual(scenarios["single/short"][0]["kind"], "query")
-        self.assertEqual(scenarios["single/long"][0]["kind"], "document")
-        batch = scenarios["batch/medium/8"]
-        self.assertEqual(len(batch), 8)
-        self.assertEqual(len({item["text"] for item in batch}), 8)
-        mixed = scenarios["batch/mixed/8"]
-        self.assertEqual(len(mixed), 8)
-        self.assertEqual(mixed[0]["kind"], "query")
-        self.assertEqual(mixed[2]["kind"], "document")
 
 
 class CsvAndRowTests(unittest.TestCase):
@@ -427,7 +380,7 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             bench, args = self._make_args(tmp)
-            scenarios = ["single/short", "batch/mixed/8"]
+            scenarios = ["single/zh", "single/en"]
             code, rows, run_mock = self._run_with_mocks(bench, args, scenarios)
 
         self.assertEqual(code, 0)
@@ -446,7 +399,7 @@ class RunTests(unittest.TestCase):
     def test_reference_mode_skips_pytorch_latency(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            scenarios = ["single/short", "single/medium"]
+            scenarios = ["single/zh", "single/en"]
             reference = {
                 "correctness": self._embeddings_payload("pytorch", "2.5.0", scenarios),
                 "retrieval": self._retrieval_payload("pytorch", "2.5.0"),

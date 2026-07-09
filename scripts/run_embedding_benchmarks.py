@@ -102,11 +102,8 @@ class RunContext:
 
 
 SCENARIOS = [
-    Scenario(name="single/short", batch_size=1, text_profile="short"),
-    Scenario(name="single/medium", batch_size=1, text_profile="medium"),
-    Scenario(name="single/long", batch_size=1, text_profile="long"),
-    Scenario(name="batch/medium/8", batch_size=8, text_profile="medium"),
-    Scenario(name="batch/mixed/8", batch_size=8, text_profile="mixed"),
+    Scenario(name="single/zh", batch_size=1, text_profile="zh"),
+    Scenario(name="single/en", batch_size=1, text_profile="en"),
 ]
 SCENARIO_BY_NAME = {scenario.name: scenario for scenario in SCENARIOS}
 
@@ -216,77 +213,6 @@ def scenario_from_name(name: str) -> Scenario:
         return SCENARIO_BY_NAME[name]
     except KeyError as exc:
         raise ValueError(f"unknown scenario: {name}") from exc
-
-
-def load_corpus_texts(jsonl_path: Path) -> list[str]:
-    """Read a JSONL corpus (e.g. jane-austen), returning non-empty texts sorted by length.
-
-    Sorting by (token_count, position) is fully deterministic, so every quant job and both
-    runners select byte-identical chunks from the same file.
-    """
-    texts: list[tuple[int, int, str]] = []
-    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        record = json.loads(line)
-        text = (record.get("text") or "").strip()
-        if not text:
-            continue
-        token_count = int(record.get("token_count", len(text.split())))
-        position = int(record.get("position", len(texts)))
-        texts.append((token_count, position, text))
-    if not texts:
-        raise ValueError(f"no usable 'text' records in {jsonl_path}")
-    texts.sort(key=lambda item: (item[0], item[1]))
-    return [text for _, _, text in texts]
-
-
-def resolve_fixture(jsonl_path: Path, scenarios: list[Scenario]) -> dict[str, Any]:
-    """Select per-scenario texts from a corpus, keyed by scenario name.
-
-    For each scenario we emit exactly ``batch_size`` inputs, chosen by ``text_profile``:
-    short/medium/long pull from the short/median/long ends of the length distribution, and
-    batches draw *distinct* chunks so latency and cosine-vs-FP32 see real variety.
-    """
-    corpus = load_corpus_texts(jsonl_path)
-    n = len(corpus)
-    short_text = corpus[0]
-    long_text = corpus[-1]
-
-    def medium_at(index: int) -> str:
-        # Distinct chunks stepping outward from the median.
-        return corpus[(n // 2 + index) % n]
-
-    def spread_at(index: int, count: int) -> str:
-        # Evenly spread across the whole distribution for mixed batches.
-        return corpus[(n * (index + 1) // (count + 1)) % n]
-
-    resolved: dict[str, list[dict[str, str]]] = {}
-    for scenario in scenarios:
-        batch_size = scenario.batch_size
-        profile = scenario.text_profile
-        items: list[dict[str, str]] = []
-        if profile == "short":
-            items = [{"kind": "query", "text": short_text} for _ in range(batch_size)]
-        elif profile == "long":
-            items = [{"kind": "document", "text": long_text} for _ in range(batch_size)]
-        elif profile == "mixed":
-            base = [
-                {"kind": "query", "text": short_text},
-                {"kind": "query", "text": medium_at(0)},
-                {"kind": "document", "text": long_text},
-            ]
-            for i in range(batch_size):
-                if i < len(base):
-                    items.append(base[i])
-                else:
-                    kind = "query" if i % 2 == 0 else "document"
-                    items.append({"kind": kind, "text": spread_at(i, batch_size)})
-        else:  # "medium" and any other profile default to medium chunks
-            items = [{"kind": "query", "text": medium_at(k)} for k in range(batch_size)]
-        resolved[scenario.name] = items
-    return {"source": str(jsonl_path), "scenarios": resolved}
 
 
 def load_retrieval_eval_cases(path: Path) -> list[dict[str, Any]]:
@@ -814,9 +740,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Optional JSONL corpus (e.g. jane-austen). When set, per-scenario texts are "
-            "selected from it and fed identically to both runners so the cosine comparison "
-            "reflects real prose. Omit to use the built-in synthetic texts."
+            "Pre-resolved CN/EN latency fixture (scenarios -> texts) produced by "
+            "build_cn_en_retrieval_cases.py --fixture-output."
         ),
     )
     parser.add_argument(
@@ -863,17 +788,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_fixture_if_present(args: argparse.Namespace) -> None:
-    """Resolve per-scenario texts from a corpus once and point ``resolved_fixture_path`` at them.
+    """Point the runners at the already-resolved CN/EN latency fixture.
 
-    ``resolve_fixture`` is deterministic, so the reference producer and every quant job select
-    byte-identical inputs from the same corpus (required for a valid cosine comparison).
+    The generator writes the fixture in the runners' resolved format
+    (``{"scenarios": {name: [{"kind","text"}]}}``), so there is nothing to resolve here.
     """
     if getattr(args, "fixture_path", None):
-        resolved = resolve_fixture(args.fixture_path, SCENARIOS)
-        resolved_path = args.output_csv.parent / "resolved_fixture.json"
-        resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved_path.write_text(json.dumps(resolved, indent=2, ensure_ascii=False), encoding="utf-8")
-        args.resolved_fixture_path = resolved_path
+        args.resolved_fixture_path = args.fixture_path
 
 
 def main() -> int:

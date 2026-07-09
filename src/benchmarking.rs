@@ -26,36 +26,20 @@ pub struct BenchmarkInput {
     pub kind: EmbeddingInputKind,
 }
 
-pub const SHORT_TEXT: &str = "Hello, world!";
-pub const MEDIUM_TEXT: &str =
-    "What is the impact of large language models on software engineering productivity?";
+pub const ZH_TEXT: &str = "他感冒了";
+pub const EN_TEXT: &str = "He caught a cold.";
 pub const BENCHMARK_MAX_LENGTH: usize = 8192;
 
-const BENCHMARK_SCENARIOS: [BenchmarkScenario; 5] = [
+const BENCHMARK_SCENARIOS: [BenchmarkScenario; 2] = [
     BenchmarkScenario {
-        name: "single/short",
+        name: "single/zh",
         batch_size: 1,
-        text_profile: "short",
+        text_profile: "zh",
     },
     BenchmarkScenario {
-        name: "single/medium",
+        name: "single/en",
         batch_size: 1,
-        text_profile: "medium",
-    },
-    BenchmarkScenario {
-        name: "single/long",
-        batch_size: 1,
-        text_profile: "long",
-    },
-    BenchmarkScenario {
-        name: "batch/medium/8",
-        batch_size: 8,
-        text_profile: "medium",
-    },
-    BenchmarkScenario {
-        name: "batch/mixed/8",
-        batch_size: 8,
-        text_profile: "mixed",
+        text_profile: "en",
     },
 ];
 
@@ -80,22 +64,8 @@ pub fn selected_scenarios(name: Option<&str>) -> Result<Vec<&'static BenchmarkSc
 
 pub fn scenario_inputs(scenario: &BenchmarkScenario) -> Vec<BenchmarkInput> {
     match scenario.name {
-        "single/short" => vec![query_input(SHORT_TEXT)],
-        "single/medium" => vec![query_input(MEDIUM_TEXT)],
-        "single/long" => vec![document_input(&long_text())],
-        "batch/medium/8" => std::iter::repeat_with(|| query_input(MEDIUM_TEXT))
-            .take(scenario.batch_size)
-            .collect(),
-        "batch/mixed/8" => vec![
-            query_input(SHORT_TEXT),
-            query_input(MEDIUM_TEXT),
-            document_input(&long_text()),
-            query_input(SHORT_TEXT),
-            query_input(MEDIUM_TEXT),
-            document_input(&long_text()),
-            query_input(SHORT_TEXT),
-            query_input(MEDIUM_TEXT),
-        ],
+        "single/zh" => vec![query_input(ZH_TEXT)],
+        "single/en" => vec![query_input(EN_TEXT)],
         _ => Vec::new(),
     }
 }
@@ -115,21 +85,10 @@ pub fn scenario_token_lengths<T: Tokenizer>(
         .collect()
 }
 
-pub fn long_text() -> String {
-    "The quick brown fox jumps over the lazy dog. ".repeat(30)
-}
-
 fn query_input(text: &str) -> BenchmarkInput {
     BenchmarkInput {
         text: text.to_string(),
         kind: EmbeddingInputKind::Query,
-    }
-}
-
-fn document_input(text: &str) -> BenchmarkInput {
-    BenchmarkInput {
-        text: text.to_string(),
-        kind: EmbeddingInputKind::Document,
     }
 }
 

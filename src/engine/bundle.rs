@@ -1,11 +1,10 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::error::{LTEmbedError, ModelLoadError};
 
-use super::ort_init::env_dylib_path;
 use super::{DOCUMENT_PREFIX, MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION};
 
 #[derive(Debug, Clone)]
@@ -37,6 +36,9 @@ struct BuildMetadata {
 }
 
 impl ModelSpec {
+    /// Fallback spec matching the jina-v5-nano defaults (used by tests and as a sane
+    /// default when a bundle omits build-info-derived fields).
+    #[allow(dead_code)]
     pub(crate) fn jina_defaults() -> Self {
         Self {
             query_prefix: QUERY_PREFIX.to_string(),
@@ -98,16 +100,10 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<(), LTEmbedError>
     }))
 }
 
-pub(crate) fn resolve_dylib_path(bundle_dir: &Path) -> Option<PathBuf> {
-    env_dylib_path().or_else(|| {
-        let bundle_dylib = bundle_dir.join("libonnxruntime.so");
-        bundle_dylib.exists().then_some(bundle_dylib)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -51,3 +51,7 @@ assets/vocab.txt
 perf-results/
 .cache/
 
+# llama.cpp migration: prebuilt static-lib artifacts + GGUF models (download + SHA-verify, never commit)
+.llama-artifacts/
+*.gguf
+

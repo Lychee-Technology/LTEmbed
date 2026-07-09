@@ -1,28 +1,24 @@
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::Instant;
-
-use ort::session::{builder::GraphOptimizationLevel, Session};
-use ort::value::TensorRef;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
 use crate::traits::tokenizer::HFTokenizer;
 
+mod backend;
 mod bundle;
 mod config;
 mod inference;
 mod input;
-mod ort_init;
-mod session_io;
+mod llama;
 
-pub use config::OnnxEngineConfig;
+pub use config::EngineConfig;
 pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
 
-use bundle::{require_file, resolve_dylib_path, ModelSpec};
-use inference::{pack_batch, pool_last_token, prefixed_text, validate_hidden_shape};
-use ort_init::ensure_ort_initialized;
-use session_io::{effective_sequence_length, SessionIo};
+use backend::EmbeddingBackend;
+use bundle::{require_file, ModelSpec};
+use inference::{postprocess_embedding, prefixed_text};
+use llama::LlamaBackend;
 
 pub const RAW_EMBEDDING_DIMENSION: usize = 768;
 pub const EMBEDDING_DIMENSION: usize = 512;
@@ -30,84 +26,64 @@ pub const MAX_LENGTH: usize = 8192;
 pub const QUERY_PREFIX: &str = "Query: ";
 pub const DOCUMENT_PREFIX: &str = "Document: ";
 
+const MODEL_FILE: &str = "model.gguf";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
-pub struct OnnxEngine {
-    session: Mutex<Session>,
+/// A loaded embedding model. Backed by an [`EmbeddingBackend`] (currently llama.cpp/GGUF);
+/// owns the shared prefix → tokenize → backend → truncate/normalize pipeline.
+pub struct EmbeddingEngine {
+    backend: Box<dyn EmbeddingBackend>,
     tokenizer: HFTokenizer,
-    io: SessionIo,
     spec: ModelSpec,
-    config: OnnxEngineConfig,
+    config: EngineConfig,
 }
 
-impl std::fmt::Debug for OnnxEngine {
+impl std::fmt::Debug for EmbeddingEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OnnxEngine").finish_non_exhaustive()
+        f.debug_struct("EmbeddingEngine").finish_non_exhaustive()
     }
 }
 
-impl OnnxEngine {
-    pub fn new(model_path: &str, tokenizer_path: &str) -> Result<Self, LTEmbedError> {
-        let model_path = Path::new(model_path);
-        let tokenizer_path = Path::new(tokenizer_path);
-        require_file(model_path, "model")?;
-        require_file(tokenizer_path, "tokenizer")?;
-
-        let spec = ModelSpec::jina_defaults();
-        let config = OnnxEngineConfig::default();
-        Self::build(model_path, tokenizer_path, None, spec, config, 1)
-    }
-
-    pub fn from_bundle_dir(
+impl EmbeddingEngine {
+    /// Load from a bundle directory containing `model.gguf`, `tokenizer.json`, and
+    /// `build-info.json`, using a single inference thread.
+    pub fn from_gguf_bundle_dir(
         bundle_dir: impl AsRef<Path>,
-        model_path: impl AsRef<Path>,
-        config: OnnxEngineConfig,
+        config: EngineConfig,
     ) -> Result<Self, LTEmbedError> {
-        Self::from_bundle_dir_with_intra_threads(bundle_dir, model_path, config, 1)
+        Self::from_gguf_bundle_dir_with_threads(bundle_dir, config, 1)
     }
 
-    /// Like [`OnnxEngine::from_bundle_dir`] (which delegates here with
-    /// `intra_threads = 1`), but lets the caller set the number of ONNX Runtime
-    /// intra-op threads passed to `with_intra_threads(...)`.
+    /// Like [`EmbeddingEngine::from_gguf_bundle_dir`] but sets the number of llama.cpp
+    /// inference threads.
     ///
     /// # Errors
     ///
-    /// Returns `LTEmbedError::ModelLoad(ModelLoadError::Config)` if
-    /// `intra_threads` is `0`, in addition to the bundle-validation errors
-    /// returned by [`OnnxEngine::from_bundle_dir`].
-    pub fn from_bundle_dir_with_intra_threads(
+    /// Returns `LTEmbedError::ModelLoad(ModelLoadError::Config)` if `n_threads` is `0`, in
+    /// addition to the bundle-validation and model-load errors.
+    pub fn from_gguf_bundle_dir_with_threads(
         bundle_dir: impl AsRef<Path>,
-        model_path: impl AsRef<Path>,
-        config: OnnxEngineConfig,
-        intra_threads: usize,
+        config: EngineConfig,
+        n_threads: usize,
     ) -> Result<Self, LTEmbedError> {
         let bundle_dir = bundle_dir.as_ref();
-        let model_path = model_path.as_ref();
+        let model_path = bundle_dir.join(MODEL_FILE);
         let tokenizer_path = bundle_dir.join(TOKENIZER_FILE);
         let build_info_path = bundle_dir.join(BUILD_INFO_FILE);
 
-        require_file(model_path, "ORT model")?;
+        require_file(&model_path, "GGUF model")?;
         require_file(&tokenizer_path, "tokenizer")?;
         require_file(&build_info_path, "build-info metadata")?;
 
-        let dylib_path = resolve_dylib_path(bundle_dir);
-
         let spec = ModelSpec::from_build_info(&build_info_path)?;
-        Self::build(
-            model_path,
-            &tokenizer_path,
-            dylib_path.as_deref(),
-            spec,
-            config,
-            intra_threads,
-        )
+        Self::build(&model_path, &tokenizer_path, spec, config, n_threads)
     }
 
-    fn validate_intra_threads(intra_threads: usize) -> Result<(), LTEmbedError> {
-        if intra_threads == 0 {
+    fn validate_threads(n_threads: usize) -> Result<(), LTEmbedError> {
+        if n_threads == 0 {
             return Err(LTEmbedError::ModelLoad(ModelLoadError::Config(
-                "intra_threads must be greater than zero".into(),
+                "n_threads must be greater than zero".into(),
             )));
         }
         Ok(())
@@ -116,46 +92,24 @@ impl OnnxEngine {
     fn build(
         model_path: &Path,
         tokenizer_path: &Path,
-        dylib_path: Option<&Path>,
         spec: ModelSpec,
-        config: OnnxEngineConfig,
-        intra_threads: usize,
+        config: EngineConfig,
+        n_threads: usize,
     ) -> Result<Self, LTEmbedError> {
         config.validate(spec.raw_embedding_dimension)?;
-        Self::validate_intra_threads(intra_threads)?;
+        Self::validate_threads(n_threads)?;
 
-        ensure_ort_initialized(dylib_path)?;
         let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy())?;
-        let session = Session::builder()
-            .map_err(|err| {
-                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "Failed to create ORT session builder: {err}"
-                )))
-            })?
-            .with_intra_threads(intra_threads)
-            .map_err(|err| {
-                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "Failed to configure ORT session: {err}"
-                )))
-            })?
-            .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|err| {
-                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "Failed to disable ORT runtime optimization: {err}"
-                )))
-            })?
-            .commit_from_file(model_path)
-            .map_err(|err| {
-                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "Failed to load ORT model: {err}"
-                )))
-            })?;
-        let io = SessionIo::from_session(&session, spec.raw_embedding_dimension)?;
+        let backend = LlamaBackend::load(
+            model_path,
+            spec.raw_embedding_dimension,
+            spec.max_length,
+            n_threads,
+        )?;
 
         Ok(Self {
-            session: Mutex::new(session),
+            backend: Box::new(backend),
             tokenizer,
-            io,
             spec,
             config,
         })
@@ -201,6 +155,7 @@ impl OnnxEngine {
         }
 
         let overall_start = Instant::now();
+
         let prefix_start = Instant::now();
         let prefixed_inputs = inputs
             .iter()
@@ -208,91 +163,44 @@ impl OnnxEngine {
             .map(|input| prefixed_text(input, &self.spec))
             .collect::<Vec<_>>();
         let prefix_ms = prefix_start.elapsed().as_secs_f64() * 1_000.0;
+
         let tokenize_start = Instant::now();
         let encoded = self
             .tokenizer
             .encode_batch(&prefixed_inputs, self.spec.max_length)?;
         let tokenize_ms = tokenize_start.elapsed().as_secs_f64() * 1_000.0;
+
         let batch_size = encoded.len();
-        let batch_max_seq_len = encoded
+        let sequence_length = encoded
             .iter()
             .map(|item| item.input_ids.len())
             .max()
             .unwrap_or(0);
-        let seq_len = effective_sequence_length(self.io.sequence_length(), batch_max_seq_len)?;
 
-        let tensorize_start = Instant::now();
-        let (input_ids, attention_mask) = pack_batch(&encoded, seq_len);
+        let (raw_embeddings, backend_profile) = self.backend.embed(&encoded, collect_profile)?;
 
-        let input_ids_tensor = TensorRef::from_array_view(([batch_size, seq_len], &input_ids[..]))
-            .map_err(|err| {
-                LTEmbedError::Inference(InferenceError::Tensor(format!(
-                    "Failed to convert input_ids tensor: {err}"
-                )))
-            })?;
-        let attention_mask_tensor =
-            TensorRef::from_array_view(([batch_size, seq_len], &attention_mask[..])).map_err(
-                |err| {
-                    LTEmbedError::Inference(InferenceError::Tensor(format!(
-                        "Failed to convert attention_mask tensor: {err}"
-                    )))
-                },
-            )?;
-        let tensorize_ms = tensorize_start.elapsed().as_secs_f64() * 1_000.0;
-
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| LTEmbedError::Inference(InferenceError::MutexPoisoned))?;
-        let run_start = Instant::now();
-        let outputs = session
-            .run(ort::inputs! {
-                self.io.input_ids_name() => input_ids_tensor,
-                self.io.attention_mask_name() => attention_mask_tensor,
-            })
-            .map_err(|err| {
-                LTEmbedError::Inference(InferenceError::OrtRun(format!(
-                    "ORT inference failed: {err}"
-                )))
-            })?;
-        let run_ms = run_start.elapsed().as_secs_f64() * 1_000.0;
-        let extract_start = Instant::now();
-        let (hidden_shape, hidden_data) = outputs[self.io.output_name()]
-            .try_extract_tensor::<f32>()
-            .map_err(|err| {
-                LTEmbedError::Inference(InferenceError::Tensor(format!(
-                    "Failed to extract ORT output tensor: {err}"
-                )))
-            })?;
-        validate_hidden_shape(
-            hidden_shape,
-            batch_size,
-            seq_len,
-            self.spec.raw_embedding_dimension,
-        )?;
-        let extract_ms = extract_start.elapsed().as_secs_f64() * 1_000.0;
-
+        let raw_dim = self.backend.raw_embedding_dimension();
         let postprocess_start = Instant::now();
-        let embeddings = pool_last_token(
-            hidden_data,
-            &attention_mask,
-            batch_size,
-            seq_len,
-            self.spec.raw_embedding_dimension,
-            self.config,
-        )?;
+        let embeddings = raw_embeddings
+            .iter()
+            .map(|raw| postprocess_embedding(raw, raw_dim, self.config))
+            .collect::<Result<Vec<_>, _>>()?;
         let postprocess_ms = postprocess_start.elapsed().as_secs_f64() * 1_000.0;
         let total_ms = overall_start.elapsed().as_secs_f64() * 1_000.0;
-        let profile = collect_profile.then_some(EmbedBatchProfile {
-            batch_size,
-            sequence_length: seq_len,
-            prefix_ms,
-            tokenize_ms,
-            tensorize_ms,
-            run_ms,
-            extract_ms,
-            postprocess_ms,
-            total_ms,
+
+        let profile = collect_profile.then(|| {
+            let backend = backend_profile.unwrap_or_default();
+            EmbedBatchProfile {
+                batch_size,
+                sequence_length,
+                prefix_ms,
+                tokenize_ms,
+                tensorize_ms: backend.tensorize_ms,
+                run_ms: backend.run_ms,
+                extract_ms: backend.extract_ms,
+                postprocess_ms,
+                total_ms,
+            }
         });
 
         Ok((embeddings, profile))

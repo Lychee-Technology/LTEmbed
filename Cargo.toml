@@ -10,16 +10,10 @@ path = "src/lib.rs"
 
 [dependencies]
 # ── Library core ──────────────────────────────────────────────────────────────
-# default-features off: `download-binaries` (compile-time onnxruntime fetch) and
-# `tls-native` (ureq → openssl-sys) are useless under load-dynamic — the dylib
-# ships in the ort bundle — and break consumers on runners without OpenSSL headers.
-ort = { version = "2.0.0-rc.12", default-features = false, features = [
-    "std",
-    "ndarray",
-    "tracing",
-    "api-24",
-    "load-dynamic",
-] }
+# The inference backend is llama.cpp/GGUF, linked from the prebuilt static archives
+# published by `Lychee-Technology/static-llama-cpp-rs-builder` (see build.rs). There is no
+# crates.io dependency for it: the static libs + bindgen bindings are consumed via raw FFI,
+# so this crate builds only on aarch64-linux with STATIC_LLAMA_DIR set (see docs/development.md).
 
 # Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
 tokenizers = "0.22"

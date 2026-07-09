@@ -28,7 +28,7 @@ pub enum LTEmbedError {
 ///
 /// The high-value, caller-matchable cases (`MissingFile`,
 /// `UnsupportedInputKind`, `UnsupportedPooling`) are modeled explicitly; the
-/// remaining ORT / metadata / config failures are grouped into broader buckets.
+/// remaining metadata / config / runtime failures are grouped into broader buckets.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
     #[error("{label} file not found: {path}")]
@@ -44,11 +44,11 @@ pub enum ModelLoadError {
     #[error("{0}")]
     Metadata(String),
 
-    /// `OnnxEngineConfig` validation failure.
+    /// `EngineConfig` validation failure.
     #[error("{0}")]
     Config(String),
 
-    /// ORT initialization, session build, model-I/O discovery, or tokenizer load failure.
+    /// Backend model load (GGUF load, context creation) or tokenizer load failure.
     #[error("{0}")]
     Runtime(String),
 }
@@ -59,7 +59,7 @@ pub enum ModelLoadError {
 /// to match precisely; the remainder are broader buckets.
 #[derive(Debug, Error)]
 pub enum InferenceError {
-    #[error("encoded input length {encoded} exceeds ORT model sequence length {model}")]
+    #[error("encoded input length {encoded} exceeds model context length {model}")]
     SequenceTooLong { encoded: usize, model: usize },
 
     #[error("attention mask contains only padding")]
@@ -73,11 +73,11 @@ pub enum InferenceError {
     #[error("{0}")]
     Tensor(String),
 
-    /// `Session::run` failure.
+    /// Backend inference (e.g. `llama_decode`) failure.
     #[error("{0}")]
-    OrtRun(String),
+    Backend(String),
 
-    #[error("ORT session mutex poisoned")]
+    #[error("backend context mutex poisoned")]
     MutexPoisoned,
 
     /// Internal invariant violation.
@@ -115,7 +115,7 @@ mod tests {
         });
         assert_eq!(
             e.to_string(),
-            "Inference failed: encoded input length 9000 exceeds ORT model sequence length 8192"
+            "Inference failed: encoded input length 9000 exceeds model context length 8192"
         );
     }
 

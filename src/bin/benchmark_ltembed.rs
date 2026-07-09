@@ -1,6 +1,6 @@
 use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
 use ltembed::engine::{
-    EmbedBatchProfile, EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig,
+    EmbedBatchProfile, EmbeddingEngine, EmbeddingInput, EmbeddingInputKind, EngineConfig,
 };
 use ltembed::error::{InferenceError, LTEmbedError};
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ impl From<&str> for Mode {
 struct Args {
     mode: Mode,
     scenario: Option<String>,
-    ort_bundle_dir: PathBuf,
+    bundle_dir: PathBuf,
     retrieval_eval_path: Option<PathBuf>,
     output_dimension: usize,
     l2_normalize: bool,
@@ -147,7 +147,7 @@ where
 {
     let mut mode = None;
     let mut scenario = None;
-    let mut ort_bundle_dir = None;
+    let mut bundle_dir = None;
     let mut retrieval_eval_path = None;
     let mut output_dimension = None;
     let mut l2_normalize = None;
@@ -161,7 +161,7 @@ where
         match arg.as_str() {
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
-            "--ort-bundle-dir" => ort_bundle_dir = iter.next().map(PathBuf::from),
+            "--bundle-dir" => bundle_dir = iter.next().map(PathBuf::from),
             "--retrieval-eval-path" => retrieval_eval_path = iter.next().map(PathBuf::from),
             "--output-dimension" => {
                 output_dimension = Some(
@@ -218,8 +218,7 @@ where
                 .as_str(),
         ),
         scenario,
-        ort_bundle_dir: ort_bundle_dir
-            .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
+        bundle_dir: bundle_dir.ok_or_else(|| "missing required --bundle-dir".to_string())?,
         retrieval_eval_path,
         output_dimension: output_dimension
             .ok_or_else(|| "missing required --output-dimension".to_string())?,
@@ -250,12 +249,10 @@ fn git_sha() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
-    let model_path = args.ort_bundle_dir.join("model.ort");
-    OnnxEngine::from_bundle_dir_with_intra_threads(
-        Path::new(&args.ort_bundle_dir),
-        &model_path,
-        OnnxEngineConfig {
+fn engine_from_bundle_dir(args: &Args) -> Result<EmbeddingEngine, LTEmbedError> {
+    EmbeddingEngine::from_gguf_bundle_dir_with_threads(
+        Path::new(&args.bundle_dir),
+        EngineConfig {
             output_dimension: args.output_dimension,
             l2_normalize: args.l2_normalize,
         },
@@ -292,19 +289,22 @@ fn load_retrieval_eval_cases(path: &Path) -> io::Result<Vec<RetrievalEvalCase>> 
 }
 
 fn embed_retrieval_inputs(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     inputs: Vec<EmbeddingInput<'_>>,
 ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
     engine.embed_batch(&inputs)
 }
 
-fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+fn run_scenario(
+    engine: &EmbeddingEngine,
+    scenario_name: &str,
+) -> Result<Vec<Vec<f32>>, LTEmbedError> {
     let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, false)?;
     Ok(embeddings)
 }
 
 fn run_scenario_profiled(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
 ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
     let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, true)?;
@@ -317,7 +317,7 @@ fn run_scenario_profiled(
 }
 
 fn run_scenario_maybe_profiled(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
     collect_profile: bool,
 ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
@@ -403,7 +403,7 @@ impl ProfileAccumulator {
 }
 
 fn measure_warm_stats(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
     warmup: usize,
     iters: usize,
@@ -620,8 +620,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -640,8 +640,8 @@ mod tests {
             "cold",
             "--scenario",
             "single/medium",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -658,8 +658,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "correctness",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -676,8 +676,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "unknown",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -696,8 +696,8 @@ mod tests {
             "warm",
             "--scenario",
             "single/medium",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -707,7 +707,7 @@ mod tests {
 
         assert_eq!(args.mode, Mode::Warm);
         assert_eq!(args.scenario.as_deref(), Some("single/medium"));
-        assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
+        assert_eq!(args.bundle_dir, PathBuf::from("gguf_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
     }
@@ -718,8 +718,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "cold",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -738,8 +738,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "cold",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -763,8 +763,8 @@ mod tests {
             "warm",
             "--scenario",
             "missing/scenario",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -906,8 +906,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--retrieval-eval-path",
             "scripts/retrieval_eval_cases.json",
             "--output-dimension",
@@ -926,8 +926,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--retrieval-eval-path",
             "scripts/retrieval_eval_cases.json",
             "--output-dimension",
@@ -984,8 +984,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -1040,8 +1040,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -1059,8 +1059,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",

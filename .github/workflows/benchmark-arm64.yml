@@ -9,7 +9,7 @@ on:
       quants:
         description: Comma-separated GGUF quants to benchmark
         required: false
-        default: "IQ4_XS,Q5_K_M,Q8_0"
+        default: "IQ4_NL,Q5_K_M,Q8_0"
       warmup:
         description: Warmup iterations per scenario
         required: false
@@ -46,19 +46,29 @@ on:
         default: true
         type: boolean
       include_retrieval_eval:
-        description: Include small retrieval ranking eval
+        description: Include the CN/EN cross-lingual retrieval eval
         required: false
         default: true
         type: boolean
-      retrieval_eval_path:
-        description: Retrieval eval dataset path relative to the repository root
+      retrieval_pairs:
+        description: Number of CN/EN translation pairs to sample for the retrieval eval
         required: false
-        default: "scripts/retrieval_eval_cases.json"
+        default: "500"
+
+env:
+  MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
+  # Shared model snapshot path (FP32 weights + tokenizer + remote code) used by both the
+  # reference job (PyTorch) and each quant job (tokenizer for the GGUF bundle).
+  MODEL_DIR_REL: .cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
+  FIXTURE_REL: tests/data/jane-austen_pride-and-prejudice.jsonl
+  FIXTURE_URL: https://raw.githubusercontent.com/Lychee-Technology/minimal-ort-builder/main/tests/data/jane-austen_pride-and-prejudice.jsonl
+  CN_EN_CSV_REL: tests/CN_EN_Data.csv
 
 jobs:
-  # Fan out over GGUF quants. Each job benchmarks one quant against the PyTorch FP32 reference
-  # on jane-austen text and uploads an independent artifact. The `report` job then aggregates
-  # every quant into results.json + report.md with a recommended quant.
+  # Fan out over GGUF quants. Each job benchmarks one quant against a shared PyTorch FP32
+  # reference (produced once by the `reference` job) on jane-austen text, plus a CN/EN
+  # cross-lingual retrieval eval, and uploads an independent artifact. The `report` job then
+  # aggregates every quant into results.json + report.md with a recommended quant.
   prepare:
     runs-on: ubuntu-24.04-arm
     outputs:
@@ -68,15 +78,122 @@ jobs:
         run: |
           python3 - <<'PY' >>"$GITHUB_OUTPUT"
           import json, os
-          raw = os.environ["QUANTS_INPUT"] or "IQ4_XS,Q5_K_M,Q8_0"
+          raw = os.environ["QUANTS_INPUT"] or "IQ4_NL,Q5_K_M,Q8_0"
           quants = [q.strip() for q in raw.split(",") if q.strip()]
           print("quants=" + json.dumps(quants))
           PY
         env:
           QUANTS_INPUT: ${{ inputs.quants }}
 
+  # Run PyTorch ONCE. Its correctness/retrieval embeddings are quant-independent (they use the
+  # FP32 HF model, never a GGUF bundle), so producing them here — instead of inside every quant
+  # job — removes N-1 redundant torch import + model-load cycles per matrix run. The embeddings
+  # are uploaded as a reference artifact that each quant job compares against.
+  reference:
+    runs-on: ubuntu-24.04-arm
+    env:
+      MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
+      FIXTURE_JSONL: ${{ github.workspace }}/tests/data/jane-austen_pride-and-prejudice.jsonl
+      BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache Pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-arm64-pip-${{ hashFiles('.github/workflows/benchmark-arm64.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-pip-
+
+      - name: Cache Model
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.MODEL_DIR }}
+          key: ${{ runner.os }}-arm64-model-jina-v2
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy transformers huggingface_hub
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+      - name: Download Model Snapshot
+        run: |
+          mkdir -p "$MODEL_DIR"
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id=os.environ["MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              local_dir_use_symlinks=False,
+              allow_patterns=[
+                  "config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "special_tokens_map.json",
+                  "model.safetensors",
+                  "*.py",
+              ],
+          )
+          PY
+
+      - name: Download jane-austen benchmark corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$FIXTURE_JSONL")"
+          curl -fsSL "$FIXTURE_URL" -o "$FIXTURE_JSONL"
+          echo "corpus records: $(wc -l < "$FIXTURE_JSONL")"
+
+      - name: Generate CN/EN cross-lingual retrieval eval
+        run: |
+          set -euo pipefail
+          mkdir -p reference
+          python3 scripts/build_cn_en_retrieval_cases.py \
+            --csv "$CN_EN_CSV_REL" \
+            --num-pairs "${{ inputs.retrieval_pairs }}" \
+            --output reference/cn_en_retrieval_cases.json
+
+      - name: Emit PyTorch reference (correctness + retrieval embeddings)
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=""
+          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-l2-normalize"
+          fi
+          python3 scripts/run_embedding_benchmarks.py \
+            --model-dir "$MODEL_DIR" \
+            --model-id "$MODEL_ID" \
+            --model-source "huggingface" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            --threads "${{ inputs.threads }}" \
+            --retrieval-eval-path reference/cn_en_retrieval_cases.json \
+            --fixture-path "$FIXTURE_JSONL" \
+            --output-csv reference/benchmark-report.csv \
+            --emit-reference reference/reference.json \
+            $EXTRA_ARGS
+
+      - name: Upload reference artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-reference
+          retention-days: 3
+          path: |
+            reference/reference.json
+            reference/resolved_fixture.json
+            reference/cn_en_retrieval_cases.json
+          if-no-files-found: error
+
   benchmark:
-    needs: prepare
+    needs: [prepare, reference]
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
@@ -88,7 +205,6 @@ jobs:
       # save time, which breaks restore when the runner's workspace depth differs (e.g. a
       # cache saved on a self-hosted runner failing to extract on a GitHub-hosted one).
       CARGO_HOME: ${{ github.workspace }}/.cargo
-      MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
       GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
       BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
@@ -96,7 +212,6 @@ jobs:
       STATIC_LLAMA_TAG: v0.1.151-1
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
       FIXTURE_JSONL: ${{ github.workspace }}/tests/data/jane-austen_pride-and-prejudice.jsonl
-      FIXTURE_URL: https://raw.githubusercontent.com/Lychee-Technology/minimal-ort-builder/main/tests/data/jane-austen_pride-and-prejudice.jsonl
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -149,13 +264,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/fetch-static-llama.sh
 
+      # Quant jobs run ltembed only (PyTorch already ran in the `reference` job), so they need
+      # numpy for the retrieval-metric matmul and huggingface_hub for the tokenizer snapshot —
+      # but no torch/transformers.
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy transformers huggingface_hub
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy huggingface_hub
 
-      - name: Download Model Snapshot
+      - name: Download Model Snapshot (tokenizer)
         run: |
           mkdir -p "$MODEL_DIR"
           python - <<'PY'
@@ -205,9 +322,17 @@ jobs:
           JSON
           echo "model.gguf size: $(du -h "$BUNDLE_DIR/model.gguf" | cut -f1)"
 
-      # Compile check with visible errors before the Python harness (which captures Cargo stderr).
-      - name: Cargo check (visible errors)
-        run: cargo check --bin benchmark_ltembed
+      # Build the release binary once, up front. Invoking the compiled binary directly (rather
+      # than `cargo run --release` per launch) keeps cargo's freshness check and the multi-minute
+      # release compile out of the timed harness, and surfaces compile errors with visible stderr.
+      - name: Build benchmark_ltembed (release)
+        run: cargo build --release --bin benchmark_ltembed
+
+      - name: Download reference artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: benchmark-reference
+          path: reference
 
       - name: Download jane-austen benchmark corpus
         run: |
@@ -246,7 +371,8 @@ jobs:
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
-            --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
+            --retrieval-eval-path reference/cn_en_retrieval_cases.json \
+            --reference-path reference/reference.json \
             --fixture-path "$FIXTURE_JSONL" \
             --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
             --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \

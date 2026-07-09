@@ -39,10 +39,9 @@ COLUMNS = [
     ("cold_ms", "cold ms", "ms"),
     ("mean_cosine", "mean cos vs FP32", "cos"),
     ("min_cosine", "min cos vs FP32", "cos"),
-    ("recall_at_1", "recall@1", "cos"),
+    ("both_at_3", "CN/EN both@3", "cos"),
+    ("recall_at_3", "recall@3", "cos"),
     ("mrr_at_3", "mrr@3", "cos"),
-    ("pytorch_warm_ms", "FP32 warm ms", "ms"),
-    ("speedup_vs_pytorch", "speedup", "x"),
 ]
 
 
@@ -91,9 +90,9 @@ def summarize_quant(metadata: dict[str, Any], csv_rows: list[dict]) -> dict[str,
     mean_cosine = _mean(cosines)
     min_cosine = min(cosines) if cosines else None
     recall_at_1 = _mean(_floats(csv_rows, "ltembed", "retrieval_eval", "recall_at_1"))
+    recall_at_3 = _mean(_floats(csv_rows, "ltembed", "retrieval_eval", "recall_at_3"))
+    both_at_3 = _mean(_floats(csv_rows, "ltembed", "retrieval_eval", "both_at_3"))
     mrr_at_3 = _mean(_floats(csv_rows, "ltembed", "retrieval_eval", "mrr_at_3"))
-    pytorch_warm = _mean(_floats(csv_rows, "pytorch", "warm_latency", "mean_ms"))
-    speedup = (pytorch_warm / warm) if (pytorch_warm and warm) else None
 
     return {
         "quant": quant,
@@ -105,9 +104,9 @@ def summarize_quant(metadata: dict[str, Any], csv_rows: list[dict]) -> dict[str,
         "mean_cosine": mean_cosine,
         "min_cosine": min_cosine,
         "recall_at_1": recall_at_1,
+        "recall_at_3": recall_at_3,
+        "both_at_3": both_at_3,
         "mrr_at_3": mrr_at_3,
-        "pytorch_warm_ms": pytorch_warm,
-        "speedup_vs_pytorch": speedup,
         "model_id": metadata.get("model_id"),
         "runner_labels": metadata.get("runner_labels"),
     }

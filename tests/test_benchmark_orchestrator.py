@@ -31,6 +31,71 @@ class BenchmarkOrchestratorTests(unittest.TestCase):
         self.assertEqual(scenario.batch_size, 8)
         self.assertEqual(scenario.text_profile, "mixed")
 
+    def test_load_corpus_texts_sorts_by_length_and_skips_empty(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "corpus.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"text": "medium chunk here", "token_count": 50, "position": 1}),
+                        json.dumps({"text": "", "token_count": 5, "position": 2}),
+                        json.dumps({"text": "tiny", "token_count": 3, "position": 3}),
+                        "   ",
+                        json.dumps({"text": "the longest chunk", "token_count": 900, "position": 4}),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            texts = bench.load_corpus_texts(path)
+        self.assertEqual(texts, ["tiny", "medium chunk here", "the longest chunk"])
+
+    def test_resolve_fixture_selects_distinct_batches_and_kinds(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "corpus.jsonl"
+            path.write_text(
+                "\n".join(
+                    json.dumps({"text": f"chunk number {i}", "token_count": i, "position": i})
+                    for i in range(1, 41)
+                ),
+                encoding="utf-8",
+            )
+            fixture = bench.resolve_fixture(path, bench.SCENARIOS)
+
+        scenarios = fixture["scenarios"]
+        self.assertEqual(list(scenarios.keys()), [s.name for s in bench.SCENARIOS])
+        self.assertEqual(scenarios["single/short"][0]["kind"], "query")
+        self.assertEqual(scenarios["single/long"][0]["kind"], "document")
+        # batch draws distinct chunks
+        batch = scenarios["batch/medium/8"]
+        self.assertEqual(len(batch), 8)
+        self.assertEqual(len({item["text"] for item in batch}), 8)
+        # mixed batch leads with short(query)/medium(query)/long(document)
+        mixed = scenarios["batch/mixed/8"]
+        self.assertEqual(len(mixed), 8)
+        self.assertEqual(mixed[0]["kind"], "query")
+        self.assertEqual(mixed[2]["kind"], "document")
+
+    def test_build_benchmark_command_appends_fixture_path_for_both_runners(self):
+        bench = load_module()
+        args = SimpleNamespace(
+            bundle_dir=Path("gguf_bundle"),
+            model_dir=Path("assets"),
+            output_dimension=512,
+            l2_normalize=True,
+            warmup=5,
+            iters=10,
+            threads=1,
+            scenario=None,
+            ltembed_cargo_features="",
+            resolved_fixture_path=Path("artifacts/resolved_fixture.json"),
+        )
+        for impl in ("ltembed", "pytorch"):
+            command = bench.build_benchmark_command(impl, "correctness", args)
+            self.assertIn("--fixture-path", command)
+            self.assertIn("artifacts/resolved_fixture.json", command)
+
     def test_write_csv_report_uses_fixed_header_order(self):
         bench = load_module()
         row = {field: "" for field in bench.CSV_FIELDNAMES}

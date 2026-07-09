@@ -29,7 +29,7 @@ impl Tokenizer for CountingTokenizer {
 }
 
 #[test]
-fn test_benchmark_scenarios_match_issue_38_plan() {
+fn test_benchmark_scenarios_are_representative_set() {
     let scenario_names: Vec<_> = benchmark_scenarios()
         .iter()
         .map(|scenario| scenario.name)
@@ -40,15 +40,12 @@ fn test_benchmark_scenarios_match_issue_38_plan() {
             "single/short",
             "single/medium",
             "single/long",
-            "batch/medium/1",
-            "batch/medium/4",
             "batch/medium/8",
             "batch/mixed/8",
-            "batch/medium/16",
         ]
     );
 
-    assert_eq!(scenario_by_name("batch/medium/16").unwrap().batch_size, 16);
+    assert_eq!(scenario_by_name("batch/medium/8").unwrap().batch_size, 8);
     assert_eq!(
         scenario_by_name("single/long").unwrap().text_profile,
         "long"

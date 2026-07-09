@@ -1,9 +1,12 @@
-use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
+use ltembed::benchmarking::{
+    scenario_by_name, scenario_inputs, selected_scenarios, BenchmarkInput, LatencyStats,
+};
 use ltembed::engine::{
     EmbedBatchProfile, EmbeddingEngine, EmbeddingInput, EmbeddingInputKind, EngineConfig,
 };
 use ltembed::error::{InferenceError, LTEmbedError};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
@@ -37,11 +40,70 @@ struct Args {
     scenario: Option<String>,
     bundle_dir: PathBuf,
     retrieval_eval_path: Option<PathBuf>,
+    fixture_path: Option<PathBuf>,
     output_dimension: usize,
     l2_normalize: bool,
     warmup: usize,
     iters: usize,
     threads: usize,
+}
+
+/// Resolved benchmark fixture: per-scenario texts selected upstream (e.g. from the
+/// jane-austen corpus) by the orchestrator. When present it overrides the built-in
+/// synthetic scenario texts so both this binary and the PyTorch reference embed
+/// byte-identical inputs, which is what makes the cosine comparison meaningful.
+#[derive(Debug, Deserialize)]
+struct ResolvedFixture {
+    scenarios: HashMap<String, Vec<FixtureInput>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureInput {
+    kind: String,
+    text: String,
+}
+
+fn load_resolved_fixture(path: &Path) -> io::Result<ResolvedFixture> {
+    let contents = fs::read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+/// Build the inputs for a scenario, preferring the resolved fixture (keyed by scenario
+/// name) and falling back to the built-in `scenario_inputs` when no fixture is supplied.
+fn scenario_inputs_resolved(
+    scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
+) -> Result<Vec<BenchmarkInput>, LTEmbedError> {
+    if let Some(fixture) = fixture {
+        let items = fixture.scenarios.get(scenario_name).ok_or_else(|| {
+            LTEmbedError::Inference(InferenceError::Internal(format!(
+                "fixture is missing scenario: {scenario_name}"
+            )))
+        })?;
+        return items
+            .iter()
+            .map(|item| {
+                let kind = match item.kind.as_str() {
+                    "query" => EmbeddingInputKind::Query,
+                    "document" => EmbeddingInputKind::Document,
+                    other => {
+                        return Err(LTEmbedError::Inference(InferenceError::Internal(format!(
+                            "fixture input has unknown kind: {other}"
+                        ))))
+                    }
+                };
+                Ok(BenchmarkInput {
+                    text: item.text.clone(),
+                    kind,
+                })
+            })
+            .collect();
+    }
+
+    let scenario = scenario_by_name(scenario_name).ok_or_else(|| {
+        LTEmbedError::Inference(InferenceError::Internal("unknown scenario".to_string()))
+    })?;
+    Ok(scenario_inputs(scenario))
 }
 
 #[derive(Serialize)]
@@ -149,6 +211,7 @@ where
     let mut scenario = None;
     let mut bundle_dir = None;
     let mut retrieval_eval_path = None;
+    let mut fixture_path = None;
     let mut output_dimension = None;
     let mut l2_normalize = None;
     let mut warmup = 10usize;
@@ -163,6 +226,7 @@ where
             "--scenario" => scenario = iter.next(),
             "--bundle-dir" => bundle_dir = iter.next().map(PathBuf::from),
             "--retrieval-eval-path" => retrieval_eval_path = iter.next().map(PathBuf::from),
+            "--fixture-path" => fixture_path = iter.next().map(PathBuf::from),
             "--output-dimension" => {
                 output_dimension = Some(
                     iter.next()
@@ -220,6 +284,7 @@ where
         scenario,
         bundle_dir: bundle_dir.ok_or_else(|| "missing required --bundle-dir".to_string())?,
         retrieval_eval_path,
+        fixture_path,
         output_dimension: output_dimension
             .ok_or_else(|| "missing required --output-dimension".to_string())?,
         l2_normalize: l2_normalize.ok_or_else(|| "missing required --l2-normalize".to_string())?,
@@ -298,16 +363,18 @@ fn embed_retrieval_inputs(
 fn run_scenario(
     engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
 ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
-    let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, false)?;
+    let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, fixture, false)?;
     Ok(embeddings)
 }
 
 fn run_scenario_profiled(
     engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
 ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
-    let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, true)?;
+    let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, fixture, true)?;
     let profile = profile.ok_or_else(|| {
         LTEmbedError::Inference(InferenceError::Internal(
             "profiling requested but no profile was collected".to_string(),
@@ -319,12 +386,10 @@ fn run_scenario_profiled(
 fn run_scenario_maybe_profiled(
     engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
     collect_profile: bool,
 ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
-    let scenario = scenario_by_name(scenario_name).ok_or_else(|| {
-        LTEmbedError::Inference(InferenceError::Internal("unknown scenario".to_string()))
-    })?;
-    let benchmark_inputs = scenario_inputs(scenario);
+    let benchmark_inputs = scenario_inputs_resolved(scenario_name, fixture)?;
     let inputs = benchmark_inputs
         .iter()
         .map(|input| match input.kind {
@@ -405,15 +470,16 @@ impl ProfileAccumulator {
 fn measure_warm_stats(
     engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
     warmup: usize,
     iters: usize,
 ) -> Result<(LatencyStats, Option<String>), LTEmbedError> {
     let profiling_enabled = profiling_enabled_from_env();
     for _ in 0..warmup {
         if profiling_enabled {
-            let _ = run_scenario_profiled(engine, scenario_name)?;
+            let _ = run_scenario_profiled(engine, scenario_name, fixture)?;
         } else {
-            let _ = run_scenario(engine, scenario_name)?;
+            let _ = run_scenario(engine, scenario_name, fixture)?;
         }
     }
 
@@ -422,10 +488,10 @@ fn measure_warm_stats(
     for _ in 0..iters {
         let start = Instant::now();
         if let Some(accumulator) = &mut accumulator {
-            let (_, profile) = run_scenario_profiled(engine, scenario_name)?;
+            let (_, profile) = run_scenario_profiled(engine, scenario_name, fixture)?;
             accumulator.record(profile);
         } else {
-            let _ = run_scenario(engine, scenario_name)?;
+            let _ = run_scenario(engine, scenario_name, fixture)?;
         }
         samples.push(start.elapsed().as_secs_f64() * 1_000.0);
     }
@@ -436,10 +502,14 @@ fn measure_warm_stats(
     Ok((stats, profile_line))
 }
 
-fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
+fn measure_cold_stats(
+    args: &Args,
+    scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
+) -> Result<LatencyStats, LTEmbedError> {
     let start = Instant::now();
     let engine = engine_from_bundle_dir(args)?;
-    let _ = run_scenario(&engine, scenario_name)?;
+    let _ = run_scenario(&engine, scenario_name, fixture)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
         .map_err(|err| LTEmbedError::Inference(InferenceError::Internal(err)))
 }
@@ -458,6 +528,7 @@ fn emit_profile_summary(line: &str) {
 
 fn run_warm_mode(
     args: &Args,
+    fixture: Option<&ResolvedFixture>,
     implementation_version: &str,
 ) -> Result<WarmPayload, Box<dyn std::error::Error>> {
     let engine = engine_from_bundle_dir(args)?;
@@ -466,7 +537,7 @@ fn run_warm_mode(
     for scenario in scenarios {
         emit_progress("warm", scenario.name, "start");
         let (stats, profile_line) =
-            measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
+            measure_warm_stats(&engine, scenario.name, fixture, args.warmup, args.iters)?;
         emit_progress("warm", scenario.name, "done");
         if let Some(profile_line) = profile_line {
             emit_profile_summary(&profile_line);
@@ -485,11 +556,12 @@ fn run_warm_mode(
 
 fn run_cold_mode(
     args: &Args,
+    fixture: Option<&ResolvedFixture>,
     implementation_version: &str,
 ) -> Result<ColdPayload, Box<dyn std::error::Error>> {
     let scenario_name = required_scenario(args)?;
     emit_progress("cold", scenario_name, "start");
-    let stats = measure_cold_stats(args, scenario_name)?;
+    let stats = measure_cold_stats(args, scenario_name, fixture)?;
     emit_progress("cold", scenario_name, "done");
     Ok(ColdPayload {
         implementation: "ltembed",
@@ -501,6 +573,7 @@ fn run_cold_mode(
 
 fn run_correctness_mode(
     args: &Args,
+    fixture: Option<&ResolvedFixture>,
     implementation_version: &str,
 ) -> Result<CorrectnessPayload, Box<dyn std::error::Error>> {
     let engine = engine_from_bundle_dir(args)?;
@@ -508,7 +581,7 @@ fn run_correctness_mode(
     let scenarios = resolve_scenarios(args)?;
     for scenario in scenarios {
         emit_progress("correctness", scenario.name, "start");
-        let embeddings = run_scenario(&engine, scenario.name)?;
+        let embeddings = run_scenario(&engine, scenario.name, fixture)?;
         emit_progress("correctness", scenario.name, "done");
         results.push(EmbeddingsEntry {
             scenario: scenario.name.to_string(),
@@ -579,19 +652,25 @@ fn run_retrieval_mode(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let implementation_version = git_sha();
+    let fixture = args
+        .fixture_path
+        .as_deref()
+        .map(load_resolved_fixture)
+        .transpose()?;
+    let fixture = fixture.as_ref();
 
     match &args.mode {
         Mode::Warm => serde_json::to_writer(
             io::stdout(),
-            &run_warm_mode(&args, &implementation_version)?,
+            &run_warm_mode(&args, fixture, &implementation_version)?,
         )?,
         Mode::Cold => serde_json::to_writer(
             io::stdout(),
-            &run_cold_mode(&args, &implementation_version)?,
+            &run_cold_mode(&args, fixture, &implementation_version)?,
         )?,
         Mode::Correctness => serde_json::to_writer(
             io::stdout(),
-            &run_correctness_mode(&args, &implementation_version)?,
+            &run_correctness_mode(&args, fixture, &implementation_version)?,
         )?,
         Mode::Retrieval => serde_json::to_writer(
             io::stdout(),
@@ -747,7 +826,7 @@ mod tests {
         ])
         .unwrap();
 
-        match run_cold_mode(&args, "test-sha") {
+        match run_cold_mode(&args, None, "test-sha") {
             Ok(_) => panic!("expected missing --scenario error"),
             Err(err) => {
                 assert_eq!(err.to_string(), "missing --scenario");
@@ -1051,6 +1130,83 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.threads, 4);
+    }
+
+    #[test]
+    fn test_parse_args_accepts_fixture_path() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--bundle-dir",
+            "gguf_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+            "--fixture-path",
+            "artifacts/resolved_fixture.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.fixture_path.as_deref(),
+            Some(Path::new("artifacts/resolved_fixture.json"))
+        );
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_uses_fixture_when_present() {
+        let fixture: ResolvedFixture = serde_json::from_str(
+            r#"{
+                "scenarios": {
+                    "single/short": [{"kind": "query", "text": "It is a truth universally acknowledged"}],
+                    "batch/mixed/8": [
+                        {"kind": "query", "text": "q text"},
+                        {"kind": "document", "text": "d text"}
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let inputs = scenario_inputs_resolved("single/short", Some(&fixture)).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].kind, EmbeddingInputKind::Query);
+        assert_eq!(inputs[0].text, "It is a truth universally acknowledged");
+
+        let mixed = scenario_inputs_resolved("batch/mixed/8", Some(&fixture)).unwrap();
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(mixed[1].kind, EmbeddingInputKind::Document);
+        assert_eq!(mixed[1].text, "d text");
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_falls_back_to_builtin_without_fixture() {
+        let inputs = scenario_inputs_resolved("single/short", None).unwrap();
+        assert_eq!(
+            inputs,
+            scenario_inputs(scenario_by_name("single/short").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_errors_on_missing_scenario_in_fixture() {
+        let fixture: ResolvedFixture =
+            serde_json::from_str(r#"{"scenarios": {"single/short": []}}"#).unwrap();
+        let err = scenario_inputs_resolved("single/medium", Some(&fixture)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("fixture is missing scenario: single/medium"));
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_errors_on_unknown_kind() {
+        let fixture: ResolvedFixture = serde_json::from_str(
+            r#"{"scenarios": {"single/short": [{"kind": "passage", "text": "x"}]}}"#,
+        )
+        .unwrap();
+        let err = scenario_inputs_resolved("single/short", Some(&fixture)).unwrap_err();
+        assert!(err.to_string().contains("unknown kind: passage"));
     }
 
     #[test]

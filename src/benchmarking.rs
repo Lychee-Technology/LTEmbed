@@ -31,7 +31,7 @@ pub const MEDIUM_TEXT: &str =
     "What is the impact of large language models on software engineering productivity?";
 pub const BENCHMARK_MAX_LENGTH: usize = 8192;
 
-const BENCHMARK_SCENARIOS: [BenchmarkScenario; 8] = [
+const BENCHMARK_SCENARIOS: [BenchmarkScenario; 5] = [
     BenchmarkScenario {
         name: "single/short",
         batch_size: 1,
@@ -48,16 +48,6 @@ const BENCHMARK_SCENARIOS: [BenchmarkScenario; 8] = [
         text_profile: "long",
     },
     BenchmarkScenario {
-        name: "batch/medium/1",
-        batch_size: 1,
-        text_profile: "medium",
-    },
-    BenchmarkScenario {
-        name: "batch/medium/4",
-        batch_size: 4,
-        text_profile: "medium",
-    },
-    BenchmarkScenario {
         name: "batch/medium/8",
         batch_size: 8,
         text_profile: "medium",
@@ -66,11 +56,6 @@ const BENCHMARK_SCENARIOS: [BenchmarkScenario; 8] = [
         name: "batch/mixed/8",
         batch_size: 8,
         text_profile: "mixed",
-    },
-    BenchmarkScenario {
-        name: "batch/medium/16",
-        batch_size: 16,
-        text_profile: "medium",
     },
 ];
 
@@ -98,11 +83,9 @@ pub fn scenario_inputs(scenario: &BenchmarkScenario) -> Vec<BenchmarkInput> {
         "single/short" => vec![query_input(SHORT_TEXT)],
         "single/medium" => vec![query_input(MEDIUM_TEXT)],
         "single/long" => vec![document_input(&long_text())],
-        "batch/medium/1" | "batch/medium/4" | "batch/medium/8" | "batch/medium/16" => {
-            std::iter::repeat_with(|| query_input(MEDIUM_TEXT))
-                .take(scenario.batch_size)
-                .collect()
-        }
+        "batch/medium/8" => std::iter::repeat_with(|| query_input(MEDIUM_TEXT))
+            .take(scenario.batch_size)
+            .collect(),
         "batch/mixed/8" => vec![
             query_input(SHORT_TEXT),
             query_input(MEDIUM_TEXT),

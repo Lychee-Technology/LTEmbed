@@ -42,16 +42,30 @@ SCENARIOS: dict[str, dict[str, object]] = {
     "single/short": {"batch_size": 1, "text_profile": "short", "texts": [SHORT]},
     "single/medium": {"batch_size": 1, "text_profile": "medium", "texts": [MEDIUM]},
     "single/long": {"batch_size": 1, "text_profile": "long", "texts": [LONG]},
-    "batch/medium/1": {"batch_size": 1, "text_profile": "medium", "texts": [MEDIUM]},
-    "batch/medium/4": {"batch_size": 4, "text_profile": "medium", "texts": [MEDIUM] * 4},
     "batch/medium/8": {"batch_size": 8, "text_profile": "medium", "texts": [MEDIUM] * 8},
     "batch/mixed/8": {
         "batch_size": 8,
         "text_profile": "mixed",
         "texts": [SHORT, MEDIUM, LONG, SHORT, MEDIUM, LONG, SHORT, MEDIUM],
     },
-    "batch/medium/16": {"batch_size": 16, "text_profile": "medium", "texts": [MEDIUM] * 16},
 }
+
+
+def apply_fixture(fixture_path: Path) -> None:
+    """Override the built-in scenario texts with a resolved fixture.
+
+    The orchestrator selects real corpus chunks (e.g. jane-austen) once and writes a
+    ``{"scenarios": {name: [{"kind", "text"}]}}`` file; both this reference runner and the
+    Rust binary read it so they embed byte-identical inputs. Scenarios absent from the
+    fixture keep their built-in texts.
+    """
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    scenarios = payload.get("scenarios", {})
+    for name, texts in scenarios.items():
+        if name in SCENARIOS:
+            SCENARIOS[name]["texts"] = [
+                {"kind": item["kind"], "text": item["text"]} for item in texts
+            ]
 
 
 def progress_label(mode: str, scenario_name: str, state: str) -> str:
@@ -346,6 +360,12 @@ def parse_args():
     parser.add_argument("--scenario")
     parser.add_argument("--model-name-or-path", required=True)
     parser.add_argument("--retrieval-eval-path", type=Path, default=DEFAULT_RETRIEVAL_EVAL_PATH)
+    parser.add_argument(
+        "--fixture-path",
+        type=Path,
+        default=None,
+        help="Optional resolved-fixture JSON overriding per-scenario texts.",
+    )
     parser.add_argument("--output-dimension", type=int, default=OUTPUT_DIM)
     parser.add_argument("--l2-normalize", type=parse_bool_arg, default=True)
     parser.add_argument("--threads", type=int, default=1)
@@ -356,6 +376,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.fixture_path is not None:
+        apply_fixture(args.fixture_path)
     torch.set_num_threads(args.threads)
     transformers_logging.set_verbosity_error()
 

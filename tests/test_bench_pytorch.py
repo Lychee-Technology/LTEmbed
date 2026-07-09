@@ -20,7 +20,7 @@ def load_module():
 
 
 class BenchPyTorchTests(unittest.TestCase):
-    def test_scenarios_match_issue_38_plan(self):
+    def test_scenarios_are_representative_set(self):
         bench = load_module()
         self.assertEqual(
             list(bench.SCENARIOS.keys()),
@@ -28,15 +28,40 @@ class BenchPyTorchTests(unittest.TestCase):
                 "single/short",
                 "single/medium",
                 "single/long",
-                "batch/medium/1",
-                "batch/medium/4",
                 "batch/medium/8",
                 "batch/mixed/8",
-                "batch/medium/16",
             ],
         )
-        self.assertEqual(bench.SCENARIOS["batch/medium/16"]["batch_size"], 16)
+        self.assertEqual(bench.SCENARIOS["batch/medium/8"]["batch_size"], 8)
         self.assertEqual(bench.SCENARIOS["batch/mixed/8"]["text_profile"], "mixed")
+
+    def test_apply_fixture_overrides_scenario_texts(self):
+        import json
+        import tempfile
+
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "resolved_fixture.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "scenarios": {
+                            "single/short": [{"kind": "query", "text": "austen short"}],
+                            # unknown scenario names are ignored, not errors
+                            "not/a/scenario": [{"kind": "query", "text": "ignored"}],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bench.apply_fixture(path)
+        self.assertEqual(
+            bench.SCENARIOS["single/short"]["texts"],
+            [{"kind": "query", "text": "austen short"}],
+        )
+        # untouched scenarios keep their built-in texts
+        self.assertEqual(bench.SCENARIOS["single/medium"]["texts"], [bench.MEDIUM])
+        self.assertNotIn("not/a/scenario", bench.SCENARIOS)
 
     def test_compute_stats_uses_fixed_keys(self):
         bench = load_module()

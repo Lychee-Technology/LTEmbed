@@ -9,7 +9,7 @@ on:
       quants:
         description: Comma-separated GGUF quants to benchmark
         required: false
-        default: "Q4_K_M,Q5_K_M,Q8_0"
+        default: "IQ4_XS,Q5_K_M,Q8_0"
       warmup:
         description: Warmup iterations per scenario
         required: false
@@ -56,9 +56,9 @@ on:
         default: "scripts/retrieval_eval_cases.json"
 
 jobs:
-  # Fan out over GGUF quants. Each job benchmarks one quant and uploads an independent
-  # artifact. Cross-quant aggregation (results.json + report.md with a recommended quant)
-  # is tracked as a follow-up.
+  # Fan out over GGUF quants. Each job benchmarks one quant against the PyTorch FP32 reference
+  # on jane-austen text and uploads an independent artifact. The `report` job then aggregates
+  # every quant into results.json + report.md with a recommended quant.
   prepare:
     runs-on: ubuntu-24.04-arm
     outputs:
@@ -68,7 +68,7 @@ jobs:
         run: |
           python3 - <<'PY' >>"$GITHUB_OUTPUT"
           import json, os
-          raw = os.environ["QUANTS_INPUT"] or "Q4_K_M,Q5_K_M,Q8_0"
+          raw = os.environ["QUANTS_INPUT"] or "IQ4_XS,Q5_K_M,Q8_0"
           quants = [q.strip() for q in raw.split(",") if q.strip()]
           print("quants=" + json.dumps(quants))
           PY
@@ -90,6 +90,8 @@ jobs:
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
       STATIC_LLAMA_TAG: v0.1.151-1
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
+      FIXTURE_JSONL: ${{ github.workspace }}/tests/data/jane-austen_pride-and-prejudice.jsonl
+      FIXTURE_URL: https://raw.githubusercontent.com/Lychee-Technology/minimal-ort-builder/main/tests/data/jane-austen_pride-and-prejudice.jsonl
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -192,6 +194,13 @@ jobs:
       - name: Cargo check (visible errors)
         run: cargo check --bin benchmark_ltembed
 
+      - name: Download jane-austen benchmark corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$FIXTURE_JSONL")"
+          curl -fsSL "$FIXTURE_URL" -o "$FIXTURE_JSONL"
+          echo "corpus records: $(wc -l < "$FIXTURE_JSONL")"
+
       - name: Run Unified Benchmark Harness
         run: |
           set -euo pipefail
@@ -223,6 +232,7 @@ jobs:
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
             --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
+            --fixture-path "$FIXTURE_JSONL" \
             --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
             --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \
             $EXTRA_ARGS
@@ -257,3 +267,37 @@ jobs:
           name: benchmark-arm64-${{ matrix.quant }}
           retention-days: 3
           path: artifacts/${{ matrix.quant }}/**
+
+  # Aggregate every quant's per-job artifact into one cross-quant comparison (report.md +
+  # results.json) and surface it in the run summary, including a recommended quant.
+  report:
+    needs: benchmark
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: bench-results
+          pattern: benchmark-arm64-*
+
+      - name: Render cross-quant report
+        run: python3 scripts/render_benchmark_report.py bench-results .
+
+      - name: Upload aggregated report
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-report
+          retention-days: 3
+          path: |
+            report.md
+            results.json
+          if-no-files-found: error

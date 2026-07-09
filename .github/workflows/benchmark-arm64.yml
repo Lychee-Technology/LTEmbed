@@ -83,6 +83,11 @@ jobs:
       matrix:
         quant: ${{ fromJSON(needs.prepare.outputs.quants) }}
     env:
+      # Keep Cargo's home inside the workspace so actions/cache archives paths with zero
+      # `../` hops. Home-relative caches bake in a fixed number of parent-dir traversals at
+      # save time, which breaks restore when the runner's workspace depth differs (e.g. a
+      # cache saved on a self-hosted runner failing to extract on a GitHub-hosted one).
+      CARGO_HOME: ${{ github.workspace }}/.cargo
       MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
       GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
@@ -118,12 +123,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo/registry
+            .cargo/git
             target
-          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-arm64-cargo-v2-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-arm64-cargo-
+            ${{ runner.os }}-arm64-cargo-v2-
 
       - name: Cache Pip
         uses: actions/cache@v5

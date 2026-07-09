@@ -106,6 +106,18 @@ class RenderBenchmarkReportTests(unittest.TestCase):
             self.assertEqual(recommended, "Q5_K_M")
             self.assertIn("no quant met", reason)
 
+    def test_gate_uses_mean_not_min(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "bench-results"
+            base.mkdir()
+            # IQ4_NL: one low outlier (0.96) but mean 0.984 -> passes mean gate despite low min_cosine
+            _write_quant(base, "IQ4_NL", 190_000_000, warm=8.0, cosines=[0.96, 0.99, 0.99, 0.99, 0.99])
+            _write_quant(base, "Q5_K_M", 230_000_000, warm=9.5, cosines=[0.99, 0.99])
+            results = mod.collect_results(base)
+            recommended, _ = mod.recommend(results)
+            self.assertEqual(recommended, "IQ4_NL")  # smallest with mean >= gate
+
 
 if __name__ == "__main__":
     unittest.main()

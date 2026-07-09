@@ -8,7 +8,7 @@ benchmark matrix jobs) and reads the sibling ``benchmark-report.csv``. It render
 Markdown comparison — one row per GGUF quant — covering llama.cpp warm/cold latency, cosine
 similarity of each quant's embeddings against the PyTorch FP32 reference, retrieval quality, GGUF
 size, and speedup over PyTorch. A recommended quant is chosen (smallest GGUF that keeps the
-worst-case cosine at or above the quality gate).
+mean cosine at or above the quality gate).
 
 Writes:
 
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Worst-case cosine (vs PyTorch FP32) a quant must keep to be considered "quality-preserving".
+# Mean cosine (vs PyTorch FP32) a quant must keep to be considered "quality-preserving".
 QUALITY_GATE = 0.98
 
 # (json_key, column header, kind) — kind drives formatting in _fmt.
@@ -113,9 +113,9 @@ def summarize_quant(metadata: dict[str, Any], csv_rows: list[dict]) -> dict[str,
 
 
 def recommend(results: list[dict[str, Any]]) -> tuple[str | None, str]:
-    """Pick the smallest GGUF that keeps worst-case cosine >= the quality gate."""
+    """Pick the smallest GGUF that keeps mean cosine >= the quality gate."""
     gated = [
-        r for r in results if r.get("min_cosine") is not None and r["min_cosine"] >= QUALITY_GATE
+        r for r in results if r.get("mean_cosine") is not None and r["mean_cosine"] >= QUALITY_GATE
     ]
     if gated:
         best = min(
@@ -123,16 +123,15 @@ def recommend(results: list[dict[str, Any]]) -> tuple[str | None, str]:
             key=lambda r: (r.get("gguf_size_bytes") or float("inf"), r.get("warm_ms") or float("inf")),
         )
         reason = (
-            f"smallest GGUF whose worst-case cosine vs FP32 stays ≥ {QUALITY_GATE:.2f} "
-            f"(min_cosine={_fmt('cos', best['min_cosine'])}, "
-            f"size={_fmt('mb', best['size_mb'])} MB)"
+            f"smallest GGUF whose mean cosine vs FP32 stays ≥ {QUALITY_GATE:.2f} "
+            f"(mean_cosine={_fmt('cos', best['mean_cosine'])}, size={_fmt('mb', best['size_mb'])} MB)"
         )
         return best["quant"], reason
     scored = [r for r in results if r.get("mean_cosine") is not None]
     if scored:
         best = max(scored, key=lambda r: r["mean_cosine"])
         reason = (
-            f"no quant met the {QUALITY_GATE:.2f} worst-case gate; highest mean cosine vs FP32 "
+            f"no quant met the {QUALITY_GATE:.2f} mean cosine gate; highest mean cosine vs FP32 "
             f"(mean_cosine={_fmt('cos', best['mean_cosine'])})"
         )
         return best["quant"], reason
@@ -161,7 +160,7 @@ def build_report(results: list[dict[str, Any]]) -> str:
     parts = [
         "# Benchmark comparison — GGUF quants vs PyTorch FP32",
         "",
-        f"Model: `{model_id}` · Runner: `{runner}` · Quality gate: cosine ≥ {QUALITY_GATE:.2f}",
+        f"Model: `{model_id}` · Runner: `{runner}` · Quality gate: mean cosine ≥ {QUALITY_GATE:.2f}",
         "",
         render_table(results),
         "",

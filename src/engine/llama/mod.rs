@@ -7,7 +7,8 @@
 
 mod ffi;
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::sync::{Mutex, Once};
 use std::time::Instant;
@@ -17,11 +18,29 @@ use crate::traits::tokenizer::TokenizerOutput;
 
 use super::backend::{BackendRunProfile, EmbeddingBackend};
 
+/// llama.cpp log callback: drops INFO/DEBUG chatter (e.g. per-token "control token ... is not
+/// marked as EOG" vocab-load lines) and forwards WARN and above to stderr.
+extern "C" fn quiet_log_callback(
+    level: ffi::ggml_log_level,
+    text: *const c_char,
+    _user: *mut c_void,
+) {
+    if level >= ffi::GGML_LOG_LEVEL_WARN && !text.is_null() {
+        if let Ok(s) = unsafe { CStr::from_ptr(text) }.to_str() {
+            eprint!("{s}");
+        }
+    }
+}
+
 /// llama.cpp requires a one-time process-global backend init. It is never freed (process
 /// exit reclaims it); freeing per-backend would break any concurrently-live backend.
 fn ensure_backend_initialized() {
     static INIT: Once = Once::new();
-    INIT.call_once(|| unsafe { ffi::llama_backend_init() });
+    INIT.call_once(|| unsafe {
+        // Install the log filter before init/model load so it also catches load-time lines.
+        ffi::llama_log_set(Some(quiet_log_callback), std::ptr::null_mut());
+        ffi::llama_backend_init();
+    });
 }
 
 /// Owns the raw llama.cpp handles. The pointers are only ever touched behind the
@@ -156,11 +175,13 @@ impl LlamaBackend {
         }
         batch.n_tokens = n;
 
-        let rc = ffi::llama_decode(ctx, batch);
+        // Non-causal encoder context (see `load`): call encode(), not decode(). Using decode()
+        // makes recent llama.cpp warn and silently fall back to encode() per input.
+        let rc = ffi::llama_encode(ctx, batch);
         if rc != 0 {
             ffi::llama_batch_free(batch);
             return Err(LTEmbedError::Inference(InferenceError::Backend(format!(
-                "llama_decode failed (rc={rc})"
+                "llama_encode failed (rc={rc})"
             ))));
         }
         ffi::llama_synchronize(ctx);

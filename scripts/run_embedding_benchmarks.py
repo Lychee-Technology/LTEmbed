@@ -504,53 +504,40 @@ def collect_cold_rows(
     return rows, results
 
 
-def collect_correctness_rows(
-    *,
-    args: argparse.Namespace,
-    ctx: RunContext,
-    implementations: list[str],
-    reference: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    rows: list[dict[str, str]] = []
-    payloads: dict[str, Any] = {}
-    for implementation in implementations:
-        payloads[implementation] = gather_payload(
-            implementation, "correctness", args, reference=reference
-        )
+def _language_from_doc_id(doc_id: str) -> str:
+    return "cn-en/zh" if doc_id.endswith("_zh") else "cn-en/en"
 
-    reference_payload = payloads["pytorch"]
-    for implementation, payload in payloads.items():
-        version = resolved_implementation_version(implementation, payload, ctx.git_revision)
-        for entry in payload["results"]:
-            scenario = scenario_from_name(entry["scenario"])
+
+def derive_correctness_rows(
+    *,
+    ctx: RunContext,
+    args: argparse.Namespace,
+    ltembed_retrieval: dict[str, Any],
+    reference_retrieval: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Cosine ltembed-vs-FP32 per retrieval document — fidelity for free from the retrieval pass."""
+    reference_docs: dict[str, list[float]] = {}
+    for result in reference_retrieval["results"]:
+        for doc in result["documents"]:
+            reference_docs[str(doc["id"])] = doc["embedding"]
+
+    rows: list[dict[str, str]] = []
+    version = resolved_implementation_version("ltembed", {}, ctx.git_revision)
+    for result in ltembed_retrieval["results"]:
+        for doc in result["documents"]:
+            doc_id = str(doc["id"])
+            similarity = cosine_similarity(doc["embedding"], reference_docs[doc_id])
+            scenario = Scenario(name=_language_from_doc_id(doc_id), batch_size=1, text_profile="correctness")
             base_fields = base_row_fields(
-                ctx=ctx,
-                implementation=implementation,
-                implementation_version=version,
-                scenario=scenario,
-                mode="correctness",
-                threads=args.threads,
-                warmup_iters=0,
-                timed_iters=0,
+                ctx=ctx, implementation="ltembed", implementation_version=version,
+                scenario=scenario, mode="correctness", threads=args.threads,
+                warmup_iters=0, timed_iters=0,
             )
-            if implementation == "pytorch":
-                row = build_correctness_row(base_fields=base_fields, cosine_similarity=1.0, threshold=1.0)
-            else:
-                reference_entry = next(
-                    item for item in reference_payload["results"] if item["scenario"] == entry["scenario"]
-                )
-                similarities = [
-                    cosine_similarity(lhs, rhs)
-                    for lhs, rhs in zip(entry["embeddings"], reference_entry["embeddings"], strict=True)
-                ]
-                average_similarity = sum(similarities) / len(similarities)
-                row = build_correctness_row(
-                    base_fields=base_fields,
-                    cosine_similarity=average_similarity,
-                    threshold=args.correctness_threshold,
-                )
-            rows.append(row)
-    return rows, payloads
+            rows.append(build_correctness_row(
+                base_fields=base_fields, cosine_similarity=similarity,
+                threshold=args.correctness_threshold,
+            ))
+    return rows
 
 
 def compute_retrieval_metrics(
@@ -673,7 +660,6 @@ def summary_lines(
     git_revision: str,
     warm_payloads: dict[str, dict[str, Any]],
     cold_payloads: dict[str, dict[str, Any]] | None,
-    correctness_payloads: dict[str, Any] | None,
     retrieval_payloads: dict[str, Any] | None = None,
     reference: dict[str, Any] | None = None,
 ) -> list[str]:
@@ -689,19 +675,18 @@ def summary_lines(
         f"ltembed_version={resolved_implementation_version('ltembed', warm_payloads.get('ltembed', {}), git_revision)}"
     )
     # In reference-consume mode PyTorch never runs a latency pass, so pull its versions from
-    # the loaded reference (correctness payload) instead of the warm payloads.
+    # the loaded reference (retrieval payload) instead of the warm payloads.
     pytorch_payload = warm_payloads.get("pytorch")
     if pytorch_payload is None and reference is not None:
-        pytorch_payload = reference.get("correctness")
+        pytorch_payload = reference.get("retrieval")
     pytorch_payload = pytorch_payload or {}
     lines.append(f"pytorch_version={pytorch_payload.get('implementation_version', '')}")
     lines.append(f"transformers_version={pytorch_payload.get('transformers_version', '')}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
-    if correctness_payloads is not None:
-        lines.append("correctness=enabled")
     if retrieval_payloads is not None:
         lines.append("retrieval_eval=enabled")
+        lines.append("correctness=derived")
     return lines
 
 
@@ -754,9 +739,10 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Run ONLY the PyTorch runner (correctness + retrieval) and write an embeddings-only "
+            "Run ONLY the PyTorch retrieval runner and write an embeddings-only "
             "reference JSON to this path, then exit. The PyTorch reference is quant-independent, "
-            "so it is produced once per workflow and shared with every quant job."
+            "so it is produced once per workflow and shared with every quant job. Correctness is "
+            "derived from the retrieval embeddings, so no separate correctness pass is needed."
         ),
     )
     parser.add_argument(
@@ -765,12 +751,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Path to a reference JSON produced by --emit-reference. When set, warm/cold run "
-            "ltembed only and the correctness/retrieval PyTorch baseline is loaded from the "
-            "reference instead of launching PyTorch."
+            "ltembed only and the retrieval PyTorch baseline (also used to derive correctness) "
+            "is loaded from the reference instead of launching PyTorch."
         ),
     )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-retrieval-eval", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
     parser.add_argument(
@@ -809,19 +794,16 @@ def main() -> int:
 
 
 def _emit_reference(*, args: argparse.Namespace) -> int:
-    """Run only the PyTorch runner (correctness + retrieval) and write an embeddings-only reference."""
+    """Run only PyTorch retrieval and write an embeddings-only reference."""
     resolve_fixture_if_present(args)
     reference = {
-        "correctness": run_json_command(
-            build_benchmark_command("pytorch", "correctness", args), "pytorch correctness"
-        ),
         "retrieval": run_json_command(
             build_benchmark_command("pytorch", "retrieval", args), "pytorch retrieval"
         ),
     }
     args.emit_reference.parent.mkdir(parents=True, exist_ok=True)
     args.emit_reference.write_text(json.dumps(reference), encoding="utf-8")
-    print(f"wrote PyTorch reference (correctness + retrieval) to {args.emit_reference}")
+    print(f"wrote PyTorch retrieval reference to {args.emit_reference}")
     return 0
 
 
@@ -860,19 +842,17 @@ def _run(
         cold_rows, cold_payloads = collect_cold_rows(args=args, ctx=ctx, implementations=latency_impls)
         rows.extend(cold_rows)
 
-    correctness_payloads = None
-    if args.include_correctness:
-        correctness_rows, correctness_payloads = collect_correctness_rows(
-            args=args, ctx=ctx, implementations=embedding_impls, reference=reference
-        )
-        rows.extend(correctness_rows)
-
     retrieval_payloads = None
     if args.include_retrieval_eval:
         retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(
             args=args, ctx=ctx, implementations=embedding_impls, reference=reference
         )
         rows.extend(retrieval_rows)
+        rows.extend(derive_correctness_rows(
+            ctx=ctx, args=args,
+            ltembed_retrieval=retrieval_payloads["ltembed"],
+            reference_retrieval=retrieval_payloads["pytorch"],
+        ))
 
     write_csv_report(rows, args.output_csv)
 
@@ -881,7 +861,6 @@ def _run(
         git_revision=git_revision,
         warm_payloads=warm_payloads,
         cold_payloads=cold_payloads,
-        correctness_payloads=correctness_payloads,
         retrieval_payloads=retrieval_payloads,
         reference=reference,
     )

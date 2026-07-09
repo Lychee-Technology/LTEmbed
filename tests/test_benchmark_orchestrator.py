@@ -261,9 +261,33 @@ class ReferenceModeTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             payload = json.loads(out.read_text())
-        self.assertEqual(set(payload.keys()), {"correctness", "retrieval"})
-        self.assertEqual(payload["correctness"]["mode"], "correctness")
+        self.assertEqual(set(payload.keys()), {"retrieval"})
         self.assertEqual(payload["retrieval"]["mode"], "retrieval")
+
+    def test_derive_correctness_rows_from_retrieval(self):
+        bench = load_module()
+        ltembed = {"results": [{"dataset_name": "cn-en-crosslingual-v1", "documents": [
+            {"id": "pair_0_zh", "embedding": [1.0, 0.0]},
+            {"id": "pair_0_en", "embedding": [0.0, 1.0]},
+        ]}]}
+        reference = {"results": [{"dataset_name": "cn-en-crosslingual-v1", "documents": [
+            {"id": "pair_0_zh", "embedding": [1.0, 0.0]},   # identical -> cos 1.0
+            {"id": "pair_0_en", "embedding": [1.0, 0.0]},   # orthogonal -> cos 0.0
+        ]}]}
+        ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                               model_source="hf", git_revision="sha", host={
+                                   "host_os": "linux", "host_arch": "arm64",
+                                   "cpu_model": "c", "runner_labels": ""})
+        args = SimpleNamespace(threads=1, correctness_threshold=0.98)
+        rows = bench.derive_correctness_rows(ctx=ctx, args=args,
+                                             ltembed_retrieval=ltembed, reference_retrieval=reference)
+        by_scenario = {r["scenario"]: r for r in rows}
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(by_scenario["cn-en/zh"]["cosine_similarity_vs_pytorch"], "1.000000")
+        self.assertEqual(by_scenario["cn-en/zh"]["status"], "pass")
+        self.assertEqual(by_scenario["cn-en/en"]["cosine_similarity_vs_pytorch"], "0.000000")
+        self.assertEqual(by_scenario["cn-en/en"]["status"], "fail")
+        self.assertTrue(all(r["implementation"] == "ltembed" and r["mode"] == "correctness" for r in rows))
 
 
 class RunTests(unittest.TestCase):
@@ -300,7 +324,6 @@ class RunTests(unittest.TestCase):
             emit_reference=None,
             reference_path=None,
             include_cold_start=True,
-            include_correctness=True,
             include_retrieval_eval=True,
             correctness_threshold=0.98,
             output_csv=tmp / "report.csv",
@@ -311,19 +334,11 @@ class RunTests(unittest.TestCase):
         return bench, args
 
     @staticmethod
-    def _embeddings_payload(impl, version, scenarios):
-        return {
-            "implementation": impl,
-            "implementation_version": version,
-            **({"transformers_version": "4.45.0"} if impl == "pytorch" else {}),
-            "results": [{"scenario": s, "embeddings": [[1.0, 0.0, 0.0]]} for s in scenarios],
-        }
-
-    @staticmethod
     def _retrieval_payload(impl, version):
         return {
             "implementation": impl,
             "implementation_version": version,
+            **({"transformers_version": "4.45.0"} if impl == "pytorch" else {}),
             "results": [{
                 "dataset_name": "cn-en-crosslingual-v1",
                 "queries": [
@@ -361,8 +376,6 @@ class RunTests(unittest.TestCase):
                 return self._warm_payload(impl, version, scenarios)
             if " cold" in label:
                 return self._cold_payload(impl, version, label.rsplit(" ", 1)[1])
-            if " correctness" in label:
-                return self._embeddings_payload(impl, version, scenarios)
             if " retrieval" in label:
                 return self._retrieval_payload(impl, version)
             raise AssertionError(f"unexpected label {label!r}")
@@ -387,10 +400,14 @@ class RunTests(unittest.TestCase):
         modes = [r["mode"] for r in rows]
         self.assertEqual(modes.count("warm_latency"), 4)   # 2 impls x 2 scenarios
         self.assertEqual(modes.count("cold_start"), 4)     # 2 impls x 2 scenarios
-        self.assertEqual(modes.count("correctness"), 4)    # 2 impls x 2 scenarios
+        # correctness is derived from retrieval documents, ltembed-only (2 docs: _zh, _en)
+        correctness_rows = [r for r in rows if r["mode"] == "correctness"]
+        self.assertEqual(len(correctness_rows), 2)
+        self.assertTrue(all(r["implementation"] == "ltembed" for r in correctness_rows))
+        self.assertEqual({r["scenario"] for r in correctness_rows}, {"cn-en/zh", "cn-en/en"})
         self.assertEqual(modes.count("retrieval_eval"), 2)  # 2 impls x 1 case
         # ltembed correctness cosine vs pytorch reference == 1.0 (identical mocked embeddings)
-        corr = [r for r in rows if r["mode"] == "correctness" and r["implementation"] == "ltembed"][0]
+        corr = correctness_rows[0]
         self.assertEqual(corr["cosine_similarity_vs_pytorch"], "1.000000")
         # both@3 present on retrieval rows
         ret = [r for r in rows if r["mode"] == "retrieval_eval" and r["implementation"] == "ltembed"][0]
@@ -401,7 +418,6 @@ class RunTests(unittest.TestCase):
             tmp = Path(tmpdir)
             scenarios = ["single/zh", "single/en"]
             reference = {
-                "correctness": self._embeddings_payload("pytorch", "2.5.0", scenarios),
                 "retrieval": self._retrieval_payload("pytorch", "2.5.0"),
             }
             reference_path = tmp / "reference.json"
@@ -416,13 +432,17 @@ class RunTests(unittest.TestCase):
             modes = [r["mode"] for r in rows]
             self.assertEqual(modes.count("warm_latency"), 2)    # ltembed only x 2 scenarios
             self.assertEqual(modes.count("cold_start"), 2)      # ltembed only x 2 scenarios
-            self.assertEqual(modes.count("correctness"), 4)     # ltembed + pytorch(from ref) x 2
+            # correctness is derived from retrieval documents, ltembed-only (2 docs: _zh, _en)
+            correctness_rows = [r for r in rows if r["mode"] == "correctness"]
+            self.assertEqual(len(correctness_rows), 2)
+            self.assertTrue(all(r["implementation"] == "ltembed" for r in correctness_rows))
             self.assertEqual(modes.count("retrieval_eval"), 2)  # ltembed + pytorch(from ref)
             # summary still records the pytorch version pulled from the reference
             summary = (tmp / "summary.txt").read_text()
             self.assertIn("ltembed_version=abc123", summary)
             self.assertIn("pytorch_version=2.5.0", summary)
             self.assertIn("transformers_version=4.45.0", summary)
+            self.assertIn("correctness=derived", summary)
 
 
 class WorkflowTests(unittest.TestCase):

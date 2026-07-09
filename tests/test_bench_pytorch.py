@@ -20,48 +20,11 @@ def load_module():
 
 
 class BenchPyTorchTests(unittest.TestCase):
-    def test_scenarios_are_representative_set(self):
+    def test_scenarios_and_fixture_machinery_removed(self):
         bench = load_module()
-        self.assertEqual(
-            list(bench.SCENARIOS.keys()),
-            [
-                "single/short",
-                "single/medium",
-                "single/long",
-                "batch/medium/8",
-                "batch/mixed/8",
-            ],
-        )
-        self.assertEqual(bench.SCENARIOS["batch/medium/8"]["batch_size"], 8)
-        self.assertEqual(bench.SCENARIOS["batch/mixed/8"]["text_profile"], "mixed")
-
-    def test_apply_fixture_overrides_scenario_texts(self):
-        import json
-        import tempfile
-
-        bench = load_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "resolved_fixture.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "scenarios": {
-                            "single/short": [{"kind": "query", "text": "austen short"}],
-                            # unknown scenario names are ignored, not errors
-                            "not/a/scenario": [{"kind": "query", "text": "ignored"}],
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            bench.apply_fixture(path)
-        self.assertEqual(
-            bench.SCENARIOS["single/short"]["texts"],
-            [{"kind": "query", "text": "austen short"}],
-        )
-        # untouched scenarios keep their built-in texts
-        self.assertEqual(bench.SCENARIOS["single/medium"]["texts"], [bench.MEDIUM])
-        self.assertNotIn("not/a/scenario", bench.SCENARIOS)
+        self.assertFalse(hasattr(bench, "SCENARIOS"))
+        self.assertFalse(hasattr(bench, "apply_fixture"))
+        self.assertFalse(hasattr(bench, "warm_payload"))
 
     def test_compute_stats_uses_fixed_keys(self):
         bench = load_module()
@@ -129,8 +92,8 @@ class BenchPyTorchTests(unittest.TestCase):
 
     def test_progress_label_includes_mode_scenario_and_state(self):
         bench = load_module()
-        label = bench.progress_label("warm", "batch/mixed/8", "start")
-        self.assertEqual(label, "warm batch/mixed/8 start")
+        self.assertEqual(bench.progress_label("retrieval", "cn-en-crosslingual-v1", "start"),
+                         "retrieval cn-en-crosslingual-v1 start")
 
     def test_load_model_moves_cpu_model_to_float32(self):
         bench = load_module()

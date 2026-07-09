@@ -2,7 +2,7 @@
 """
 PyTorch benchmark runner for jina-embeddings-v5-text-nano-retrieval.
 
-Outputs machine-readable JSON for warm latency, cold start, or correctness.
+Outputs machine-readable JSON for retrieval correctness.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import io
 import json
 import statistics
 import sys
-import time
 
 import numpy as np
 import torch
@@ -27,45 +26,6 @@ RAW_DIM = 768
 OUTPUT_DIM = 512
 MAX_LENGTH = 8192
 DEFAULT_RETRIEVAL_EVAL_PATH = Path(__file__).resolve().with_name("retrieval_eval_cases.json")
-
-SHORT = {"kind": "query", "text": "Hello, world!"}
-MEDIUM = {
-    "kind": "query",
-    "text": "What is the impact of large language models on software engineering productivity?",
-}
-LONG = {
-    "kind": "document",
-    "text": "The quick brown fox jumps over the lazy dog. " * 30,
-}
-
-SCENARIOS: dict[str, dict[str, object]] = {
-    "single/short": {"batch_size": 1, "text_profile": "short", "texts": [SHORT]},
-    "single/medium": {"batch_size": 1, "text_profile": "medium", "texts": [MEDIUM]},
-    "single/long": {"batch_size": 1, "text_profile": "long", "texts": [LONG]},
-    "batch/medium/8": {"batch_size": 8, "text_profile": "medium", "texts": [MEDIUM] * 8},
-    "batch/mixed/8": {
-        "batch_size": 8,
-        "text_profile": "mixed",
-        "texts": [SHORT, MEDIUM, LONG, SHORT, MEDIUM, LONG, SHORT, MEDIUM],
-    },
-}
-
-
-def apply_fixture(fixture_path: Path) -> None:
-    """Override the built-in scenario texts with a resolved fixture.
-
-    The orchestrator selects real corpus chunks (e.g. jane-austen) once and writes a
-    ``{"scenarios": {name: [{"kind", "text"}]}}`` file; both this reference runner and the
-    Rust binary read it so they embed byte-identical inputs. Scenarios absent from the
-    fixture keep their built-in texts.
-    """
-    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
-    scenarios = payload.get("scenarios", {})
-    for name, texts in scenarios.items():
-        if name in SCENARIOS:
-            SCENARIOS[name]["texts"] = [
-                {"kind": item["kind"], "text": item["text"]} for item in texts
-            ]
 
 
 def progress_label(mode: str, scenario_name: str, state: str) -> str:
@@ -168,134 +128,6 @@ def embed_texts(
     return normalized.tolist()
 
 
-def measure_warm_stats(
-    model,
-    tokenizer,
-    scenario_name: str,
-    warmup: int,
-    iters: int,
-    output_dimension: int,
-    l2_normalize: bool,
-) -> dict[str, float]:
-    texts = list(SCENARIOS[scenario_name]["texts"])
-    for _ in range(warmup):
-        embed_texts(
-            model,
-            tokenizer,
-            texts,
-            output_dimension=output_dimension,
-            l2_normalize=l2_normalize,
-        )
-
-    samples_ms = []
-    for _ in range(iters):
-        start = time.perf_counter_ns()
-        embed_texts(
-            model,
-            tokenizer,
-            texts,
-            output_dimension=output_dimension,
-            l2_normalize=l2_normalize,
-        )
-        samples_ms.append((time.perf_counter_ns() - start) / 1_000_000)
-    return compute_stats(samples_ms)
-
-
-def measure_cold_stats(
-    model_name_or_path: str,
-    scenario_name: str,
-    output_dimension: int,
-    l2_normalize: bool,
-) -> dict[str, float]:
-    start = time.perf_counter_ns()
-    model, tokenizer = load_model(model_name_or_path)
-    embed_texts(
-        model,
-        tokenizer,
-        list(SCENARIOS[scenario_name]["texts"]),
-        output_dimension=output_dimension,
-        l2_normalize=l2_normalize,
-    )
-    elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
-    return compute_stats([elapsed_ms])
-
-
-def warm_payload(args) -> dict[str, object]:
-    model, tokenizer = load_model(args.model_name_or_path)
-    results = []
-    for scenario_name in SCENARIOS:
-        emit_progress("warm", scenario_name, "start")
-        stats = measure_warm_stats(
-            model,
-            tokenizer,
-            scenario_name,
-            args.warmup,
-            args.iters,
-            args.output_dimension,
-            args.l2_normalize,
-        )
-        emit_progress("warm", scenario_name, "done")
-        results.append(
-            {
-                "scenario": scenario_name,
-                "stats": stats,
-            }
-        )
-    return {
-        "implementation": "pytorch",
-        "implementation_version": torch.__version__,
-        "transformers_version": transformers.__version__,
-        "results": results,
-    }
-
-
-def cold_payload(args) -> dict[str, object]:
-    if not args.scenario:
-        raise ValueError("--scenario is required for cold mode")
-    emit_progress("cold", args.scenario, "start")
-    stats = measure_cold_stats(
-        args.model_name_or_path,
-        args.scenario,
-        args.output_dimension,
-        args.l2_normalize,
-    )
-    emit_progress("cold", args.scenario, "done")
-    return {
-        "implementation": "pytorch",
-        "implementation_version": torch.__version__,
-        "transformers_version": transformers.__version__,
-        "scenario": args.scenario,
-        "stats": stats,
-    }
-
-
-def correctness_payload(args) -> dict[str, object]:
-    model, tokenizer = load_model(args.model_name_or_path)
-    results = []
-    for scenario_name, scenario in SCENARIOS.items():
-        emit_progress("correctness", scenario_name, "start")
-        embeddings = embed_texts(
-            model,
-            tokenizer,
-            list(scenario["texts"]),
-            output_dimension=args.output_dimension,
-            l2_normalize=args.l2_normalize,
-        )
-        emit_progress("correctness", scenario_name, "done")
-        results.append(
-            {
-                "scenario": scenario_name,
-                "embeddings": embeddings,
-            }
-        )
-    return {
-        "implementation": "pytorch",
-        "implementation_version": torch.__version__,
-        "transformers_version": transformers.__version__,
-        "results": results,
-    }
-
-
 def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if "cases" in payload:
@@ -374,22 +206,13 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = parse_args()
-    if args.fixture_path is not None:
-        apply_fixture(args.fixture_path)
     torch.set_num_threads(args.threads)
     transformers_logging.set_verbosity_error()
-
-    if args.mode == "warm":
-        payload = warm_payload(args)
-    elif args.mode == "cold":
-        payload = cold_payload(args)
-    elif args.mode == "retrieval":
-        payload = retrieval_payload(args)
-    else:
-        payload = correctness_payload(args)
-
+    if args.mode != "retrieval":
+        raise SystemExit(f"bench_pytorch now supports only --mode retrieval (got {args.mode})")
+    payload = retrieval_payload(args)
     print(json.dumps(payload))
 
 

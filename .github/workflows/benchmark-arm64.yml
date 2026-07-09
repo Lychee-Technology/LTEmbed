@@ -60,7 +60,7 @@ jobs:
   # artifact. Cross-quant aggregation (results.json + report.md with a recommended quant)
   # is tracked as a follow-up.
   prepare:
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     outputs:
       quants: ${{ steps.parse.outputs.quants }}
     steps:
@@ -77,7 +77,7 @@ jobs:
 
   benchmark:
     needs: prepare
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +89,7 @@ jobs:
       BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
       STATIC_LLAMA_TAG: v0.1.151-1
-      BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
+      BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v6

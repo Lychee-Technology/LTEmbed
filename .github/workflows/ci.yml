@@ -6,8 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  # Prebuilt static llama.cpp archives the crate links against (see build.rs). The crate
+  # cannot build without these, so every job fetches + verifies them and exports
+  # STATIC_LLAMA_DIR before running cargo.
+  STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
+  STATIC_LLAMA_TAG: v0.1.151-1
 
 jobs:
   test:
@@ -31,6 +39,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Fetch prebuilt static llama.cpp artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-static-llama.sh
 
       - name: Create empty assets/ directory (model.safetensors not in CI)
         run: mkdir -p assets
@@ -66,6 +79,11 @@ jobs:
           key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-lint-
+
+      - name: Fetch prebuilt static llama.cpp artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-static-llama.sh
 
       - name: Check formatting
         run: cargo fmt --check

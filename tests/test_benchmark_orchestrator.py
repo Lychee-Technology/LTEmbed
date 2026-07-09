@@ -472,6 +472,18 @@ class WorkflowTests(unittest.TestCase):
         workflow = self._workflow()
         self.assertIn('export LTEMBED_PROFILE="1"', workflow)
 
+    def test_reference_job_generates_both_files_and_no_jane_austen(self):
+        workflow = self._workflow()
+        self.assertIn("--fixture-output reference/cn_en_fixture.json", workflow)
+        self.assertIn("--emit-reference reference/reference.json", workflow)
+        self.assertNotIn("jane-austen", workflow)
+
+    def test_matrix_jobs_consume_fixture_and_reference(self):
+        workflow = self._workflow()
+        self.assertIn("--fixture-path reference/cn_en_fixture.json", workflow)
+        self.assertIn("--reference-path reference/reference.json", workflow)
+        self.assertNotIn("--no-include-correctness", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

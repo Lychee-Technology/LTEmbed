@@ -40,11 +40,6 @@ on:
         required: false
         default: true
         type: boolean
-      include_correctness:
-        description: Include correctness checks against the PyTorch/F32 reference
-        required: false
-        default: true
-        type: boolean
       include_retrieval_eval:
         description: Include the CN/EN cross-lingual retrieval eval
         required: false
@@ -60,14 +55,12 @@ env:
   # Shared model snapshot path (FP32 weights + tokenizer + remote code) used by both the
   # reference job (PyTorch) and each quant job (tokenizer for the GGUF bundle).
   MODEL_DIR_REL: .cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
-  FIXTURE_REL: tests/data/jane-austen_pride-and-prejudice.jsonl
-  FIXTURE_URL: https://raw.githubusercontent.com/Lychee-Technology/minimal-ort-builder/main/tests/data/jane-austen_pride-and-prejudice.jsonl
   CN_EN_CSV_REL: tests/CN_EN_Data.csv
 
 jobs:
   # Fan out over GGUF quants. Each job benchmarks one quant against a shared PyTorch FP32
-  # reference (produced once by the `reference` job) on jane-austen text, plus a CN/EN
-  # cross-lingual retrieval eval, and uploads an independent artifact. The `report` job then
+  # reference (produced once by the `reference` job) using the generated CN/EN cross-lingual
+  # retrieval fixture, and uploads an independent artifact. The `report` job then
   # aggregates every quant into results.json + report.md with a recommended quant.
   prepare:
     runs-on: ubuntu-24.04-arm
@@ -93,14 +86,13 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
-      FIXTURE_JSONL: ${{ github.workspace }}/tests/data/jane-austen_pride-and-prejudice.jsonl
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -146,13 +138,6 @@ jobs:
           )
           PY
 
-      - name: Download jane-austen benchmark corpus
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$FIXTURE_JSONL")"
-          curl -fsSL "$FIXTURE_URL" -o "$FIXTURE_JSONL"
-          echo "corpus records: $(wc -l < "$FIXTURE_JSONL")"
-
       - name: Generate CN/EN cross-lingual retrieval eval
         run: |
           set -euo pipefail
@@ -160,9 +145,10 @@ jobs:
           python3 scripts/build_cn_en_retrieval_cases.py \
             --csv "$CN_EN_CSV_REL" \
             --num-pairs "${{ inputs.retrieval_pairs }}" \
-            --output reference/cn_en_retrieval_cases.json
+            --output reference/cn_en_retrieval_cases.json \
+            --fixture-output reference/cn_en_fixture.json
 
-      - name: Emit PyTorch reference (correctness + retrieval embeddings)
+      - name: Emit PyTorch reference (retrieval embeddings)
         run: |
           set -euo pipefail
           EXTRA_ARGS=""
@@ -176,8 +162,6 @@ jobs:
             --output-dimension "${{ inputs.output_dimension }}" \
             --threads "${{ inputs.threads }}" \
             --retrieval-eval-path reference/cn_en_retrieval_cases.json \
-            --fixture-path "$FIXTURE_JSONL" \
-            --output-csv reference/benchmark-report.csv \
             --emit-reference reference/reference.json \
             $EXTRA_ARGS
 
@@ -188,7 +172,7 @@ jobs:
           retention-days: 3
           path: |
             reference/reference.json
-            reference/resolved_fixture.json
+            reference/cn_en_fixture.json
             reference/cn_en_retrieval_cases.json
           if-no-files-found: error
 
@@ -211,7 +195,6 @@ jobs:
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
       STATIC_LLAMA_TAG: v0.1.151-1
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
-      FIXTURE_JSONL: ${{ github.workspace }}/tests/data/jane-austen_pride-and-prejudice.jsonl
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -230,7 +213,7 @@ jobs:
             || rustup toolchain install 1.94.0 --profile minimal --component clippy --component rustfmt --force
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -334,13 +317,6 @@ jobs:
           name: benchmark-reference
           path: reference
 
-      - name: Download jane-austen benchmark corpus
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$FIXTURE_JSONL")"
-          curl -fsSL "$FIXTURE_URL" -o "$FIXTURE_JSONL"
-          echo "corpus records: $(wc -l < "$FIXTURE_JSONL")"
-
       - name: Run Unified Benchmark Harness
         run: |
           set -euo pipefail
@@ -352,9 +328,6 @@ jobs:
           fi
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
-          fi
-          if [ "${{ inputs.include_correctness }}" != "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-include-correctness"
           fi
           if [ -n "${{ inputs.scenario }}" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --scenario ${{ inputs.scenario }}"
@@ -373,7 +346,7 @@ jobs:
             --threads "${{ inputs.threads }}" \
             --retrieval-eval-path reference/cn_en_retrieval_cases.json \
             --reference-path reference/reference.json \
-            --fixture-path "$FIXTURE_JSONL" \
+            --fixture-path reference/cn_en_fixture.json \
             --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
             --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \
             $EXTRA_ARGS
@@ -420,7 +393,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 

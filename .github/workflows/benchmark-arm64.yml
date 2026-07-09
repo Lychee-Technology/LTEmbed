@@ -99,6 +99,16 @@ jobs:
       - name: Install Rust 1.94.0
         uses: dtolnay/rust-toolchain@1.94.0
 
+      # rust-toolchain.toml requests clippy+rustfmt, which rustup auto-installs on the first
+      # cargo invocation. On the GitHub-hosted arm64 image that install can hit a stale
+      # cargo-clippy binary ("detected conflict: 'bin/cargo-clippy'") and abort the build.
+      # Reconcile the components up front so cargo runs cleanly.
+      - name: Reconcile toolchain components
+        run: |
+          set -euo pipefail
+          rustup component add clippy rustfmt --toolchain 1.94.0 \
+            || rustup toolchain install 1.94.0 --profile minimal --component clippy --component rustfmt --force
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:

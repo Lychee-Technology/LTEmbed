@@ -67,6 +67,22 @@ def build_case(pairs: list[tuple[str, str]], name: str) -> dict[str, Any]:
     return {"name": name, "documents": documents, "queries": queries}
 
 
+def pick_representative(pairs: list[tuple[str, str]]) -> tuple[str, str]:
+    """The median-English-length pair — a representative, non-degenerate sentence."""
+    ranked = sorted(pairs, key=lambda pair: len(pair[1]))
+    return ranked[len(ranked) // 2]
+
+
+def build_fixture(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    zh, en = pick_representative(pairs)
+    return {
+        "scenarios": {
+            "single/zh": [{"kind": "query", "text": zh}],
+            "single/en": [{"kind": "query", "text": en}],
+        }
+    }
+
+
 def build_payload(csv_path: Path, num_pairs: int, name: str) -> dict[str, Any]:
     pairs = sample_pairs(load_pairs(csv_path), num_pairs)
     return {"cases": [build_case(pairs, name)]}
@@ -78,6 +94,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--num-pairs", type=int, default=500)
     parser.add_argument("--name", default=DEFAULT_NAME)
+    parser.add_argument("--fixture-output", type=Path, default=None,
+                        help="Optional path to also write the single/zh + single/en latency fixture.")
     return parser.parse_args()
 
 
@@ -91,6 +109,13 @@ def main() -> int:
         f"wrote {args.output}: {len(case['documents'])} documents, "
         f"{len(case['queries'])} queries",
     )
+    if args.fixture_output is not None:
+        pairs = sample_pairs(load_pairs(args.csv), args.num_pairs)
+        args.fixture_output.parent.mkdir(parents=True, exist_ok=True)
+        args.fixture_output.write_text(
+            json.dumps(build_fixture(pairs), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"wrote fixture {args.fixture_output}")
     return 0
 
 

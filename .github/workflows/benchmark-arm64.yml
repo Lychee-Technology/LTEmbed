@@ -6,6 +6,10 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      quants:
+        description: Comma-separated GGUF quants to benchmark
+        required: false
+        default: "Q4_K_M,Q5_K_M,Q8_0"
       warmup:
         description: Warmup iterations per scenario
         required: false
@@ -31,18 +35,13 @@ on:
         description: Optional single scenario to benchmark
         required: false
         default: ""
-      raw_compare_only:
-        description: Run raw embedding compare instead of the benchmark harness
-        required: false
-        default: false
-        type: boolean
       include_cold_start:
         description: Include cold start measurements
         required: false
         default: true
         type: boolean
       include_correctness:
-        description: Include correctness checks against PyTorch
+        description: Include correctness checks against the PyTorch/F32 reference
         required: false
         default: true
         type: boolean
@@ -57,26 +56,43 @@ on:
         default: "scripts/retrieval_eval_cases.json"
 
 jobs:
+  # Fan out over GGUF quants. Each job benchmarks one quant and uploads an independent
+  # artifact. Cross-quant aggregation (results.json + report.md with a recommended quant)
+  # is tracked as a follow-up.
+  prepare:
+    runs-on: [self-hosted, Linux, ARM64]
+    outputs:
+      quants: ${{ steps.parse.outputs.quants }}
+    steps:
+      - id: parse
+        run: |
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json, os
+          raw = os.environ["QUANTS_INPUT"] or "Q4_K_M,Q5_K_M,Q8_0"
+          quants = [q.strip() for q in raw.split(",") if q.strip()]
+          print("quants=" + json.dumps(quants))
+          PY
+        env:
+          QUANTS_INPUT: ${{ inputs.quants }}
+
   benchmark:
-    runs-on:
-      - self-hosted
-      - Linux
-      - ARM64
+    needs: prepare
+    runs-on: [self-hosted, Linux, ARM64]
+    strategy:
+      fail-fast: false
+      matrix:
+        quant: ${{ fromJSON(needs.prepare.outputs.quants) }}
     env:
       MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
-      ORT_BUNDLE_DIR: ${{ github.workspace }}/ort_bundle
-      BUILDER_REPO: Lychee-Technology/minimal-ort-builder
-      BUILDER_RELEASE_TAG: v1.0.15
-      BUILDER_ASSET_NAME: jinaai__jina-embeddings-v5-text-nano-retrieval_int8_linux-arm64.tar.gz
-      BUILDER_ASSET_SHA256: a8e1389abb77b523aea21808a4dc68f6febfe7a0683b9ec703ea8e8508c7eca3
+      GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+      BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
+      STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
+      STATIC_LLAMA_TAG: v0.1.151-1
       BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: sudo apt-get install -y libssl-dev pkg-config
 
       - name: Install Rust 1.94.0
         uses: dtolnay/rust-toolchain@1.94.0
@@ -111,12 +127,10 @@ jobs:
           path: ${{ env.MODEL_DIR }}
           key: ${{ runner.os }}-arm64-model-jina-v2
 
-      - name: Cache ORT Bundle
-        id: cache-ort-bundle
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.ORT_BUNDLE_DIR }}
-          key: ${{ runner.os }}-arm64-ort-bundle-v1.0.15-jina-retrieval-int8
+      - name: Fetch prebuilt static llama.cpp artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-static-llama.sh
 
       - name: Install Python Dependencies
         run: |
@@ -140,38 +154,49 @@ jobs:
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "special_tokens_map.json",
-                  "vocab.txt",
                   "model.safetensors",
                   "*.py",
               ],
           )
           PY
 
-      - name: Download ORT Bundle
-        if: steps.cache-ort-bundle.outputs.cache-hit != 'true'
+      - name: Assemble GGUF bundle (${{ matrix.quant }})
         run: |
-          mkdir -p "$ORT_BUNDLE_DIR"
+          set -euo pipefail
+          rm -rf "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR"
+          gguf="v5-nano-retrieval-${{ matrix.quant }}.gguf"
           curl -fsSL \
-            -o "$RUNNER_TEMP/$BUILDER_ASSET_NAME" \
-            "https://github.com/$BUILDER_REPO/releases/download/$BUILDER_RELEASE_TAG/$BUILDER_ASSET_NAME"
-          echo "$BUILDER_ASSET_SHA256  $RUNNER_TEMP/$BUILDER_ASSET_NAME" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$BUILDER_ASSET_NAME" -C "$ORT_BUNDLE_DIR"
-          test -f "$ORT_BUNDLE_DIR/model.ort"
-          test -f "$ORT_BUNDLE_DIR/tokenizer.json"
-          test -f "$ORT_BUNDLE_DIR/build-info.json"
-          test -f "$ORT_BUNDLE_DIR/libonnxruntime.so"
+            -o "$BUNDLE_DIR/model.gguf" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/$gguf"
+          cp "$MODEL_DIR/tokenizer.json" "$BUNDLE_DIR/tokenizer.json"
+          cat > "$BUNDLE_DIR/build-info.json" <<JSON
+          {
+            "target_id": "$MODEL_ID",
+            "model_metadata": {
+              "model_format": "gguf",
+              "quant": "${{ matrix.quant }}",
+              "pooling": "last_token",
+              "input_kind": "retrieval",
+              "query_prefix": "Query: ",
+              "document_prefix": "Document: ",
+              "raw_embedding_dimension": 768,
+              "output_embedding_dimension": 768,
+              "max_length": 8192
+            }
+          }
+          JSON
+          echo "model.gguf size: $(du -h "$BUNDLE_DIR/model.gguf" | cut -f1)"
 
-      # Compile check with visible errors before handing off to the Python
-      # harness, which swallows Cargo's stderr via capture_output=True.
+      # Compile check with visible errors before the Python harness (which captures Cargo stderr).
       - name: Cargo check (visible errors)
-        run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
+        run: cargo check --bin benchmark_ltembed
 
       - name: Run Unified Benchmark Harness
-        if: ${{ inputs.raw_compare_only != true }}
         run: |
-          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          set -euo pipefail
           export LTEMBED_PROFILE="1"
-          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
+          mkdir -p "artifacts/${{ matrix.quant }}"
           EXTRA_ARGS=""
           if [ "${{ inputs.l2_normalize }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-l2-normalize"
@@ -190,7 +215,7 @@ jobs:
           fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
-            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
+            --bundle-dir "$BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
             --output-dimension "${{ inputs.output_dimension }}" \
@@ -198,55 +223,37 @@ jobs:
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
             --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
-            --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
-            --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
+            --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
+            --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \
             $EXTRA_ARGS
 
-      - name: Run Raw Embedding Compare
-        if: ${{ inputs.raw_compare_only == true }}
+      - name: Record run metadata
         run: |
-          mkdir -p artifacts
-          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
-          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
-          if [ "${{ inputs.scenario }}" = "" ]; then
-            SCENARIO="single/medium"
-          else
-            SCENARIO="${{ inputs.scenario }}"
-          fi
-          LTEMBED_NORMALIZE_VALUE="true"
-          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
-            LTEMBED_NORMALIZE_VALUE="false"
-          fi
-          python3 scripts/bench_pytorch.py \
-            --mode correctness \
-            --scenario "$SCENARIO" \
-            --model-name-or-path "$MODEL_DIR" \
-            --output-dimension "${{ inputs.output_dimension }}" \
-            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
-            --threads "${{ inputs.threads }}" \
-            > artifacts/pytorch-correctness.json
-          cargo run --quiet --release --bin benchmark_ltembed -- \
-            --mode correctness \
-            --scenario "$SCENARIO" \
-            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
-            --output-dimension "${{ inputs.output_dimension }}" \
-            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
-            --threads "${{ inputs.threads }}" \
-            > artifacts/ltembed-correctness.json
-          python3 scripts/compare_embedding_outputs.py \
-            --ltembed-json artifacts/ltembed-correctness.json \
-            --pytorch-json artifacts/pytorch-correctness.json \
-            --scenario "$SCENARIO" \
-            --output-json artifacts/raw-embedding-compare.json \
-            --output-text artifacts/raw-embedding-compare.txt
+          set -euo pipefail
+          size_bytes=$(stat -c%s "$BUNDLE_DIR/model.gguf")
+          static_contract=$(grep -o '"artifact_contract_version": *"[0-9]*"' "$STATIC_LLAMA_DIR/build-info.json" | grep -o '[0-9]*')
+          cat > "artifacts/${{ matrix.quant }}/metadata.json" <<JSON
+          {
+            "backend": "llama.cpp",
+            "quant": "${{ matrix.quant }}",
+            "model_id": "$MODEL_ID",
+            "gguf_file": "v5-nano-retrieval-${{ matrix.quant }}.gguf",
+            "gguf_sha256": "$(sha256sum "$BUNDLE_DIR/model.gguf" | cut -d' ' -f1)",
+            "gguf_size_bytes": $size_bytes,
+            "static_llama_tag": "$STATIC_LLAMA_TAG",
+            "static_llama_contract_version": "$static_contract",
+            "runner_labels": "$BENCHMARK_RUNNER_LABELS",
+            "threads": "${{ inputs.threads }}",
+            "warmup": "${{ inputs.warmup }}",
+            "iters": "${{ inputs.iters }}",
+            "output_dimension": "${{ inputs.output_dimension }}"
+          }
+          JSON
+          cat "artifacts/${{ matrix.quant }}/metadata.json"
 
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: benchmark-arm64-results
-          retention-days: 1
-          path: |
-            artifacts/benchmark-report.csv
-            artifacts/benchmark-summary.txt
-            artifacts/raw-embedding-compare.json
-            artifacts/raw-embedding-compare.txt
+          name: benchmark-arm64-${{ matrix.quant }}
+          retention-days: 3
+          path: artifacts/${{ matrix.quant }}/**

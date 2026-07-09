@@ -276,8 +276,8 @@ def build_benchmark_command(
         )
         command.extend(
             [
-                "--ort-bundle-dir",
-                str(args.ort_bundle_dir),
+                "--bundle-dir",
+                str(args.bundle_dir),
                 "--output-dimension",
                 str(args.output_dimension),
                 "--l2-normalize",
@@ -703,10 +703,10 @@ def parse_args() -> argparse.Namespace:
         help="Local model directory for the PyTorch reference runner.",
     )
     parser.add_argument(
-        "--ort-bundle-dir",
+        "--bundle-dir",
         type=Path,
-        default=ROOT / "ort_bundle",
-        help="Local LTEmbed ORT bundle directory containing model.ort, tokenizer.json, build-info.json, and libonnxruntime.so.",
+        default=ROOT / "gguf_bundle",
+        help="Local LTEmbed GGUF bundle directory containing model.gguf, tokenizer.json, and build-info.json.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)

@@ -23,7 +23,6 @@ struct BuildInfo {
 
 #[derive(Debug, Deserialize)]
 struct BuildMetadata {
-    #[allow(dead_code)]
     model_format: Option<String>,
     pooling: String,
     input_kind: String,
@@ -63,6 +62,18 @@ impl ModelSpec {
         })?;
 
         let metadata = build_info.model_metadata;
+        // GGUF-only loader: reject stale ORT (or otherwise non-GGUF) build metadata. A missing
+        // `model_format` is tolerated for backward compatibility with minimal bundles.
+        if let Some(model_format) = &metadata.model_format {
+            if model_format != "gguf" {
+                return Err(LTEmbedError::ModelLoad(
+                    ModelLoadError::UnsupportedModelFormat {
+                        model_format: model_format.clone(),
+                        target: build_info.target_id,
+                    },
+                ));
+            }
+        }
         if metadata.input_kind != "retrieval" && metadata.input_kind != "text" {
             return Err(LTEmbedError::ModelLoad(
                 ModelLoadError::UnsupportedInputKind {
@@ -117,18 +128,24 @@ mod tests {
         std::env::temp_dir().join(format!("ltembed-bundle-unit-tests-{nanos}-{counter}"))
     }
 
+    fn write_build_info(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("build-info.json");
+        fs::write(&path, body).unwrap();
+        path
+    }
+
     #[test]
-    fn test_legacy_q4f16_metadata_aliases_are_accepted() {
+    fn test_legacy_metadata_aliases_are_accepted() {
+        // `pooling: "lasttoken"` and `input_kind: "text"` are format-independent aliases
+        // that remain valid for GGUF bundles.
         let temp_dir = unique_temp_dir();
         fs::create_dir_all(&temp_dir).unwrap();
-        let build_info_path = temp_dir.join("build-info.json");
-
-        fs::write(
-            &build_info_path,
+        let build_info_path = write_build_info(
+            &temp_dir,
             r#"{
-  "target_id": "legacy-q4f16",
+  "target_id": "gguf-aliases",
   "model_metadata": {
-    "model_format": "ort",
+    "model_format": "gguf",
     "pooling": "lasttoken",
     "input_kind": "text",
     "query_prefix": "Query: ",
@@ -138,8 +155,7 @@ mod tests {
     "max_length": 8192
   }
 }"#,
-        )
-        .unwrap();
+        );
 
         let spec = ModelSpec::from_build_info(&build_info_path).unwrap();
 
@@ -147,6 +163,36 @@ mod tests {
         assert_eq!(spec.document_prefix, "Document: ");
         assert_eq!(spec.raw_embedding_dimension, RAW_EMBEDDING_DIMENSION);
         assert_eq!(spec.max_length, MAX_LENGTH);
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_non_gguf_model_format_is_rejected() {
+        let temp_dir = unique_temp_dir();
+        fs::create_dir_all(&temp_dir).unwrap();
+        let build_info_path = write_build_info(
+            &temp_dir,
+            r#"{
+  "target_id": "stale-ort",
+  "model_metadata": {
+    "model_format": "ort",
+    "pooling": "last_token",
+    "input_kind": "retrieval",
+    "query_prefix": "Query: ",
+    "document_prefix": "Document: ",
+    "raw_embedding_dimension": 768,
+    "output_embedding_dimension": 768,
+    "max_length": 8192
+  }
+}"#,
+        );
+
+        let err = ModelSpec::from_build_info(&build_info_path).unwrap_err();
+        assert!(matches!(
+            err,
+            LTEmbedError::ModelLoad(ModelLoadError::UnsupportedModelFormat { .. })
+        ));
 
         fs::remove_dir_all(temp_dir).unwrap();
     }

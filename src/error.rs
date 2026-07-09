@@ -26,13 +26,21 @@ pub enum LTEmbedError {
 
 /// Failure classes surfaced while loading a bundle and building an engine.
 ///
-/// The high-value, caller-matchable cases (`MissingFile`,
+/// The high-value, caller-matchable cases (`MissingFile`, `UnsupportedModelFormat`,
 /// `UnsupportedInputKind`, `UnsupportedPooling`) are modeled explicitly; the
 /// remaining metadata / config / runtime failures are grouped into broader buckets.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
     #[error("{label} file not found: {path}")]
     MissingFile { label: String, path: PathBuf },
+
+    #[error(
+        "Unsupported model_format '{model_format}' for bundle target '{target}' (expected 'gguf')"
+    )]
+    UnsupportedModelFormat {
+        model_format: String,
+        target: String,
+    },
 
     #[error("Unsupported input_kind '{input_kind}' for bundle target '{target}'")]
     UnsupportedInputKind { input_kind: String, target: String },

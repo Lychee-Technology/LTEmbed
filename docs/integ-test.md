@@ -2,10 +2,10 @@
 
 ## Goal
 
-Verify the `OnnxEngine` path end to end:
+Verify the `EmbeddingEngine` (llama.cpp/GGUF) path end to end:
 
 - tokenizer loading
-- ORT bundle loading
+- GGUF bundle loading
 - typed query/document prefix handling
 - last-token pooling
 - `768 -> 512` truncation
@@ -13,26 +13,25 @@ Verify the `OnnxEngine` path end to end:
 
 ## Bundle Expectations
 
-Tier 2 tests expect:
+Tier 2 tests (gated on `LTEMBED_TEST_BUNDLE_DIR`) expect a valid GGUF bundle directory:
 
-- a valid `ort_bundle/`
-  - `model.ort`
-  - `tokenizer.json`
-  - `libonnxruntime.so`
-  - `build-info.json`
+- `model.gguf`
+- `tokenizer.json` (the model's real tokenizer)
+- `build-info.json` (`model_format: "gguf"`)
 - regenerated `tests/fixtures/test_fixtures.json`
 
-Tier 1 tests must remain runnable without local model weights.
+They also require the build/link prerequisites (aarch64-linux + `STATIC_LLAMA_DIR`). Tier 1
+tests must remain runnable without local model weights (they still link the static libs but
+do not run inference).
 
 ## Tier 1
 
 Always safe for CI and local smoke runs:
 
-- missing `model.ort` returns `ModelLoad`
-- missing `libonnxruntime.so` returns `ModelLoad`
+- missing `model.gguf` returns `ModelLoad`
 - missing tokenizer returns `ModelLoad`
 - missing or malformed `build-info.json` returns `ModelLoad`
-- unsupported metadata returns `ModelLoad`
+- non-`gguf` `model_format` or otherwise unsupported metadata returns `ModelLoad`
 - tokenizer overlength returns `InputTooLong { max: 8192 }`
 - output config validation preserves the `512`-d contract
 

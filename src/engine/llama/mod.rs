@@ -96,6 +96,9 @@ impl LlamaBackend {
             let mut cparams = ffi::llama_context_default_params();
             cparams.embeddings = true;
             cparams.pooling_type = ffi::LLAMA_POOLING_TYPE_LAST;
+            // Encoder embedding model: force bidirectional (non-causal) attention rather than
+            // relying on the architecture default, so pooling sees full-context representations.
+            cparams.attention_type = ffi::LLAMA_ATTENTION_TYPE_NON_CAUSAL;
             cparams.n_ctx = n;
             cparams.n_batch = n;
             cparams.n_ubatch = n;

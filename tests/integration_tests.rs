@@ -1,6 +1,6 @@
 use approx::assert_relative_eq;
 use ltembed::engine::{
-    EmbeddingInput, OnnxEngine, OnnxEngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
+    EmbeddingEngine, EmbeddingInput, EngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
 };
 use ltembed::error::{LTEmbedError, ModelLoadError};
 use serde::Deserialize;
@@ -19,22 +19,20 @@ fn bundle_dir() -> Option<PathBuf> {
 
 fn bundle_available() -> bool {
     bundle_dir()
-        .map(|dir| dir.join("model.ort").exists() && dir.join("tokenizer.json").exists())
+        .map(|dir| dir.join("model.gguf").exists() && dir.join("tokenizer.json").exists())
         .unwrap_or(false)
 }
 
-fn make_engine() -> OnnxEngine {
+fn make_engine() -> EmbeddingEngine {
     let bundle_dir = bundle_dir().expect("LTEMBED_TEST_BUNDLE_DIR must be set for bundle tests");
-    let model_path = bundle_dir.join("model.ort");
-    OnnxEngine::from_bundle_dir(
+    EmbeddingEngine::from_gguf_bundle_dir(
         &bundle_dir,
-        &model_path,
-        OnnxEngineConfig {
+        EngineConfig {
             output_dimension: EMBEDDING_DIMENSION,
             l2_normalize: true,
         },
     )
-    .expect("Failed to initialize OnnxEngine from bundle")
+    .expect("Failed to initialize EmbeddingEngine from bundle")
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -82,11 +80,15 @@ fn write_tokenizer(dir: &Path) {
     fs::copy(TOKENIZER, dir.join("tokenizer.json")).unwrap();
 }
 
+fn write_model_stub(dir: &Path) {
+    fs::write(dir.join("model.gguf"), "stub").unwrap();
+}
+
 fn valid_build_info_json() -> &'static str {
     r#"{
   "target_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",
   "model_metadata": {
-    "model_format": "ort",
+    "model_format": "gguf",
     "pooling": "last_token",
     "input_kind": "retrieval",
     "query_prefix": "Query: ",
@@ -110,7 +112,7 @@ fn test_golden_parity_cosine_similarity() {
     let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
     if data.dim != Some(EMBEDDING_DIMENSION) {
         eprintln!(
-            "Skipping golden parity test: fixtures are not regenerated for {}-d OnnxEngine outputs",
+            "Skipping golden parity test: fixtures are not regenerated for {}-d engine outputs",
             EMBEDDING_DIMENSION
         );
         return;
@@ -138,8 +140,7 @@ fn test_missing_model_file_returns_model_load_error() {
     write_tokenizer(&temp_dir);
     write_build_info(&temp_dir, valid_build_info_json());
 
-    let model_path = temp_dir.join("model.ort");
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
@@ -152,11 +153,10 @@ fn test_missing_model_file_returns_model_load_error() {
 fn test_missing_tokenizer_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
     write_build_info(&temp_dir, valid_build_info_json());
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
@@ -170,10 +170,9 @@ fn test_missing_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
@@ -187,11 +186,10 @@ fn test_malformed_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
     write_build_info(&temp_dir, "{not-json");
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::Metadata(_))
@@ -205,14 +203,13 @@ fn test_invalid_input_kind_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
     write_build_info(
         &temp_dir,
         r#"{
   "target_id": "bad-model",
   "model_metadata": {
-    "model_format": "ort",
+    "model_format": "gguf",
     "pooling": "last_token",
     "input_kind": "classification",
     "query_prefix": "Query: ",
@@ -224,7 +221,7 @@ fn test_invalid_input_kind_returns_model_load_error() {
 }"#,
     );
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::UnsupportedInputKind { .. })
@@ -237,14 +234,13 @@ fn test_invalid_pooling_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
     write_build_info(
         &temp_dir,
         r#"{
   "target_id": "bad-model",
   "model_metadata": {
-    "model_format": "ort",
+    "model_format": "gguf",
     "pooling": "mean",
     "input_kind": "retrieval",
     "query_prefix": "Query: ",
@@ -256,7 +252,7 @@ fn test_invalid_pooling_returns_model_load_error() {
 }"#,
     );
 
-    let result = OnnxEngine::from_bundle_dir(&temp_dir, &model_path, OnnxEngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
         result.unwrap_err(),
         LTEmbedError::ModelLoad(ModelLoadError::UnsupportedPooling { .. })
@@ -270,14 +266,12 @@ fn test_output_dimension_larger_than_raw_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
     write_tokenizer(&temp_dir);
-    let model_path = temp_dir.join("model.ort");
-    fs::write(&model_path, "stub").unwrap();
+    write_model_stub(&temp_dir);
     write_build_info(&temp_dir, valid_build_info_json());
 
-    let result = OnnxEngine::from_bundle_dir(
+    let result = EmbeddingEngine::from_gguf_bundle_dir(
         &temp_dir,
-        &model_path,
-        OnnxEngineConfig {
+        EngineConfig {
             output_dimension: 769,
             l2_normalize: true,
         },

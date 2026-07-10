@@ -30,16 +30,6 @@ DEFAULT_CORRECTNESS_THRESHOLD = 0.98
 DEFAULT_RETRIEVAL_EVAL_PATH = ROOT / "scripts" / "retrieval_eval_cases.json"
 RUNNER_LABELS_ENV = "BENCHMARK_RUNNER_LABELS"
 
-SHORT_TEXT = {"kind": "query", "text": "Hello, world!"}
-MEDIUM_TEXT = {
-    "kind": "query",
-    "text": "What is the impact of large language models on software engineering productivity?",
-}
-LONG_TEXT = {
-    "kind": "document",
-    "text": "The quick brown fox jumps over the lazy dog. " * 30,
-}
-
 CSV_FIELDNAMES = [
     "run_id",
     "timestamp_utc",
@@ -69,6 +59,7 @@ CSV_FIELDNAMES = [
     "query_count",
     "recall_at_1",
     "recall_at_3",
+    "both_at_3",
     "mrr_at_3",
     "status",
     "notes",
@@ -87,10 +78,6 @@ class Scenario(dict):
     @property
     def text_profile(self) -> str:
         return self["text_profile"]
-
-    @property
-    def texts(self) -> tuple[dict[str, str], ...]:
-        return self["texts"]
 
 
 class RunContext:
@@ -115,33 +102,8 @@ class RunContext:
 
 
 SCENARIOS = [
-    Scenario(name="single/short", batch_size=1, text_profile="short", texts=(SHORT_TEXT,)),
-    Scenario(name="single/medium", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)),
-    Scenario(name="single/long", batch_size=1, text_profile="long", texts=(LONG_TEXT,)),
-    Scenario(name="batch/medium/1", batch_size=1, text_profile="medium", texts=(MEDIUM_TEXT,)),
-    Scenario(name="batch/medium/4", batch_size=4, text_profile="medium", texts=(MEDIUM_TEXT,) * 4),
-    Scenario(name="batch/medium/8", batch_size=8, text_profile="medium", texts=(MEDIUM_TEXT,) * 8),
-    Scenario(
-        name="batch/mixed/8",
-        batch_size=8,
-        text_profile="mixed",
-        texts=(
-            SHORT_TEXT,
-            MEDIUM_TEXT,
-            LONG_TEXT,
-            SHORT_TEXT,
-            MEDIUM_TEXT,
-            LONG_TEXT,
-            SHORT_TEXT,
-            MEDIUM_TEXT,
-        ),
-    ),
-    Scenario(
-        name="batch/medium/16",
-        batch_size=16,
-        text_profile="medium",
-        texts=(MEDIUM_TEXT,) * 16,
-    ),
+    Scenario(name="single/zh", batch_size=1, text_profile="zh"),
+    Scenario(name="single/en", batch_size=1, text_profile="en"),
 ]
 SCENARIO_BY_NAME = {scenario.name: scenario for scenario in SCENARIOS}
 
@@ -237,6 +199,15 @@ def cosine_similarity(lhs: list[float], rhs: list[float]) -> float:
     return dot / (lhs_norm * rhs_norm)
 
 
+def _l2_normalize_rows(matrix: Any) -> Any:
+    """Row-wise L2 normalization so a dot product equals cosine similarity."""
+    import numpy as np
+
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return matrix / norms
+
+
 def scenario_from_name(name: str) -> Scenario:
     try:
         return SCENARIO_BY_NAME[name]
@@ -255,11 +226,57 @@ def load_retrieval_eval_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
-def cargo_run_prefix(cargo_features: str = "") -> list[str]:
-    command = ["cargo"]
-    command.extend(["run", "--quiet", "--release"])
+def _prebuilt_ltembed_binary() -> Path | None:
+    """The compiled release binary if it exists, else None (fall back to ``cargo run``)."""
+    candidate = ROOT / "target" / "release" / "benchmark_ltembed"
+    return candidate if candidate.exists() else None
+
+
+def ltembed_launch_prefix(cargo_features: str = "") -> list[str]:
+    """Command prefix (up to but excluding ``--mode``) that launches benchmark_ltembed.
+
+    Prefers the prebuilt release binary so cargo's per-launch freshness check and the
+    multi-minute release compile stay out of the timed harness. Falls back to
+    ``cargo run --release`` for local ad-hoc use, honoring optional cargo features.
+    """
+    prebuilt = _prebuilt_ltembed_binary()
+    if prebuilt is not None:
+        return [str(prebuilt)]
+    command = ["cargo", "run", "--quiet", "--release"]
     if cargo_features:
         command.extend(["--features", cargo_features])
+    command.extend(["--bin", "benchmark_ltembed", "--"])
+    return command
+
+
+def _append_shared_benchmark_args(
+    command: list[str],
+    mode: str,
+    args: argparse.Namespace,
+    scenario_name: str,
+) -> list[str]:
+    """Append the arguments both runners share, keyed by mode."""
+    command.extend(
+        [
+            "--output-dimension",
+            str(args.output_dimension),
+            "--l2-normalize",
+            "true" if args.l2_normalize else "false",
+            "--threads",
+            str(args.threads),
+        ]
+    )
+    if mode == "warm":
+        command.extend(["--warmup", str(args.warmup), "--iters", str(args.iters)])
+        if getattr(args, "scenario", None):
+            command.extend(["--scenario", str(args.scenario)])
+    elif mode == "cold":
+        command.extend(["--scenario", scenario_name])
+    elif mode == "retrieval":
+        command.extend(["--retrieval-eval-path", str(args.retrieval_eval_path)])
+    fixture_path = getattr(args, "resolved_fixture_path", None)
+    if fixture_path:
+        command.extend(["--fixture-path", str(fixture_path)])
     return command
 
 
@@ -270,85 +287,48 @@ def build_benchmark_command(
     scenario_name: str = "",
 ) -> list[str]:
     if implementation == "ltembed":
-        command = cargo_run_prefix(getattr(args, "ltembed_cargo_features", ""))
-        command.extend(
-            ["--bin", "benchmark_ltembed", "--", "--mode", mode]
-        )
-        command.extend(
-            [
-                "--ort-bundle-dir",
-                str(args.ort_bundle_dir),
-                "--output-dimension",
-                str(args.output_dimension),
-                "--l2-normalize",
-                "true" if args.l2_normalize else "false",
-                "--threads",
-                str(args.threads),
-            ]
-        )
-        if mode == "warm":
-            command.extend(
-                ["--warmup", str(args.warmup), "--iters", str(args.iters)]
-            )
-            if getattr(args, "scenario", None):
-                command.extend(["--scenario", str(args.scenario)])
-        elif mode == "cold":
-            command.extend(["--scenario", scenario_name])
-        elif mode == "retrieval":
-            command.extend(
-                ["--retrieval-eval-path", str(args.retrieval_eval_path)]
-            )
-        return command
-
-    command = [
-        sys.executable,
-        str(ROOT / "scripts" / "bench_pytorch.py"),
-        "--mode",
-        mode,
-        "--model-name-or-path",
-        str(args.model_dir),
-        "--output-dimension",
-        str(args.output_dimension),
-        "--l2-normalize",
-        "true" if args.l2_normalize else "false",
-        "--threads",
-        str(args.threads),
-    ]
-    if mode == "warm":
-        command.extend(
-            ["--warmup", str(args.warmup), "--iters", str(args.iters)]
-        )
-    elif mode == "cold":
-        command.extend(["--scenario", scenario_name])
-    elif mode == "retrieval":
-        command.extend(
-            ["--retrieval-eval-path", str(args.retrieval_eval_path)]
-        )
-    return command
+        command = ltembed_launch_prefix(getattr(args, "ltembed_cargo_features", ""))
+        command.extend(["--mode", mode, "--bundle-dir", str(args.bundle_dir)])
+    else:
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "bench_pytorch.py"),
+            "--mode",
+            mode,
+            "--model-name-or-path",
+            str(args.model_dir),
+        ]
+    return _append_shared_benchmark_args(command, mode, args, scenario_name)
 
 
-RUNNERS = {
-    "ltembed": {
-        "warm": lambda args: build_benchmark_command("ltembed", "warm", args),
-        "cold": lambda args, scenario_name: build_benchmark_command("ltembed", "cold", args, scenario_name),
-        "correctness": lambda args: build_benchmark_command("ltembed", "correctness", args),
-        "retrieval": lambda args: build_benchmark_command("ltembed", "retrieval", args),
-        "version": lambda: git_sha(),
-    },
-    "pytorch": {
-        "warm": lambda args: build_benchmark_command("pytorch", "warm", args),
-        "cold": lambda args, scenario_name: build_benchmark_command("pytorch", "cold", args, scenario_name),
-        "correctness": lambda args: build_benchmark_command("pytorch", "correctness", args),
-        "retrieval": lambda args: build_benchmark_command("pytorch", "retrieval", args),
-        "version": lambda: "",
-    },
-}
-
-
-def resolved_implementation_version(implementation: str, payload: dict[str, Any]) -> str:
+def resolved_implementation_version(
+    implementation: str,
+    payload: dict[str, Any],
+    git_revision: str | None = None,
+) -> str:
     if implementation == "ltembed":
-        return RUNNERS[implementation]["version"]()
+        return git_revision if git_revision is not None else git_sha()
     return str(payload.get("implementation_version", ""))
+
+
+def gather_payload(
+    implementation: str,
+    mode: str,
+    args: argparse.Namespace,
+    *,
+    reference: dict[str, Any] | None,
+    scenario_name: str = "",
+) -> dict[str, Any]:
+    """Return an implementation's payload for a mode, sourced from the reference when possible.
+
+    In reference-consume mode the quant-independent PyTorch payloads (correctness, retrieval)
+    are loaded from the reference JSON instead of launching PyTorch; everything else runs as a
+    subprocess.
+    """
+    if implementation == "pytorch" and reference is not None and mode in reference:
+        return reference[mode]
+    label = f"{implementation} {mode}" + (f" {scenario_name}" if scenario_name else "")
+    return run_json_command(build_benchmark_command(implementation, mode, args, scenario_name), label)
 
 
 def log_progress(label: str, state: str, elapsed_seconds: float | None = None) -> None:
@@ -457,6 +437,7 @@ def retrieval_eval_row_from_metrics(
     row["query_count"] = str(int(metrics["query_count"]))
     row["recall_at_1"] = f"{float(metrics['recall_at_1']):.6f}"
     row["recall_at_3"] = f"{float(metrics['recall_at_3']):.6f}"
+    row["both_at_3"] = f"{float(metrics['both_at_3']):.6f}"
     row["mrr_at_3"] = f"{float(metrics['mrr_at_3']):.6f}"
     return row
 
@@ -465,13 +446,16 @@ def collect_warm_rows(
     *,
     args: argparse.Namespace,
     ctx: RunContext,
+    implementations: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {}
-    for implementation, runner in RUNNERS.items():
-        payload = run_json_command(runner["warm"](args), f"{implementation} warm")
+    for implementation in implementations:
+        payload = run_json_command(
+            build_benchmark_command(implementation, "warm", args), f"{implementation} warm"
+        )
         results[implementation] = payload
-        version = resolved_implementation_version(implementation, payload)
+        version = resolved_implementation_version(implementation, payload, ctx.git_revision)
         for entry in payload["results"]:
             scenario = scenario_from_name(entry["scenario"])
             base_fields = base_row_fields(
@@ -493,17 +477,18 @@ def collect_cold_rows(
     *,
     args: argparse.Namespace,
     ctx: RunContext,
+    implementations: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     rows: list[dict[str, str]] = []
-    results: dict[str, dict[str, Any]] = {implementation: {} for implementation in RUNNERS}
+    results: dict[str, dict[str, Any]] = {implementation: {} for implementation in implementations}
     for scenario in SCENARIOS:
-        for implementation, runner in RUNNERS.items():
+        for implementation in implementations:
             payload = run_json_command(
-                runner["cold"](args, scenario.name),
+                build_benchmark_command(implementation, "cold", args, scenario.name),
                 f"{implementation} cold {scenario.name}",
             )
             results[implementation][scenario.name] = payload
-            version = resolved_implementation_version(implementation, payload)
+            version = resolved_implementation_version(implementation, payload, ctx.git_revision)
             base_fields = base_row_fields(
                 ctx=ctx,
                 implementation=implementation,
@@ -519,52 +504,40 @@ def collect_cold_rows(
     return rows, results
 
 
-def collect_correctness_rows(
-    *,
-    args: argparse.Namespace,
-    ctx: RunContext,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    rows: list[dict[str, str]] = []
-    payloads: dict[str, Any] = {}
-    for implementation, runner in RUNNERS.items():
-        payloads[implementation] = run_json_command(
-            runner["correctness"](args),
-            f"{implementation} correctness",
-        )
+def _language_from_doc_id(doc_id: str) -> str:
+    return "cn-en/zh" if doc_id.endswith("_zh") else "cn-en/en"
 
-    reference = payloads["pytorch"]
-    for implementation, payload in payloads.items():
-        version = resolved_implementation_version(implementation, payload)
-        for entry in payload["results"]:
-            scenario = scenario_from_name(entry["scenario"])
+
+def derive_correctness_rows(
+    *,
+    ctx: RunContext,
+    args: argparse.Namespace,
+    ltembed_retrieval: dict[str, Any],
+    reference_retrieval: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Cosine ltembed-vs-FP32 per retrieval document — fidelity for free from the retrieval pass."""
+    reference_docs: dict[str, list[float]] = {}
+    for result in reference_retrieval["results"]:
+        for doc in result["documents"]:
+            reference_docs[str(doc["id"])] = doc["embedding"]
+
+    rows: list[dict[str, str]] = []
+    version = resolved_implementation_version("ltembed", {}, ctx.git_revision)
+    for result in ltembed_retrieval["results"]:
+        for doc in result["documents"]:
+            doc_id = str(doc["id"])
+            similarity = cosine_similarity(doc["embedding"], reference_docs[doc_id])
+            scenario = Scenario(name=_language_from_doc_id(doc_id), batch_size=1, text_profile="correctness")
             base_fields = base_row_fields(
-                ctx=ctx,
-                implementation=implementation,
-                implementation_version=version,
-                scenario=scenario,
-                mode="correctness",
-                threads=args.threads,
-                warmup_iters=0,
-                timed_iters=0,
+                ctx=ctx, implementation="ltembed", implementation_version=version,
+                scenario=scenario, mode="correctness", threads=args.threads,
+                warmup_iters=0, timed_iters=0,
             )
-            if implementation == "pytorch":
-                row = build_correctness_row(base_fields=base_fields, cosine_similarity=1.0, threshold=1.0)
-            else:
-                reference_entry = next(
-                    item for item in reference["results"] if item["scenario"] == entry["scenario"]
-                )
-                similarities = [
-                    cosine_similarity(lhs, rhs)
-                    for lhs, rhs in zip(entry["embeddings"], reference_entry["embeddings"], strict=True)
-                ]
-                average_similarity = sum(similarities) / len(similarities)
-                row = build_correctness_row(
-                    base_fields=base_fields,
-                    cosine_similarity=average_similarity,
-                    threshold=args.correctness_threshold,
-                )
-            rows.append(row)
-    return rows, payloads
+            rows.append(build_correctness_row(
+                base_fields=base_fields, cosine_similarity=similarity,
+                threshold=args.correctness_threshold,
+            ))
+    return rows
 
 
 def compute_retrieval_metrics(
@@ -573,43 +546,68 @@ def compute_retrieval_metrics(
     query_embeddings: dict[str, list[float]],
     document_embeddings: dict[str, list[float]],
 ) -> dict[str, Any]:
-    query_results = []
+    """Rank documents per query and score against each query's *set* of relevant ids.
+
+    A query may have multiple relevant documents (the CN/EN cross-lingual case marks
+    both the self-language document and its translation as relevant). Metrics:
+
+    - ``both_at_3``: fraction of queries where *all* relevant documents are in top-3
+      — the "同时得到中英" success rate.
+    - ``recall_at_1`` / ``recall_at_3``: mean fraction of relevant documents found in
+      the top-1 / top-3 (0.5 when only one of two is found, 1.0 when both).
+    - ``mrr_at_3``: mean reciprocal rank of the first relevant document within top-3.
+
+    Ranking is vectorized with numpy (cosine == dot after L2 normalization); a stable
+    argsort preserves document insertion order on ties.
+    """
+    import numpy as np
+
+    empty = {"query_count": 0, "recall_at_1": 0.0, "recall_at_3": 0.0, "both_at_3": 0.0, "mrr_at_3": 0.0}
+    doc_ids = list(document_embeddings.keys())
+    if not doc_ids:
+        return empty
+
+    doc_matrix = _l2_normalize_rows(np.asarray([document_embeddings[d] for d in doc_ids], dtype=np.float64))
+    corpus_ids = set(doc_ids)
+
+    query_vectors: list[list[float]] = []
+    query_relevant: list[set[str]] = []
     for query in retrieval_case["queries"]:
-        query_id = str(query["id"])
-        query_emb = query_embeddings[query_id]
-        relevant_ids = set(str(doc_id) for doc_id in query["relevant_document_ids"])
-        if len(relevant_ids) == 0:
+        relevant_ids = {str(doc_id) for doc_id in query["relevant_document_ids"]} & corpus_ids
+        if not relevant_ids:
             continue
+        query_vectors.append(query_embeddings[str(query["id"])])
+        query_relevant.append(relevant_ids)
 
-        similarities = [
-            (doc_id, cosine_similarity(query_emb, doc_emb))
-            for doc_id, doc_emb in document_embeddings.items()
-        ]
-        similarities.sort(key=lambda item: item[1], reverse=True)
+    query_count = len(query_vectors)
+    if query_count == 0:
+        return empty
 
-        rank = None
-        for i, (doc_id, _) in enumerate(similarities):
-            if doc_id in relevant_ids:
-                rank = i + 1
+    query_matrix = _l2_normalize_rows(np.asarray(query_vectors, dtype=np.float64))
+    similarities = query_matrix @ doc_matrix.T  # (num_queries, num_docs)
+    top_k = min(3, len(doc_ids))
+    top_indices = np.argsort(-similarities, axis=1, kind="stable")[:, :top_k]
+
+    recall_at_1 = recall_at_3 = both_at_3 = mrr_at_3 = 0.0
+    for row, relevant in zip(top_indices, query_relevant):
+        ranked_ids = [doc_ids[index] for index in row]
+        n_relevant = len(relevant)
+        found_at_1 = 1 if ranked_ids and ranked_ids[0] in relevant else 0
+        found_at_3 = sum(1 for doc_id in ranked_ids if doc_id in relevant)
+        recall_at_1 += found_at_1 / n_relevant
+        recall_at_3 += found_at_3 / n_relevant
+        both_at_3 += 1.0 if found_at_3 == n_relevant else 0.0
+        for rank, doc_id in enumerate(ranked_ids, start=1):
+            if doc_id in relevant:
+                mrr_at_3 += 1.0 / rank
                 break
 
-        query_results.append(
-            {
-                "query_id": query_id,
-                "relevant_document_ids": sorted(relevant_ids),
-                "rank_of_first_relevant": rank,
-                "relevant_at_1": 1.0 if rank is not None and rank <= 1 else 0.0,
-                "relevant_at_3": 1.0 if rank is not None and rank <= 3 else 0.0,
-                "reciprocal_rank": 1.0 / rank if rank is not None and rank <= 3 else 0.0,
-            }
-        )
-
-    query_count = len(query_results)
     return {
         "query_count": query_count,
-        "recall_at_1": sum(q["relevant_at_1"] for q in query_results) / query_count if query_count > 0 else 0.0,
-        "recall_at_3": sum(q["relevant_at_3"] for q in query_results) / query_count if query_count > 0 else 0.0,
-        "mrr_at_3": sum(q["reciprocal_rank"] for q in query_results) / query_count if query_count > 0 else 0.0,
+        "recall_at_1": recall_at_1 / query_count,
+        "recall_at_3": recall_at_3 / query_count,
+        "both_at_3": both_at_3 / query_count,
+        "mrr_at_3": mrr_at_3 / query_count,
     }
 
 
@@ -617,19 +615,18 @@ def collect_retrieval_eval_rows(
     *,
     args: argparse.Namespace,
     ctx: RunContext,
+    implementations: list[str],
+    reference: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     retrieval_cases = load_retrieval_eval_cases(args.retrieval_eval_path)
     cases_by_name = {str(case["name"]): case for case in retrieval_cases}
     rows: list[dict[str, str]] = []
     payloads: dict[str, Any] = {}
 
-    for implementation, runner in RUNNERS.items():
-        payload = run_json_command(
-            runner["retrieval"](args),
-            f"{implementation} retrieval",
-        )
+    for implementation in implementations:
+        payload = gather_payload(implementation, "retrieval", args, reference=reference)
         payloads[implementation] = payload
-        version = resolved_implementation_version(implementation, payload)
+        version = resolved_implementation_version(implementation, payload, ctx.git_revision)
         for result in payload["results"]:
             case = cases_by_name[str(result["dataset_name"])]
             metrics = compute_retrieval_metrics(
@@ -641,7 +638,6 @@ def collect_retrieval_eval_rows(
                 name=str(case["name"]),
                 batch_size=len(case["documents"]),
                 text_profile="retrieval_eval",
-                texts=(),
             )
             base_fields = base_row_fields(
                 ctx=ctx,
@@ -664,8 +660,8 @@ def summary_lines(
     git_revision: str,
     warm_payloads: dict[str, dict[str, Any]],
     cold_payloads: dict[str, dict[str, Any]] | None,
-    correctness_payloads: dict[str, Any] | None,
     retrieval_payloads: dict[str, Any] | None = None,
+    reference: dict[str, Any] | None = None,
 ) -> list[str]:
     lines = [
         f"run_id={args.run_id}",
@@ -675,22 +671,22 @@ def summary_lines(
         f"python_version={python_version()}",
         f"rust_version={rust_version()}",
     ]
-    for implementation in ("ltembed", "pytorch"):
-        payload = warm_payloads.get(implementation, {})
-        version = resolved_implementation_version(implementation, payload)
-        if implementation == "pytorch":
-            torch_version = resolved_implementation_version(implementation, payload)
-            transformers_version = payload.get("transformers_version", "")
-            lines.append(f"pytorch_version={torch_version}")
-            lines.append(f"transformers_version={transformers_version}")
-        else:
-            lines.append(f"{implementation}_version={version}")
+    lines.append(
+        f"ltembed_version={resolved_implementation_version('ltembed', warm_payloads.get('ltembed', {}), git_revision)}"
+    )
+    # In reference-consume mode PyTorch never runs a latency pass, so pull its versions from
+    # the loaded reference (retrieval payload) instead of the warm payloads.
+    pytorch_payload = warm_payloads.get("pytorch")
+    if pytorch_payload is None and reference is not None:
+        pytorch_payload = reference.get("retrieval")
+    pytorch_payload = pytorch_payload or {}
+    lines.append(f"pytorch_version={pytorch_payload.get('implementation_version', '')}")
+    lines.append(f"transformers_version={pytorch_payload.get('transformers_version', '')}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
-    if correctness_payloads is not None:
-        lines.append("correctness=enabled")
     if retrieval_payloads is not None:
         lines.append("retrieval_eval=enabled")
+        lines.append("correctness=derived")
     return lines
 
 
@@ -703,10 +699,10 @@ def parse_args() -> argparse.Namespace:
         help="Local model directory for the PyTorch reference runner.",
     )
     parser.add_argument(
-        "--ort-bundle-dir",
+        "--bundle-dir",
         type=Path,
-        default=ROOT / "ort_bundle",
-        help="Local LTEmbed ORT bundle directory containing model.ort, tokenizer.json, build-info.json, and libonnxruntime.so.",
+        default=ROOT / "gguf_bundle",
+        help="Local LTEmbed GGUF bundle directory containing model.gguf, tokenizer.json, and build-info.json.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)
@@ -725,12 +721,41 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_RETRIEVAL_EVAL_PATH,
     )
     parser.add_argument(
+        "--fixture-path",
+        type=Path,
+        default=None,
+        help=(
+            "Pre-resolved CN/EN latency fixture (scenarios -> texts) produced by "
+            "build_cn_en_retrieval_cases.py --fixture-output."
+        ),
+    )
+    parser.add_argument(
         "--ltembed-cargo-features",
         default="",
         help="Optional cargo features to pass through to LTEmbed benchmark builds.",
     )
+    parser.add_argument(
+        "--emit-reference",
+        type=Path,
+        default=None,
+        help=(
+            "Run ONLY the PyTorch retrieval runner and write an embeddings-only "
+            "reference JSON to this path, then exit. The PyTorch reference is quant-independent, "
+            "so it is produced once per workflow and shared with every quant job. Correctness is "
+            "derived from the retrieval embeddings, so no separate correctness pass is needed."
+        ),
+    )
+    parser.add_argument(
+        "--reference-path",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a reference JSON produced by --emit-reference. When set, warm/cold run "
+            "ltembed only and the retrieval PyTorch baseline (also used to derive correctness) "
+            "is loaded from the reference instead of launching PyTorch."
+        ),
+    )
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--include-correctness", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-retrieval-eval", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
     parser.add_argument(
@@ -747,13 +772,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_fixture_if_present(args: argparse.Namespace) -> None:
+    """Point the runners at the already-resolved CN/EN latency fixture.
+
+    The generator writes the fixture in the runners' resolved format
+    (``{"scenarios": {name: [{"kind","text"}]}}``), so there is nothing to resolve here.
+    """
+    if getattr(args, "fixture_path", None):
+        args.resolved_fixture_path = args.fixture_path
+
+
 def main() -> int:
     args = parse_args()
     timestamp = utc_now()
     git_revision = git_sha()
     host = host_metadata()
+    if getattr(args, "emit_reference", None) is not None:
+        return _emit_reference(args=args)
     rows: list[dict[str, str]] = []
     return _run(args=args, timestamp=timestamp, git_revision=git_revision, host=host, rows=rows)
+
+
+def _emit_reference(*, args: argparse.Namespace) -> int:
+    """Run only PyTorch retrieval and write an embeddings-only reference."""
+    resolve_fixture_if_present(args)
+    reference = {
+        "retrieval": run_json_command(
+            build_benchmark_command("pytorch", "retrieval", args), "pytorch retrieval"
+        ),
+    }
+    args.emit_reference.parent.mkdir(parents=True, exist_ok=True)
+    args.emit_reference.write_text(json.dumps(reference), encoding="utf-8")
+    print(f"wrote PyTorch retrieval reference to {args.emit_reference}")
+    return 0
 
 
 def _run(
@@ -773,23 +824,36 @@ def _run(
         host=host,
     )
 
-    warm_rows, warm_payloads = collect_warm_rows(args=args, ctx=ctx)
+    resolve_fixture_if_present(args)
+
+    # PyTorch never runs a latency pass in any mode (it only provides retrieval embeddings, either
+    # live via embedding_impls or pre-computed in the reference). Latency passes are always
+    # ltembed-only; correctness/retrieval load the PyTorch baseline from the reference when present.
+    reference: dict[str, Any] | None = None
+    if getattr(args, "reference_path", None) is not None:
+        reference = json.loads(Path(args.reference_path).read_text(encoding="utf-8"))
+    latency_impls = ["ltembed"]
+    embedding_impls = ["ltembed", "pytorch"]
+
+    warm_rows, warm_payloads = collect_warm_rows(args=args, ctx=ctx, implementations=latency_impls)
     rows.extend(warm_rows)
 
     cold_payloads = None
     if args.include_cold_start:
-        cold_rows, cold_payloads = collect_cold_rows(args=args, ctx=ctx)
+        cold_rows, cold_payloads = collect_cold_rows(args=args, ctx=ctx, implementations=latency_impls)
         rows.extend(cold_rows)
-
-    correctness_payloads = None
-    if args.include_correctness:
-        correctness_rows, correctness_payloads = collect_correctness_rows(args=args, ctx=ctx)
-        rows.extend(correctness_rows)
 
     retrieval_payloads = None
     if args.include_retrieval_eval:
-        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(args=args, ctx=ctx)
+        retrieval_rows, retrieval_payloads = collect_retrieval_eval_rows(
+            args=args, ctx=ctx, implementations=embedding_impls, reference=reference
+        )
         rows.extend(retrieval_rows)
+        rows.extend(derive_correctness_rows(
+            ctx=ctx, args=args,
+            ltembed_retrieval=retrieval_payloads["ltembed"],
+            reference_retrieval=retrieval_payloads["pytorch"],
+        ))
 
     write_csv_report(rows, args.output_csv)
 
@@ -798,8 +862,8 @@ def _run(
         git_revision=git_revision,
         warm_payloads=warm_payloads,
         cold_payloads=cold_payloads,
-        correctness_payloads=correctness_payloads,
         retrieval_payloads=retrieval_payloads,
+        reference=reference,
     )
     args.output_summary.parent.mkdir(parents=True, exist_ok=True)
     args.output_summary.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -10,7 +10,7 @@ Regenerates `tests/fixtures/test_fixtures.json` for `jinaai/jina-embeddings-v5-t
 
 ## `bench_pytorch.py`
 
-Python reference runner for warm, cold, and correctness benchmark modes against the same Jina retrieval contract.
+PyTorch retrieval-eval reference runner (retrieval-only).
 
 ## `run_embedding_benchmarks.py`
 

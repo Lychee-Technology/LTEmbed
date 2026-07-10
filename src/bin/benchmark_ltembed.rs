@@ -1,9 +1,12 @@
-use ltembed::benchmarking::{scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats};
+use ltembed::benchmarking::{
+    scenario_by_name, scenario_inputs, selected_scenarios, BenchmarkInput, LatencyStats,
+};
 use ltembed::engine::{
-    EmbedBatchProfile, EmbeddingInput, EmbeddingInputKind, OnnxEngine, OnnxEngineConfig,
+    EmbedBatchProfile, EmbeddingEngine, EmbeddingInput, EmbeddingInputKind, EngineConfig,
 };
 use ltembed::error::{InferenceError, LTEmbedError};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
@@ -14,7 +17,6 @@ use std::time::Instant;
 enum Mode {
     Warm,
     Cold,
-    Correctness,
     Retrieval,
     Other(String),
 }
@@ -24,7 +26,6 @@ impl From<&str> for Mode {
         match value {
             "warm" => Mode::Warm,
             "cold" => Mode::Cold,
-            "correctness" => Mode::Correctness,
             "retrieval" => Mode::Retrieval,
             other => Mode::Other(other.to_string()),
         }
@@ -35,13 +36,72 @@ impl From<&str> for Mode {
 struct Args {
     mode: Mode,
     scenario: Option<String>,
-    ort_bundle_dir: PathBuf,
+    bundle_dir: PathBuf,
     retrieval_eval_path: Option<PathBuf>,
+    fixture_path: Option<PathBuf>,
     output_dimension: usize,
     l2_normalize: bool,
     warmup: usize,
     iters: usize,
     threads: usize,
+}
+
+/// Resolved benchmark fixture: per-scenario texts selected upstream (e.g. from the
+/// jane-austen corpus) by the orchestrator. When present it overrides the built-in
+/// synthetic scenario texts so both this binary and the PyTorch reference embed
+/// byte-identical inputs, which is what makes the cosine comparison meaningful.
+#[derive(Debug, Deserialize)]
+struct ResolvedFixture {
+    scenarios: HashMap<String, Vec<FixtureInput>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureInput {
+    kind: String,
+    text: String,
+}
+
+fn load_resolved_fixture(path: &Path) -> io::Result<ResolvedFixture> {
+    let contents = fs::read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+/// Build the inputs for a scenario, preferring the resolved fixture (keyed by scenario
+/// name) and falling back to the built-in `scenario_inputs` when no fixture is supplied.
+fn scenario_inputs_resolved(
+    scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
+) -> Result<Vec<BenchmarkInput>, LTEmbedError> {
+    if let Some(fixture) = fixture {
+        let items = fixture.scenarios.get(scenario_name).ok_or_else(|| {
+            LTEmbedError::Inference(InferenceError::Internal(format!(
+                "fixture is missing scenario: {scenario_name}"
+            )))
+        })?;
+        return items
+            .iter()
+            .map(|item| {
+                let kind = match item.kind.as_str() {
+                    "query" => EmbeddingInputKind::Query,
+                    "document" => EmbeddingInputKind::Document,
+                    other => {
+                        return Err(LTEmbedError::Inference(InferenceError::Internal(format!(
+                            "fixture input has unknown kind: {other}"
+                        ))))
+                    }
+                };
+                Ok(BenchmarkInput {
+                    text: item.text.clone(),
+                    kind,
+                })
+            })
+            .collect();
+    }
+
+    let scenario = scenario_by_name(scenario_name).ok_or_else(|| {
+        LTEmbedError::Inference(InferenceError::Internal("unknown scenario".to_string()))
+    })?;
+    Ok(scenario_inputs(scenario))
 }
 
 #[derive(Serialize)]
@@ -51,23 +111,10 @@ struct StatsEntry {
 }
 
 #[derive(Serialize)]
-struct EmbeddingsEntry {
-    scenario: String,
-    embeddings: Vec<Vec<f32>>,
-}
-
-#[derive(Serialize)]
 struct WarmPayload {
     implementation: &'static str,
     implementation_version: String,
     results: Vec<StatsEntry>,
-}
-
-#[derive(Serialize)]
-struct CorrectnessPayload {
-    implementation: &'static str,
-    implementation_version: String,
-    results: Vec<EmbeddingsEntry>,
 }
 
 #[derive(Serialize)]
@@ -147,8 +194,9 @@ where
 {
     let mut mode = None;
     let mut scenario = None;
-    let mut ort_bundle_dir = None;
+    let mut bundle_dir = None;
     let mut retrieval_eval_path = None;
+    let mut fixture_path = None;
     let mut output_dimension = None;
     let mut l2_normalize = None;
     let mut warmup = 10usize;
@@ -161,8 +209,9 @@ where
         match arg.as_str() {
             "--mode" => mode = iter.next(),
             "--scenario" => scenario = iter.next(),
-            "--ort-bundle-dir" => ort_bundle_dir = iter.next().map(PathBuf::from),
+            "--bundle-dir" => bundle_dir = iter.next().map(PathBuf::from),
             "--retrieval-eval-path" => retrieval_eval_path = iter.next().map(PathBuf::from),
+            "--fixture-path" => fixture_path = iter.next().map(PathBuf::from),
             "--output-dimension" => {
                 output_dimension = Some(
                     iter.next()
@@ -218,9 +267,9 @@ where
                 .as_str(),
         ),
         scenario,
-        ort_bundle_dir: ort_bundle_dir
-            .ok_or_else(|| "missing required --ort-bundle-dir".to_string())?,
+        bundle_dir: bundle_dir.ok_or_else(|| "missing required --bundle-dir".to_string())?,
         retrieval_eval_path,
+        fixture_path,
         output_dimension: output_dimension
             .ok_or_else(|| "missing required --output-dimension".to_string())?,
         l2_normalize: l2_normalize.ok_or_else(|| "missing required --l2-normalize".to_string())?,
@@ -250,12 +299,10 @@ fn git_sha() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn engine_from_bundle_dir(args: &Args) -> Result<OnnxEngine, LTEmbedError> {
-    let model_path = args.ort_bundle_dir.join("model.ort");
-    OnnxEngine::from_bundle_dir_with_intra_threads(
-        Path::new(&args.ort_bundle_dir),
-        &model_path,
-        OnnxEngineConfig {
+fn engine_from_bundle_dir(args: &Args) -> Result<EmbeddingEngine, LTEmbedError> {
+    EmbeddingEngine::from_gguf_bundle_dir_with_threads(
+        Path::new(&args.bundle_dir),
+        EngineConfig {
             output_dimension: args.output_dimension,
             l2_normalize: args.l2_normalize,
         },
@@ -292,22 +339,27 @@ fn load_retrieval_eval_cases(path: &Path) -> io::Result<Vec<RetrievalEvalCase>> 
 }
 
 fn embed_retrieval_inputs(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     inputs: Vec<EmbeddingInput<'_>>,
 ) -> Result<Vec<Vec<f32>>, LTEmbedError> {
     engine.embed_batch(&inputs)
 }
 
-fn run_scenario(engine: &OnnxEngine, scenario_name: &str) -> Result<Vec<Vec<f32>>, LTEmbedError> {
-    let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, false)?;
+fn run_scenario(
+    engine: &EmbeddingEngine,
+    scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
+) -> Result<Vec<Vec<f32>>, LTEmbedError> {
+    let (embeddings, _) = run_scenario_maybe_profiled(engine, scenario_name, fixture, false)?;
     Ok(embeddings)
 }
 
 fn run_scenario_profiled(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
 ) -> Result<(Vec<Vec<f32>>, EmbedBatchProfile), LTEmbedError> {
-    let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, true)?;
+    let (embeddings, profile) = run_scenario_maybe_profiled(engine, scenario_name, fixture, true)?;
     let profile = profile.ok_or_else(|| {
         LTEmbedError::Inference(InferenceError::Internal(
             "profiling requested but no profile was collected".to_string(),
@@ -317,14 +369,12 @@ fn run_scenario_profiled(
 }
 
 fn run_scenario_maybe_profiled(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
     collect_profile: bool,
 ) -> Result<(Vec<Vec<f32>>, Option<EmbedBatchProfile>), LTEmbedError> {
-    let scenario = scenario_by_name(scenario_name).ok_or_else(|| {
-        LTEmbedError::Inference(InferenceError::Internal("unknown scenario".to_string()))
-    })?;
-    let benchmark_inputs = scenario_inputs(scenario);
+    let benchmark_inputs = scenario_inputs_resolved(scenario_name, fixture)?;
     let inputs = benchmark_inputs
         .iter()
         .map(|input| match input.kind {
@@ -403,17 +453,18 @@ impl ProfileAccumulator {
 }
 
 fn measure_warm_stats(
-    engine: &OnnxEngine,
+    engine: &EmbeddingEngine,
     scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
     warmup: usize,
     iters: usize,
 ) -> Result<(LatencyStats, Option<String>), LTEmbedError> {
     let profiling_enabled = profiling_enabled_from_env();
     for _ in 0..warmup {
         if profiling_enabled {
-            let _ = run_scenario_profiled(engine, scenario_name)?;
+            let _ = run_scenario_profiled(engine, scenario_name, fixture)?;
         } else {
-            let _ = run_scenario(engine, scenario_name)?;
+            let _ = run_scenario(engine, scenario_name, fixture)?;
         }
     }
 
@@ -422,10 +473,10 @@ fn measure_warm_stats(
     for _ in 0..iters {
         let start = Instant::now();
         if let Some(accumulator) = &mut accumulator {
-            let (_, profile) = run_scenario_profiled(engine, scenario_name)?;
+            let (_, profile) = run_scenario_profiled(engine, scenario_name, fixture)?;
             accumulator.record(profile);
         } else {
-            let _ = run_scenario(engine, scenario_name)?;
+            let _ = run_scenario(engine, scenario_name, fixture)?;
         }
         samples.push(start.elapsed().as_secs_f64() * 1_000.0);
     }
@@ -436,10 +487,14 @@ fn measure_warm_stats(
     Ok((stats, profile_line))
 }
 
-fn measure_cold_stats(args: &Args, scenario_name: &str) -> Result<LatencyStats, LTEmbedError> {
+fn measure_cold_stats(
+    args: &Args,
+    scenario_name: &str,
+    fixture: Option<&ResolvedFixture>,
+) -> Result<LatencyStats, LTEmbedError> {
     let start = Instant::now();
     let engine = engine_from_bundle_dir(args)?;
-    let _ = run_scenario(&engine, scenario_name)?;
+    let _ = run_scenario(&engine, scenario_name, fixture)?;
     LatencyStats::from_samples_ms(&[start.elapsed().as_secs_f64() * 1_000.0])
         .map_err(|err| LTEmbedError::Inference(InferenceError::Internal(err)))
 }
@@ -458,6 +513,7 @@ fn emit_profile_summary(line: &str) {
 
 fn run_warm_mode(
     args: &Args,
+    fixture: Option<&ResolvedFixture>,
     implementation_version: &str,
 ) -> Result<WarmPayload, Box<dyn std::error::Error>> {
     let engine = engine_from_bundle_dir(args)?;
@@ -466,7 +522,7 @@ fn run_warm_mode(
     for scenario in scenarios {
         emit_progress("warm", scenario.name, "start");
         let (stats, profile_line) =
-            measure_warm_stats(&engine, scenario.name, args.warmup, args.iters)?;
+            measure_warm_stats(&engine, scenario.name, fixture, args.warmup, args.iters)?;
         emit_progress("warm", scenario.name, "done");
         if let Some(profile_line) = profile_line {
             emit_profile_summary(&profile_line);
@@ -485,40 +541,18 @@ fn run_warm_mode(
 
 fn run_cold_mode(
     args: &Args,
+    fixture: Option<&ResolvedFixture>,
     implementation_version: &str,
 ) -> Result<ColdPayload, Box<dyn std::error::Error>> {
     let scenario_name = required_scenario(args)?;
     emit_progress("cold", scenario_name, "start");
-    let stats = measure_cold_stats(args, scenario_name)?;
+    let stats = measure_cold_stats(args, scenario_name, fixture)?;
     emit_progress("cold", scenario_name, "done");
     Ok(ColdPayload {
         implementation: "ltembed",
         implementation_version: implementation_version.to_string(),
         scenario: scenario_name.to_string(),
         stats,
-    })
-}
-
-fn run_correctness_mode(
-    args: &Args,
-    implementation_version: &str,
-) -> Result<CorrectnessPayload, Box<dyn std::error::Error>> {
-    let engine = engine_from_bundle_dir(args)?;
-    let mut results = Vec::new();
-    let scenarios = resolve_scenarios(args)?;
-    for scenario in scenarios {
-        emit_progress("correctness", scenario.name, "start");
-        let embeddings = run_scenario(&engine, scenario.name)?;
-        emit_progress("correctness", scenario.name, "done");
-        results.push(EmbeddingsEntry {
-            scenario: scenario.name.to_string(),
-            embeddings,
-        });
-    }
-    Ok(CorrectnessPayload {
-        implementation: "ltembed",
-        implementation_version: implementation_version.to_string(),
-        results,
     })
 }
 
@@ -579,19 +613,21 @@ fn run_retrieval_mode(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let implementation_version = git_sha();
+    let fixture = args
+        .fixture_path
+        .as_deref()
+        .map(load_resolved_fixture)
+        .transpose()?;
+    let fixture = fixture.as_ref();
 
     match &args.mode {
         Mode::Warm => serde_json::to_writer(
             io::stdout(),
-            &run_warm_mode(&args, &implementation_version)?,
+            &run_warm_mode(&args, fixture, &implementation_version)?,
         )?,
         Mode::Cold => serde_json::to_writer(
             io::stdout(),
-            &run_cold_mode(&args, &implementation_version)?,
-        )?,
-        Mode::Correctness => serde_json::to_writer(
-            io::stdout(),
-            &run_correctness_mode(&args, &implementation_version)?,
+            &run_cold_mode(&args, fixture, &implementation_version)?,
         )?,
         Mode::Retrieval => serde_json::to_writer(
             io::stdout(),
@@ -620,8 +656,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -639,9 +675,9 @@ mod tests {
             "--mode",
             "cold",
             "--scenario",
-            "single/medium",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "single/zh",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -653,31 +689,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_args_maps_correctness_mode_to_typed_variant() {
-        let args = parse_args_from([
-            "benchmark_ltembed",
-            "--mode",
-            "correctness",
-            "--ort-bundle-dir",
-            "ort_bundle",
-            "--output-dimension",
-            "512",
-            "--l2-normalize",
-            "true",
-        ])
-        .unwrap();
-
-        assert_eq!(args.mode, Mode::Correctness);
-    }
-
-    #[test]
     fn test_parse_args_preserves_unknown_mode_for_main_validation() {
         let args = parse_args_from([
             "benchmark_ltembed",
             "--mode",
             "unknown",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -695,9 +713,9 @@ mod tests {
             "--mode",
             "warm",
             "--scenario",
-            "single/medium",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "single/zh",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -706,8 +724,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.mode, Mode::Warm);
-        assert_eq!(args.scenario.as_deref(), Some("single/medium"));
-        assert_eq!(args.ort_bundle_dir, PathBuf::from("ort_bundle"));
+        assert_eq!(args.scenario.as_deref(), Some("single/zh"));
+        assert_eq!(args.bundle_dir, PathBuf::from("gguf_bundle"));
         assert_eq!(args.output_dimension, 512);
         assert!(args.l2_normalize);
     }
@@ -718,8 +736,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "cold",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -738,8 +756,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "cold",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -747,7 +765,7 @@ mod tests {
         ])
         .unwrap();
 
-        match run_cold_mode(&args, "test-sha") {
+        match run_cold_mode(&args, None, "test-sha") {
             Ok(_) => panic!("expected missing --scenario error"),
             Err(err) => {
                 assert_eq!(err.to_string(), "missing --scenario");
@@ -763,8 +781,8 @@ mod tests {
             "warm",
             "--scenario",
             "missing/scenario",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -780,8 +798,8 @@ mod tests {
     #[test]
     fn test_progress_label_includes_mode_scenario_and_state() {
         assert_eq!(
-            progress_label("correctness", "batch/mixed/8", "start"),
-            "correctness batch/mixed/8 start"
+            progress_label("warm", "single/zh", "start"),
+            "warm single/zh start"
         );
     }
 
@@ -805,7 +823,7 @@ mod tests {
     #[test]
     fn test_profile_summary_line_renders_parseable_key_values() {
         let line = profile_summary_line(
-            "single/short",
+            "single/zh",
             3,
             EmbedBatchProfile {
                 batch_size: 1,
@@ -822,7 +840,7 @@ mod tests {
 
         assert_eq!(
             line,
-            "profile single/short samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
+            "profile single/zh samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
         );
     }
 
@@ -832,7 +850,7 @@ mod tests {
             implementation: "ltembed",
             implementation_version: "test-sha".to_string(),
             results: vec![StatsEntry {
-                scenario: "single/medium".to_string(),
+                scenario: "single/zh".to_string(),
                 stats: LatencyStats::from_samples_ms(&[12.0, 18.0]).unwrap(),
             }],
         };
@@ -841,7 +859,7 @@ mod tests {
 
         assert_eq!(value["implementation"], json!("ltembed"));
         assert_eq!(value["implementation_version"], json!("test-sha"));
-        assert_eq!(value["results"][0]["scenario"], json!("single/medium"));
+        assert_eq!(value["results"][0]["scenario"], json!("single/zh"));
         assert!(value["results"][0]["stats"]["mean_ms"].is_number());
         assert!(value["results"][0]["stats"]["median_ms"].is_number());
         assert!(value["results"][0]["stats"]["p95_ms"].is_number());
@@ -855,7 +873,7 @@ mod tests {
         let payload = ColdPayload {
             implementation: "ltembed",
             implementation_version: "test-sha".to_string(),
-            scenario: "single/medium".to_string(),
+            scenario: "single/zh".to_string(),
             stats: LatencyStats::from_samples_ms(&[25.0]).unwrap(),
         };
 
@@ -863,7 +881,7 @@ mod tests {
 
         assert_eq!(value["implementation"], json!("ltembed"));
         assert_eq!(value["implementation_version"], json!("test-sha"));
-        assert_eq!(value["scenario"], json!("single/medium"));
+        assert_eq!(value["scenario"], json!("single/zh"));
         assert!(value["stats"]["mean_ms"].is_number());
         assert!(value["stats"]["median_ms"].is_number());
         assert!(value["stats"]["p95_ms"].is_number());
@@ -873,41 +891,13 @@ mod tests {
     }
 
     #[test]
-    fn test_correctness_payload_serializes_current_json_shape() {
-        let payload = CorrectnessPayload {
-            implementation: "ltembed",
-            implementation_version: "test-sha".to_string(),
-            results: vec![EmbeddingsEntry {
-                scenario: "single/medium".to_string(),
-                embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
-            }],
-        };
-
-        let value = serde_json::to_value(payload).unwrap();
-
-        assert_eq!(
-            value,
-            json!({
-                "implementation": "ltembed",
-                "implementation_version": "test-sha",
-                "results": [
-                    {
-                        "scenario": "single/medium",
-                        "embeddings": [[0.1_f32, 0.2_f32], [0.3_f32, 0.4_f32]]
-                    }
-                ]
-            })
-        );
-    }
-
-    #[test]
     fn test_parse_args_maps_retrieval_mode_to_typed_variant() {
         let args = parse_args_from([
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--retrieval-eval-path",
             "scripts/retrieval_eval_cases.json",
             "--output-dimension",
@@ -926,8 +916,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--retrieval-eval-path",
             "scripts/retrieval_eval_cases.json",
             "--output-dimension",
@@ -984,8 +974,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "retrieval",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -1040,8 +1030,8 @@ mod tests {
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",
@@ -1054,13 +1044,81 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_args_accepts_fixture_path() {
+        let args = parse_args_from([
+            "benchmark_ltembed",
+            "--mode",
+            "warm",
+            "--bundle-dir",
+            "gguf_bundle",
+            "--output-dimension",
+            "512",
+            "--l2-normalize",
+            "true",
+            "--fixture-path",
+            "artifacts/resolved_fixture.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.fixture_path.as_deref(),
+            Some(Path::new("artifacts/resolved_fixture.json"))
+        );
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_uses_fixture_when_present() {
+        let fixture: ResolvedFixture = serde_json::from_str(
+            r#"{ "scenarios": {
+                "single/zh": [{"kind": "query", "text": "他感冒了"}],
+                "single/en": [{"kind": "document", "text": "He caught a cold."}]
+            } }"#,
+        )
+        .unwrap();
+        let zh = scenario_inputs_resolved("single/zh", Some(&fixture)).unwrap();
+        assert_eq!(zh.len(), 1);
+        assert_eq!(zh[0].kind, EmbeddingInputKind::Query);
+        let en = scenario_inputs_resolved("single/en", Some(&fixture)).unwrap();
+        assert_eq!(en.len(), 1);
+        assert_eq!(en[0].kind, EmbeddingInputKind::Document);
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_falls_back_to_builtin_without_fixture() {
+        let inputs = scenario_inputs_resolved("single/zh", None).unwrap();
+        assert_eq!(
+            inputs,
+            scenario_inputs(scenario_by_name("single/zh").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_errors_on_missing_scenario_in_fixture() {
+        let fixture: ResolvedFixture =
+            serde_json::from_str(r#"{"scenarios": {"single/zh": []}}"#).unwrap();
+        let err = scenario_inputs_resolved("single/en", Some(&fixture)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("fixture is missing scenario: single/en"));
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_errors_on_unknown_kind() {
+        let fixture: ResolvedFixture = serde_json::from_str(
+            r#"{"scenarios": {"single/zh": [{"kind": "passage", "text": "x"}]}}"#,
+        )
+        .unwrap();
+        let err = scenario_inputs_resolved("single/zh", Some(&fixture)).unwrap_err();
+        assert!(err.to_string().contains("unknown kind: passage"));
+    }
+
+    #[test]
     fn test_parse_args_rejects_zero_threads() {
         let err = parse_args_from([
             "benchmark_ltembed",
             "--mode",
             "warm",
-            "--ort-bundle-dir",
-            "ort_bundle",
+            "--bundle-dir",
+            "gguf_bundle",
             "--output-dimension",
             "512",
             "--l2-normalize",

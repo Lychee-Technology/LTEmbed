@@ -29,30 +29,11 @@ impl Tokenizer for CountingTokenizer {
 }
 
 #[test]
-fn test_benchmark_scenarios_match_issue_38_plan() {
-    let scenario_names: Vec<_> = benchmark_scenarios()
-        .iter()
-        .map(|scenario| scenario.name)
-        .collect();
-    assert_eq!(
-        scenario_names,
-        vec![
-            "single/short",
-            "single/medium",
-            "single/long",
-            "batch/medium/1",
-            "batch/medium/4",
-            "batch/medium/8",
-            "batch/mixed/8",
-            "batch/medium/16",
-        ]
-    );
-
-    assert_eq!(scenario_by_name("batch/medium/16").unwrap().batch_size, 16);
-    assert_eq!(
-        scenario_by_name("single/long").unwrap().text_profile,
-        "long"
-    );
+fn test_benchmark_scenarios_are_single_zh_and_en() {
+    let names: Vec<_> = benchmark_scenarios().iter().map(|s| s.name).collect();
+    assert_eq!(names, vec!["single/zh", "single/en"]);
+    assert_eq!(scenario_by_name("single/zh").unwrap().batch_size, 1);
+    assert_eq!(scenario_by_name("single/en").unwrap().text_profile, "en");
     assert!(scenario_by_name("missing/scenario").is_none());
 }
 
@@ -75,9 +56,9 @@ fn test_latency_stats_rejects_empty_samples() {
 
 #[test]
 fn test_selected_scenarios_returns_requested_scenario() {
-    let selected = selected_scenarios(Some("batch/medium/8")).unwrap();
+    let selected = selected_scenarios(Some("single/zh")).unwrap();
     assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].name, "batch/medium/8");
+    assert_eq!(selected[0].name, "single/zh");
 }
 
 #[test]
@@ -87,38 +68,22 @@ fn test_selected_scenarios_rejects_unknown_name() {
 }
 
 #[test]
-fn test_batch_mixed_scenario_uses_variable_length_texts() {
-    let scenario = scenario_by_name("batch/mixed/8").expect("scenario should exist");
-    let inputs = scenario_inputs(scenario);
-    let lengths: Vec<_> = inputs.iter().map(|input| input.text.len()).collect();
-
-    assert_eq!(inputs.len(), 8);
-    assert!(lengths.iter().any(|&len| len == lengths[0]));
-    assert!(lengths.iter().any(|&len| len != lengths[0]));
-    assert_eq!(inputs[0].kind, EmbeddingInputKind::Query);
-    assert_eq!(inputs[2].kind, EmbeddingInputKind::Document);
+fn test_single_scenarios_carry_query_kind() {
+    let zh = scenario_inputs(scenario_by_name("single/zh").expect("exists"));
+    assert_eq!(zh.len(), 1);
+    assert_eq!(zh[0].kind, EmbeddingInputKind::Query);
+    let en = scenario_inputs(scenario_by_name("single/en").expect("exists"));
+    assert_eq!(en.len(), 1);
+    assert_eq!(en[0].kind, EmbeddingInputKind::Query);
 }
 
 #[test]
 fn test_scenario_token_lengths_follow_tokenizer_outputs() {
     let tokenizer = CountingTokenizer;
-    let scenario = scenario_by_name("batch/medium/8").expect("scenario should exist");
+    let scenario = scenario_by_name("single/zh").expect("scenario should exist");
 
     let lengths = scenario_token_lengths(&tokenizer, scenario, 512).unwrap();
 
-    assert_eq!(lengths.len(), 8);
-    assert!(lengths.iter().all(|&length| length == lengths[0]));
-    assert_eq!(*lengths.iter().max().unwrap(), lengths[0]);
-}
-
-#[test]
-fn test_scenario_token_lengths_preserve_mixed_padding_shape() {
-    let tokenizer = CountingTokenizer;
-    let scenario = scenario_by_name("batch/mixed/8").expect("scenario should exist");
-
-    let lengths = scenario_token_lengths(&tokenizer, scenario, 512).unwrap();
-
-    assert_eq!(lengths.len(), 8);
-    assert!(lengths.iter().any(|&length| length != lengths[0]));
-    assert!(*lengths.iter().max().unwrap() > *lengths.iter().min().unwrap());
+    assert_eq!(lengths.len(), 1);
+    assert!(lengths[0] > 0);
 }

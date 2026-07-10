@@ -56,7 +56,11 @@ def last_token_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tenso
 def main():
     print(f"Loading {MODEL_NAME} ...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-    model = AutoModel.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    # Force float32: this model's native dtype is bfloat16, but the golden is the F32
+    # reference (and bf16 tensors cannot be converted to numpy directly).
+    model = AutoModel.from_pretrained(
+        MODEL_NAME, trust_remote_code=True, torch_dtype=torch.float32
+    )
     model.eval()
 
     fixtures = []
@@ -70,7 +74,7 @@ def main():
             )
             output = model(**encoded)
             pooled = last_token_pool(output.last_hidden_state, encoded["attention_mask"])
-            embedding = truncate_and_normalize(pooled.squeeze(0).cpu().numpy())
+            embedding = truncate_and_normalize(pooled.squeeze(0).float().cpu().numpy())
             fixtures.append(
                 {
                     "kind": item["kind"],

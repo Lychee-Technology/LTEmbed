@@ -20,23 +20,11 @@ def load_module():
 
 
 class BenchPyTorchTests(unittest.TestCase):
-    def test_scenarios_match_issue_38_plan(self):
+    def test_scenarios_and_fixture_machinery_removed(self):
         bench = load_module()
-        self.assertEqual(
-            list(bench.SCENARIOS.keys()),
-            [
-                "single/short",
-                "single/medium",
-                "single/long",
-                "batch/medium/1",
-                "batch/medium/4",
-                "batch/medium/8",
-                "batch/mixed/8",
-                "batch/medium/16",
-            ],
-        )
-        self.assertEqual(bench.SCENARIOS["batch/medium/16"]["batch_size"], 16)
-        self.assertEqual(bench.SCENARIOS["batch/mixed/8"]["text_profile"], "mixed")
+        self.assertFalse(hasattr(bench, "SCENARIOS"))
+        self.assertFalse(hasattr(bench, "apply_fixture"))
+        self.assertFalse(hasattr(bench, "warm_payload"))
 
     def test_compute_stats_uses_fixed_keys(self):
         bench = load_module()
@@ -104,8 +92,8 @@ class BenchPyTorchTests(unittest.TestCase):
 
     def test_progress_label_includes_mode_scenario_and_state(self):
         bench = load_module()
-        label = bench.progress_label("warm", "batch/mixed/8", "start")
-        self.assertEqual(label, "warm batch/mixed/8 start")
+        self.assertEqual(bench.progress_label("retrieval", "cn-en-crosslingual-v1", "start"),
+                         "retrieval cn-en-crosslingual-v1 start")
 
     def test_load_model_moves_cpu_model_to_float32(self):
         bench = load_module()

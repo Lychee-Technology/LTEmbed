@@ -6,6 +6,10 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      quants:
+        description: Comma-separated GGUF quants to benchmark
+        required: false
+        default: "IQ4_NL,Q5_K_M,Q8_0"
       warmup:
         description: Warmup iterations per scenario
         required: false
@@ -31,71 +35,66 @@ on:
         description: Optional single scenario to benchmark
         required: false
         default: ""
-      raw_compare_only:
-        description: Run raw embedding compare instead of the benchmark harness
-        required: false
-        default: false
-        type: boolean
       include_cold_start:
         description: Include cold start measurements
         required: false
         default: true
         type: boolean
-      include_correctness:
-        description: Include correctness checks against PyTorch
-        required: false
-        default: true
-        type: boolean
       include_retrieval_eval:
-        description: Include small retrieval ranking eval
+        description: Include the CN/EN cross-lingual retrieval eval
         required: false
         default: true
         type: boolean
-      retrieval_eval_path:
-        description: Retrieval eval dataset path relative to the repository root
+      retrieval_pairs:
+        description: Number of CN/EN translation pairs to sample for the retrieval eval
         required: false
-        default: "scripts/retrieval_eval_cases.json"
+        default: "500"
+
+env:
+  MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
+  # Shared model snapshot path (FP32 weights + tokenizer + remote code) used by both the
+  # reference job (PyTorch) and each quant job (tokenizer for the GGUF bundle).
+  MODEL_DIR_REL: .cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
+  CN_EN_CSV_REL: tests/CN_EN_Data.csv
 
 jobs:
-  benchmark:
-    runs-on:
-      - self-hosted
-      - Linux
-      - ARM64
+  # Fan out over GGUF quants. Each job benchmarks one quant against a shared PyTorch FP32
+  # reference (produced once by the `reference` job) using the generated CN/EN cross-lingual
+  # retrieval fixture, and uploads an independent artifact. The `report` job then
+  # aggregates every quant into results.json + report.md with a recommended quant.
+  prepare:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      quants: ${{ steps.parse.outputs.quants }}
+    steps:
+      - id: parse
+        run: |
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json, os
+          raw = os.environ["QUANTS_INPUT"] or "IQ4_NL,Q5_K_M,Q8_0"
+          quants = [q.strip() for q in raw.split(",") if q.strip()]
+          print("quants=" + json.dumps(quants))
+          PY
+        env:
+          QUANTS_INPUT: ${{ inputs.quants }}
+
+  # Run PyTorch ONCE. Its correctness/retrieval embeddings are quant-independent (they use the
+  # FP32 HF model, never a GGUF bundle), so producing them here — instead of inside every quant
+  # job — removes N-1 redundant torch import + model-load cycles per matrix run. The embeddings
+  # are uploaded as a reference artifact that each quant job compares against.
+  reference:
+    runs-on: ubuntu-24.04-arm
     env:
-      MODEL_ID: jinaai/jina-embeddings-v5-text-nano-retrieval
       MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
-      ORT_BUNDLE_DIR: ${{ github.workspace }}/ort_bundle
-      BUILDER_REPO: Lychee-Technology/minimal-ort-builder
-      BUILDER_RELEASE_TAG: v1.0.15
-      BUILDER_ASSET_NAME: jinaai__jina-embeddings-v5-text-nano-retrieval_int8_linux-arm64.tar.gz
-      BUILDER_ASSET_SHA256: a8e1389abb77b523aea21808a4dc68f6febfe7a0683b9ec703ea8e8508c7eca3
-      BENCHMARK_RUNNER_LABELS: self-hosted,Linux,ARM64
+      BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Install Rust 1.94.0
-        uses: dtolnay/rust-toolchain@1.94.0
-
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-
-      - name: Cache Cargo Registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-arm64-cargo-
 
       - name: Cache Pip
         uses: actions/cache@v5
@@ -110,13 +109,6 @@ jobs:
         with:
           path: ${{ env.MODEL_DIR }}
           key: ${{ runner.os }}-arm64-model-jina-v2
-
-      - name: Cache ORT Bundle
-        id: cache-ort-bundle
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.ORT_BUNDLE_DIR }}
-          key: ${{ runner.os }}-arm64-ort-bundle-v1.0.15-jina-retrieval-int8
 
       - name: Install Python Dependencies
         run: |
@@ -140,47 +132,203 @@ jobs:
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "special_tokens_map.json",
-                  "vocab.txt",
                   "model.safetensors",
                   "*.py",
               ],
           )
           PY
 
-      - name: Download ORT Bundle
-        if: steps.cache-ort-bundle.outputs.cache-hit != 'true'
+      - name: Generate CN/EN cross-lingual retrieval eval
         run: |
-          mkdir -p "$ORT_BUNDLE_DIR"
-          curl -fsSL \
-            -o "$RUNNER_TEMP/$BUILDER_ASSET_NAME" \
-            "https://github.com/$BUILDER_REPO/releases/download/$BUILDER_RELEASE_TAG/$BUILDER_ASSET_NAME"
-          echo "$BUILDER_ASSET_SHA256  $RUNNER_TEMP/$BUILDER_ASSET_NAME" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$BUILDER_ASSET_NAME" -C "$ORT_BUNDLE_DIR"
-          test -f "$ORT_BUNDLE_DIR/model.ort"
-          test -f "$ORT_BUNDLE_DIR/tokenizer.json"
-          test -f "$ORT_BUNDLE_DIR/build-info.json"
-          test -f "$ORT_BUNDLE_DIR/libonnxruntime.so"
+          set -euo pipefail
+          mkdir -p reference
+          python3 scripts/build_cn_en_retrieval_cases.py \
+            --csv "$CN_EN_CSV_REL" \
+            --num-pairs "${{ inputs.retrieval_pairs }}" \
+            --output reference/cn_en_retrieval_cases.json \
+            --fixture-output reference/cn_en_fixture.json
 
-      # Compile check with visible errors before handing off to the Python
-      # harness, which swallows Cargo's stderr via capture_output=True.
-      - name: Cargo check (visible errors)
-        run: RUSTFLAGS="-C target-cpu=native" cargo check --bin benchmark_ltembed
+      - name: Emit PyTorch reference (retrieval embeddings)
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=""
+          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-l2-normalize"
+          fi
+          python3 scripts/run_embedding_benchmarks.py \
+            --model-dir "$MODEL_DIR" \
+            --model-id "$MODEL_ID" \
+            --model-source "huggingface" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            --threads "${{ inputs.threads }}" \
+            --retrieval-eval-path reference/cn_en_retrieval_cases.json \
+            --emit-reference reference/reference.json \
+            $EXTRA_ARGS
+
+      - name: Upload reference artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-reference
+          retention-days: 3
+          path: |
+            reference/reference.json
+            reference/cn_en_fixture.json
+            reference/cn_en_retrieval_cases.json
+          if-no-files-found: error
+
+  benchmark:
+    needs: [prepare, reference]
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        quant: ${{ fromJSON(needs.prepare.outputs.quants) }}
+    env:
+      # Keep Cargo's home inside the workspace so actions/cache archives paths with zero
+      # `../` hops. Home-relative caches bake in a fixed number of parent-dir traversals at
+      # save time, which breaks restore when the runner's workspace depth differs (e.g. a
+      # cache saved on a self-hosted runner failing to extract on a GitHub-hosted one).
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      MODEL_DIR: ${{ github.workspace }}/.cache/models/jinaai-jina-embeddings-v5-text-nano-retrieval
+      GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+      BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
+      STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
+      STATIC_LLAMA_TAG: v0.1.151-1
+      STATIC_LLAMA_SHA256: 48f3aa293824086d667d3938b40be37390d31275af20fd20a88c3880bfee2b90
+      BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.94.0
+        uses: dtolnay/rust-toolchain@1.94.0
+
+      # rust-toolchain.toml requests clippy+rustfmt, which rustup auto-installs on the first
+      # cargo invocation. On the GitHub-hosted arm64 image that install can hit a stale
+      # cargo-clippy binary ("detected conflict: 'bin/cargo-clippy'") and abort the build.
+      # Reconcile the components up front so cargo runs cleanly.
+      - name: Reconcile toolchain components
+        run: |
+          set -euo pipefail
+          rustup component add clippy rustfmt --toolchain 1.94.0 \
+            || rustup toolchain install 1.94.0 --profile minimal --component clippy --component rustfmt --force
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            .cargo/registry
+            .cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-v2-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-cargo-v2-
+
+      - name: Cache Pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-arm64-pip-${{ hashFiles('.github/workflows/benchmark-arm64.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-pip-
+
+      - name: Cache Model
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.MODEL_DIR }}
+          key: ${{ runner.os }}-arm64-model-jina-v2
+
+      - name: Fetch prebuilt static llama.cpp artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-static-llama.sh
+
+      # Quant jobs run ltembed only (PyTorch already ran in the `reference` job), so they need
+      # numpy for the retrieval-metric matmul and huggingface_hub for the tokenizer snapshot —
+      # but no torch/transformers.
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy huggingface_hub
+
+      - name: Download Model Snapshot (tokenizer)
+        run: |
+          mkdir -p "$MODEL_DIR"
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id=os.environ["MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              local_dir_use_symlinks=False,
+              allow_patterns=[
+                  "config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "special_tokens_map.json",
+                  "model.safetensors",
+                  "*.py",
+              ],
+          )
+          PY
+
+      - name: Assemble GGUF bundle (${{ matrix.quant }})
+        run: |
+          set -euo pipefail
+          rm -rf "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR"
+          gguf="v5-nano-retrieval-${{ matrix.quant }}.gguf"
+          curl -fsSL \
+            -o "$BUNDLE_DIR/model.gguf" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/$gguf"
+          cp "$MODEL_DIR/tokenizer.json" "$BUNDLE_DIR/tokenizer.json"
+          cat > "$BUNDLE_DIR/build-info.json" <<JSON
+          {
+            "target_id": "$MODEL_ID",
+            "model_metadata": {
+              "model_format": "gguf",
+              "quant": "${{ matrix.quant }}",
+              "pooling": "last_token",
+              "input_kind": "retrieval",
+              "query_prefix": "Query: ",
+              "document_prefix": "Document: ",
+              "raw_embedding_dimension": 768,
+              "output_embedding_dimension": 768,
+              "max_length": 8192
+            }
+          }
+          JSON
+          echo "model.gguf size: $(du -h "$BUNDLE_DIR/model.gguf" | cut -f1)"
+
+      # Build the release binary once, up front. Invoking the compiled binary directly (rather
+      # than `cargo run --release` per launch) keeps cargo's freshness check and the multi-minute
+      # release compile out of the timed harness, and surfaces compile errors with visible stderr.
+      - name: Build benchmark_ltembed (release)
+        run: cargo build --release --bin benchmark_ltembed
+
+      - name: Download reference artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: benchmark-reference
+          path: reference
 
       - name: Run Unified Benchmark Harness
-        if: ${{ inputs.raw_compare_only != true }}
         run: |
-          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
+          set -euo pipefail
           export LTEMBED_PROFILE="1"
-          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
+          mkdir -p "artifacts/${{ matrix.quant }}"
           EXTRA_ARGS=""
           if [ "${{ inputs.l2_normalize }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-l2-normalize"
           fi
           if [ "${{ inputs.include_cold_start }}" != "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --no-include-cold-start"
-          fi
-          if [ "${{ inputs.include_correctness }}" != "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --no-include-correctness"
           fi
           if [ -n "${{ inputs.scenario }}" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --scenario ${{ inputs.scenario }}"
@@ -190,63 +338,81 @@ jobs:
           fi
           python3 scripts/run_embedding_benchmarks.py \
             --model-dir "$MODEL_DIR" \
-            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
+            --bundle-dir "$BUNDLE_DIR" \
             --model-id "$MODEL_ID" \
             --model-source "huggingface" \
             --output-dimension "${{ inputs.output_dimension }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
             --threads "${{ inputs.threads }}" \
-            --retrieval-eval-path "${{ inputs.retrieval_eval_path }}" \
-            --output-csv "${{ github.workspace }}/artifacts/benchmark-report.csv" \
-            --output-summary "${{ github.workspace }}/artifacts/benchmark-summary.txt" \
+            --retrieval-eval-path reference/cn_en_retrieval_cases.json \
+            --reference-path reference/reference.json \
+            --fixture-path reference/cn_en_fixture.json \
+            --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
+            --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \
             $EXTRA_ARGS
 
-      - name: Run Raw Embedding Compare
-        if: ${{ inputs.raw_compare_only == true }}
+      - name: Record run metadata
         run: |
-          mkdir -p artifacts
-          export ORT_DYLIB_PATH="$ORT_BUNDLE_DIR/libonnxruntime.so"
-          export LD_LIBRARY_PATH="$ORT_BUNDLE_DIR:${LD_LIBRARY_PATH:-}"
-          if [ "${{ inputs.scenario }}" = "" ]; then
-            SCENARIO="single/medium"
-          else
-            SCENARIO="${{ inputs.scenario }}"
-          fi
-          LTEMBED_NORMALIZE_VALUE="true"
-          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
-            LTEMBED_NORMALIZE_VALUE="false"
-          fi
-          python3 scripts/bench_pytorch.py \
-            --mode correctness \
-            --scenario "$SCENARIO" \
-            --model-name-or-path "$MODEL_DIR" \
-            --output-dimension "${{ inputs.output_dimension }}" \
-            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
-            --threads "${{ inputs.threads }}" \
-            > artifacts/pytorch-correctness.json
-          cargo run --quiet --release --bin benchmark_ltembed -- \
-            --mode correctness \
-            --scenario "$SCENARIO" \
-            --ort-bundle-dir "$ORT_BUNDLE_DIR" \
-            --output-dimension "${{ inputs.output_dimension }}" \
-            --l2-normalize "$LTEMBED_NORMALIZE_VALUE" \
-            --threads "${{ inputs.threads }}" \
-            > artifacts/ltembed-correctness.json
-          python3 scripts/compare_embedding_outputs.py \
-            --ltembed-json artifacts/ltembed-correctness.json \
-            --pytorch-json artifacts/pytorch-correctness.json \
-            --scenario "$SCENARIO" \
-            --output-json artifacts/raw-embedding-compare.json \
-            --output-text artifacts/raw-embedding-compare.txt
+          set -euo pipefail
+          size_bytes=$(stat -c%s "$BUNDLE_DIR/model.gguf")
+          static_contract=$(grep -o '"artifact_contract_version": *"[0-9]*"' "$STATIC_LLAMA_DIR/build-info.json" | grep -o '[0-9]*')
+          cat > "artifacts/${{ matrix.quant }}/metadata.json" <<JSON
+          {
+            "backend": "llama.cpp",
+            "quant": "${{ matrix.quant }}",
+            "model_id": "$MODEL_ID",
+            "gguf_file": "v5-nano-retrieval-${{ matrix.quant }}.gguf",
+            "gguf_sha256": "$(sha256sum "$BUNDLE_DIR/model.gguf" | cut -d' ' -f1)",
+            "gguf_size_bytes": $size_bytes,
+            "static_llama_tag": "$STATIC_LLAMA_TAG",
+            "static_llama_contract_version": "$static_contract",
+            "runner_labels": "$BENCHMARK_RUNNER_LABELS",
+            "threads": "${{ inputs.threads }}",
+            "warmup": "${{ inputs.warmup }}",
+            "iters": "${{ inputs.iters }}",
+            "output_dimension": "${{ inputs.output_dimension }}"
+          }
+          JSON
+          cat "artifacts/${{ matrix.quant }}/metadata.json"
 
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: benchmark-arm64-results
-          retention-days: 1
+          name: benchmark-arm64-${{ matrix.quant }}
+          retention-days: 3
+          path: artifacts/${{ matrix.quant }}/**
+
+  # Aggregate every quant's per-job artifact into one cross-quant comparison (report.md +
+  # results.json) and surface it in the run summary, including a recommended quant.
+  report:
+    needs: benchmark
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: bench-results
+          pattern: benchmark-arm64-*
+
+      - name: Render cross-quant report
+        run: python3 scripts/render_benchmark_report.py bench-results .
+
+      - name: Upload aggregated report
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-report
+          retention-days: 3
           path: |
-            artifacts/benchmark-report.csv
-            artifacts/benchmark-summary.txt
-            artifacts/raw-embedding-compare.json
-            artifacts/raw-embedding-compare.txt
+            report.md
+            results.json
+          if-no-files-found: error

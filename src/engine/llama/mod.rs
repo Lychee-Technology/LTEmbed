@@ -221,7 +221,11 @@ impl EmbeddingBackend for LlamaBackend {
         // batching in a single decode is a future throughput optimization.
         for item in tokenized {
             let start = collect_profile.then(Instant::now);
-            let raw = unsafe { self.embed_one(ctx, &item.input_ids) }?;
+            // Feed only the real tokens, never the batch padding. `encode_batch` right-pads
+            // to the longest sequence; with LAST pooling a trailing pad token would be
+            // pooled instead of the final content token (see `TokenizerOutput::real_input_ids`).
+            let real_tokens = item.real_input_ids();
+            let raw = unsafe { self.embed_one(ctx, &real_tokens) }?;
             if let Some(start) = start {
                 run_ms += start.elapsed().as_secs_f64() * 1_000.0;
             }

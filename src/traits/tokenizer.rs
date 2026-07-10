@@ -10,6 +10,24 @@ pub struct TokenizerOutput {
     pub token_type_ids: Vec<u32>, // present for models that declare segment IDs
 }
 
+impl TokenizerOutput {
+    /// The real (non-padding) token IDs, selected by the attention mask.
+    ///
+    /// A tokenizer with padding enabled (this model's ships with right-padding, pad id
+    /// 128004) makes `encode_batch` pad every sequence to the batch's longest. A backend
+    /// that pools with LAST and ignores the mask would then pool the trailing **pad**
+    /// token instead of the final content token — which flattened GGUF embeddings to
+    /// ~0.31 cosine vs the FP32 reference and collapsed cross-lingual retrieval. Backends
+    /// that decode sequences independently must feed only these tokens.
+    pub(crate) fn real_input_ids(&self) -> Vec<u32> {
+        self.input_ids
+            .iter()
+            .zip(&self.attention_mask)
+            .filter_map(|(&tok, &mask)| (mask == 1).then_some(tok))
+            .collect()
+    }
+}
+
 /// Converts raw text into model input tensors.
 pub trait Tokenizer: Send + Sync {
     fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError>;
@@ -116,6 +134,34 @@ mod tests {
 
     fn tokenizer_available() -> bool {
         Path::new(TOKENIZER_PATH).exists()
+    }
+
+    fn output(input_ids: Vec<u32>, attention_mask: Vec<u32>) -> TokenizerOutput {
+        let n = input_ids.len();
+        TokenizerOutput {
+            input_ids,
+            attention_mask,
+            token_type_ids: vec![0; n],
+        }
+    }
+
+    #[test]
+    fn test_real_input_ids_strips_right_padding() {
+        // pad id 128004 masked out; only the real prefix survives.
+        let out = output(vec![10, 11, 12, 128004, 128004], vec![1, 1, 1, 0, 0]);
+        assert_eq!(out.real_input_ids(), vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn test_real_input_ids_keeps_unpadded_sequence() {
+        let out = output(vec![10, 11, 12], vec![1, 1, 1]);
+        assert_eq!(out.real_input_ids(), vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn test_real_input_ids_empty_when_all_padding() {
+        let out = output(vec![128004, 128004], vec![0, 0]);
+        assert!(out.real_input_ids().is_empty());
     }
 
     #[test]

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 # Mean cosine (vs PyTorch FP32) a quant must keep to be considered "quality-preserving".
-QUALITY_GATE = 0.98
+QUALITY_GATE = 0.99
 
 # (json_key, column header, kind) — kind drives formatting in _fmt.
 COLUMNS = [
@@ -129,12 +129,14 @@ def recommend(results: list[dict[str, Any]]) -> tuple[str | None, str]:
         return best["quant"], reason
     scored = [r for r in results if r.get("mean_cosine") is not None]
     if scored:
+        # No quant clears the gate: make no recommendation. Reporting the "least bad" quant
+        # here would invite shipping a quant that fails the approved parity bar.
         best = max(scored, key=lambda r: r["mean_cosine"])
         reason = (
-            f"no quant met the {QUALITY_GATE:.2f} mean cosine gate; highest mean cosine vs FP32 "
-            f"(mean_cosine={_fmt('cos', best['mean_cosine'])})"
+            f"no quant met the {QUALITY_GATE:.2f} mean cosine gate "
+            f"(best was `{best['quant']}` at mean_cosine={_fmt('cos', best['mean_cosine'])})"
         )
-        return best["quant"], reason
+        return None, reason
     return None, "no cosine data available to rank quants"
 
 

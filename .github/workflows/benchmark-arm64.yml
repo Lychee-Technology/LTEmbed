@@ -194,6 +194,7 @@ jobs:
       BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
       STATIC_LLAMA_TAG: v0.1.151-1
+      STATIC_LLAMA_SHA256: 48f3aa293824086d667d3938b40be37390d31275af20fd20a88c3880bfee2b90
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout

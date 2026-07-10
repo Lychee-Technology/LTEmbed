@@ -21,6 +21,8 @@ env:
   # STATIC_LLAMA_DIR before running cargo.
   STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
   STATIC_LLAMA_TAG: v0.1.151-1
+  # Repo-pinned sha256 of static-llama-cpp-${STATIC_LLAMA_TAG}-aarch64-graviton2.tar.gz.
+  STATIC_LLAMA_SHA256: 48f3aa293824086d667d3938b40be37390d31275af20fd20a88c3880bfee2b90
 
 jobs:
   test:
@@ -59,8 +61,42 @@ jobs:
       - name: Verify Rust API example compiles
         run: cargo check --example api_usage
 
-      - name: Run integration error-handling test (no model assets required)
-        run: cargo test --test integration_tests test_missing_model_file_returns_model_load_error
+      # Assemble a real GGUF bundle so the model-backed integration tests (golden parity,
+      # batch/normalization/dimension) actually run inference through the llama.cpp backend.
+      # Without this the bundle-gated tests silently skip and CI can pass on a broken engine
+      # (e.g. the batch-padding pooling bug).
+      - name: Assemble GGUF bundle for model-backed tests
+        env:
+          GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+          QUANT: Q5_K_M
+        run: |
+          set -euo pipefail
+          BUNDLE="${{ github.workspace }}/ci_gguf_bundle"
+          mkdir -p "$BUNDLE"
+          curl -fsSL -o "$BUNDLE/model.gguf" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/v5-nano-retrieval-$QUANT.gguf"
+          curl -fsSL -o "$BUNDLE/tokenizer.json" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/tokenizer.json"
+          cat > "$BUNDLE/build-info.json" <<'JSON'
+          {
+            "target_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+            "model_metadata": {
+              "model_format": "gguf",
+              "quant": "Q5_K_M",
+              "pooling": "last_token",
+              "input_kind": "retrieval",
+              "query_prefix": "Query: ",
+              "document_prefix": "Document: ",
+              "raw_embedding_dimension": 768,
+              "output_embedding_dimension": 768,
+              "max_length": 8192
+            }
+          }
+          JSON
+          echo "LTEMBED_TEST_BUNDLE_DIR=$BUNDLE" >> "$GITHUB_ENV"
+
+      - name: Run integration tests (llama.cpp GGUF inference)
+        run: cargo test --test integration_tests
 
   lint:
     name: Lint

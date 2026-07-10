@@ -67,7 +67,9 @@ For a quick end-to-end check against a local GGUF bundle (inside the dev contain
 ```bash
 cargo check --all-targets
 cargo run --example api_usage            # looks for ./gguf_bundle
-cargo run --bin benchmark_ltembed -- --mode correctness --bundle-dir <gguf_bundle> --output-dimension 512 --l2-normalize true
+# End-to-end inference through the real engine; --mode is one of warm|cold|retrieval.
+cargo run --bin benchmark_ltembed -- --mode retrieval --bundle-dir <gguf_bundle> \
+  --retrieval-eval-path scripts/retrieval_eval_cases.json --output-dimension 512 --l2-normalize true
 ```
 
 The root [`README.md`](../README.md) is the primary guide for the Rust API surface and expected asset layout.

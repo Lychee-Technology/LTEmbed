@@ -1,5 +1,12 @@
 name: release-bundles
 
+# Package an LTEmbed source tree + a ready-to-load GGUF bundle (model.gguf + tokenizer.json +
+# build-info.json) into a release tarball. Mirrors the runtime's bundle contract; the old ORT
+# (model.ort + libonnxruntime.so) layout was removed with the llama.cpp/GGUF migration.
+#
+# workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
+# published release it also uploads the tarball as a release asset.
+
 on:
   release:
     types: [published]
@@ -10,15 +17,16 @@ permissions:
 
 jobs:
   package:
-    name: package-${{ matrix.asset_name }}
+    name: package-${{ matrix.quant }}
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         include:
-          - builder_repo: Lychee-Technology/minimal-ort-builder
-            release_tag: v1.0.9
-            asset_name: jinaai__jina-embeddings-v5-text-nano-retrieval_q4f16_linux-arm64.tar.gz
+          # Q5_K_M is the smallest quant that clears the ≥0.99 parity gate while fitting the
+          # 250 MB Lambda limit (≈169 MB gguf + ≈17 MB tokenizer). See docs/llama-cpp-spike-results.md.
+          - gguf_repo: jinaai/jina-embeddings-v5-text-nano-retrieval
+            quant: Q5_K_M
             expected_model_id: jinaai/jina-embeddings-v5-text-nano-retrieval
             output_dimension: 512
             l2_normalize: true
@@ -27,79 +35,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Download minimal-ort-builder asset
+      - name: Assemble GGUF bundle
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p artifacts/builder
-          gh release download "${{ matrix.release_tag }}" \
-            --repo "${{ matrix.builder_repo }}" \
-            --pattern "${{ matrix.asset_name }}" \
-            --dir artifacts/builder
-
-      - name: Extract and verify bundle
-        env:
+          GGUF_REPO: ${{ matrix.gguf_repo }}
+          QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
         run: |
-          mkdir -p artifacts/unpacked
-          tar -xzf "artifacts/builder/${{ matrix.asset_name }}" -C artifacts/unpacked
-          cd artifacts/unpacked
-
-          sha256sum -c SHA256SUMS
-
-          test -f model.ort
-          test -f tokenizer.json
-          test -f libonnxruntime.so
-          test -f build-info.json
-
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          build_info = json.loads(Path("build-info.json").read_text(encoding="utf-8"))
-          assert build_info["target_id"] == os.environ["EXPECTED_MODEL_ID"]
-          PY
+          set -euo pipefail
+          BUNDLE=artifacts/gguf_bundle
+          mkdir -p "$BUNDLE"
+          curl -fsSL -o "$BUNDLE/model.gguf" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/v5-nano-retrieval-$QUANT.gguf"
+          curl -fsSL -o "$BUNDLE/tokenizer.json" \
+            "https://huggingface.co/$GGUF_REPO/resolve/main/tokenizer.json"
+          cat > "$BUNDLE/build-info.json" <<JSON
+          {
+            "target_id": "$EXPECTED_MODEL_ID",
+            "model_metadata": {
+              "model_format": "gguf",
+              "quant": "$QUANT",
+              "pooling": "last_token",
+              "input_kind": "retrieval",
+              "query_prefix": "Query: ",
+              "document_prefix": "Document: ",
+              "raw_embedding_dimension": 768,
+              "output_embedding_dimension": 768,
+              "max_length": 8192
+            }
+          }
+          JSON
+          test -f "$BUNDLE/model.gguf"
+          test -f "$BUNDLE/tokenizer.json"
+          test -f "$BUNDLE/build-info.json"
+          ( cd "$BUNDLE" && sha256sum model.gguf tokenizer.json build-info.json > SHA256SUMS )
 
       - name: Build LTEmbed release tarball
         id: bundle
         env:
-          BUILDER_REPO: ${{ matrix.builder_repo }}
-          BUILDER_RELEASE_TAG: ${{ matrix.release_tag }}
-          BUILDER_ASSET_NAME: ${{ matrix.asset_name }}
+          GGUF_REPO: ${{ matrix.gguf_repo }}
+          QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
           OUTPUT_DIMENSION: ${{ matrix.output_dimension }}
           L2_NORMALIZE: ${{ matrix.l2_normalize }}
         run: |
-          VERSION="$(python - <<'PY'
-          import pathlib
-          import tomllib
-
-          cargo_toml = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
-          print(tomllib.loads(cargo_toml)["package"]["version"])
+          set -euo pipefail
+          VERSION="$(python3 - <<'PY'
+          import pathlib, tomllib
+          print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"])
           PY
           )"
 
-          ASSET_STEM="${BUILDER_ASSET_NAME%.tar.gz}"
-          ROOT_NAME="ltembed-${VERSION}-${ASSET_STEM}"
-          OUTPUT_NAME="ltembed-${VERSION}-${BUILDER_ASSET_NAME}"
+          MODEL_SLUG="${EXPECTED_MODEL_ID//\//__}"
+          ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}-linux-arm64"
+          OUTPUT_NAME="${ROOT_NAME}.tar.gz"
 
           mkdir -p artifacts/package
           git archive --format=tar --prefix="${ROOT_NAME}/" HEAD | tar -xf - -C artifacts/package
-          mkdir -p "artifacts/package/${ROOT_NAME}/ort_bundle"
-          tar -xzf "artifacts/builder/${BUILDER_ASSET_NAME}" -C "artifacts/package/${ROOT_NAME}/ort_bundle"
+          cp -r artifacts/gguf_bundle "artifacts/package/${ROOT_NAME}/gguf_bundle"
           tar -czf "artifacts/package/${OUTPUT_NAME}" -C artifacts/package "${ROOT_NAME}"
-          tar -tzf "artifacts/package/${OUTPUT_NAME}" | grep -q "${ROOT_NAME}/ort_bundle/model.ort"
+          # Fail loudly if the GGUF bundle didn't make it into the archive.
+          tar -tzf "artifacts/package/${OUTPUT_NAME}" | grep -q "${ROOT_NAME}/gguf_bundle/model.gguf"
 
           {
-            echo "builder_repo=${BUILDER_REPO}"
-            echo "builder_release_tag=${BUILDER_RELEASE_TAG}"
-            echo "builder_asset_name=${BUILDER_ASSET_NAME}"
+            echo "gguf_repo=${GGUF_REPO}"
+            echo "quant=${QUANT}"
             echo "expected_model_id=${EXPECTED_MODEL_ID}"
             echo "output_dimension=${OUTPUT_DIMENSION}"
             echo "l2_normalize=${L2_NORMALIZE}"

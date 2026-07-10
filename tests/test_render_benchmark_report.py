@@ -76,25 +76,25 @@ class RenderBenchmarkReportTests(unittest.TestCase):
             base = Path(tmpdir) / "bench-results"
             base.mkdir()
             _write_quant(base, "IQ4_NL", 190_000_000, warm=8.0, cosines=[0.95, 0.96], both_at_3=0.85)
-            _write_quant(base, "Q5_K_M", 230_000_000, warm=9.5, cosines=[0.99, 0.988], both_at_3=0.92)
+            _write_quant(base, "Q5_K_M", 230_000_000, warm=9.5, cosines=[0.995, 0.993], both_at_3=0.92)
             _write_quant(base, "Q8_0", 350_000_000, warm=12.0, cosines=[0.997, 0.996], both_at_3=0.94)
 
             results = mod.collect_results(base)
             self.assertEqual([r["quant"] for r in results], ["IQ4_NL", "Q5_K_M", "Q8_0"])
 
             recommended, _reason = mod.recommend(results)
-            # IQ4_NL fails the gate (0.95); Q5_K_M is the smallest that passes.
+            # IQ4_NL fails the 0.99 gate; Q5_K_M is the smallest that passes.
             self.assertEqual(recommended, "Q5_K_M")
 
             q5 = next(r for r in results if r["quant"] == "Q5_K_M")
-            self.assertAlmostEqual(q5["min_cosine"], 0.988)
+            self.assertAlmostEqual(q5["min_cosine"], 0.993)
             self.assertAlmostEqual(q5["both_at_3"], 0.92)
 
             report = mod.build_report(results)
             self.assertIn("Recommended quant: `Q5_K_M`", report)
             self.assertIn("vs PyTorch FP32", report)
 
-    def test_recommend_falls_back_to_highest_mean_when_none_pass_gate(self):
+    def test_no_recommendation_when_none_pass_gate(self):
         mod = load_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir) / "bench-results"
@@ -103,16 +103,18 @@ class RenderBenchmarkReportTests(unittest.TestCase):
             _write_quant(base, "Q5_K_M", 230_000_000, warm=9.5, cosines=[0.95, 0.94])
             results = mod.collect_results(base)
             recommended, reason = mod.recommend(results)
-            self.assertEqual(recommended, "Q5_K_M")
+            # None clears the 0.99 gate -> no recommendation (do not fall back to "least bad").
+            self.assertIsNone(recommended)
             self.assertIn("no quant met", reason)
+            self.assertIn("No recommendation", mod.build_report(results))
 
     def test_gate_uses_mean_not_min(self):
         mod = load_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir) / "bench-results"
             base.mkdir()
-            # IQ4_NL: one low outlier (0.96) but mean 0.984 -> passes mean gate despite low min_cosine
-            _write_quant(base, "IQ4_NL", 190_000_000, warm=8.0, cosines=[0.96, 0.99, 0.99, 0.99, 0.99])
+            # IQ4_NL: one low outlier (0.97) but mean ~0.992 -> passes mean gate despite low min_cosine
+            _write_quant(base, "IQ4_NL", 190_000_000, warm=8.0, cosines=[0.97, 0.997, 0.997, 0.997, 0.997])
             _write_quant(base, "Q5_K_M", 230_000_000, warm=9.5, cosines=[0.99, 0.99])
             results = mod.collect_results(base)
             recommended, _ = mod.recommend(results)

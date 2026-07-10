@@ -82,6 +82,27 @@ impl LlamaBackend {
         context_length: usize,
         n_threads: usize,
     ) -> Result<Self, LTEmbedError> {
+        // Validate before narrowing into llama.cpp's u32/i32 fields: an oversized context or
+        // thread count would otherwise wrap silently and mis-size the context.
+        let n_ctx = u32::try_from(context_length)
+            .ok()
+            .filter(|&v| v > 0)
+            .ok_or_else(|| {
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "context_length {context_length} out of range (must be 1..={})",
+                    u32::MAX
+                )))
+            })?;
+        let n_threads = i32::try_from(n_threads)
+            .ok()
+            .filter(|&v| v > 0)
+            .ok_or_else(|| {
+                LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "n_threads {n_threads} out of range (must be 1..={})",
+                    i32::MAX
+                )))
+            })?;
+
         ensure_backend_initialized();
 
         let cpath =
@@ -111,7 +132,7 @@ impl LlamaBackend {
                 ))));
             }
 
-            let n = context_length as u32;
+            let n = n_ctx;
             let mut cparams = ffi::llama_context_default_params();
             cparams.embeddings = true;
             cparams.pooling_type = ffi::LLAMA_POOLING_TYPE_LAST;
@@ -122,8 +143,8 @@ impl LlamaBackend {
             cparams.n_batch = n;
             cparams.n_ubatch = n;
             cparams.n_seq_max = 1;
-            cparams.n_threads = n_threads as i32;
-            cparams.n_threads_batch = n_threads as i32;
+            cparams.n_threads = n_threads;
+            cparams.n_threads_batch = n_threads;
 
             let ctx = ffi::llama_init_from_model(model, cparams);
             if ctx.is_null() {

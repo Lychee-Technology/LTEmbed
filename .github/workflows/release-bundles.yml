@@ -5,9 +5,12 @@ name: release-bundles
 # (model.ort + libonnxruntime.so) layout was removed with the llama.cpp/GGUF migration.
 #
 # workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
-# published release it also uploads the tarball as a release asset.
+# published release it also uploads the tarball as a release asset. Pushing a v* tag creates
+# the release automatically (if missing) and uploads the tarball to it.
 
 on:
+  push:
+    tags: ["v*"]
   release:
     types: [published]
   workflow_dispatch:
@@ -19,6 +22,9 @@ jobs:
   package:
     name: package-${{ matrix.quant }}
     runs-on: ubuntu-24.04-arm
+    env:
+      # Empty on workflow_dispatch, which skips every release-facing step below.
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event_name == 'release' && github.event.release.tag_name || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +91,10 @@ jobs:
           PY
           )"
 
+          if [ -n "${RELEASE_TAG}" ] && [ "v${VERSION}" != "${RELEASE_TAG}" ]; then
+            echo "::warning::release tag ${RELEASE_TAG} does not match Cargo.toml version v${VERSION}"
+          fi
+
           MODEL_SLUG="${EXPECTED_MODEL_ID//\//__}"
           ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}-linux-arm64"
           OUTPUT_NAME="${ROOT_NAME}.tar.gz"
@@ -114,12 +124,24 @@ jobs:
           path: ${{ steps.bundle.outputs.path }}
           retention-days: 7
 
-      - name: Upload release asset
-        if: github.event_name == 'release'
+      - name: Ensure release exists for tag
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
+            || gh release create "${RELEASE_TAG}" \
+                 --repo "${{ github.repository }}" \
+                 --verify-tag \
+                 --title "${RELEASE_TAG}" \
+                 --generate-notes
+
+      - name: Upload release asset
+        if: github.event_name == 'release' || github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
             "${{ steps.bundle.outputs.path }}" \
             --repo "${{ github.repository }}" \
             --clobber

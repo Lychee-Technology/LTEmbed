@@ -129,12 +129,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
-            || gh release create "${RELEASE_TAG}" \
-                 --repo "${{ github.repository }}" \
-                 --verify-tag \
-                 --title "${RELEASE_TAG}" \
-                 --generate-notes
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            if ! gh release create "${RELEASE_TAG}" \
+                   --repo "${{ github.repository }}" \
+                   --verify-tag \
+                   --title "${RELEASE_TAG}" \
+                   --generate-notes; then
+              # Concurrent matrix jobs can race view||create; losing the creation race is fine,
+              # but any other create failure must still fail the job.
+              gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null
+            fi
+          fi
 
       - name: Upload release asset
         if: github.event_name == 'release' || github.event_name == 'push'

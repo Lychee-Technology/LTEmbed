@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -334,6 +335,7 @@ class GoldenParityTests(unittest.TestCase):
             args = ltembed_args(
                 golden_fixture_path=golden_path,
                 golden_parity_threshold=0.98,
+                output_dimension=2,  # matches the fixture's dim
                 output_csv=tmp / "report.csv",
             )
             ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
@@ -365,6 +367,47 @@ class GoldenParityTests(unittest.TestCase):
         self.assertEqual(by_scenario["golden/document/1"]["cosine_similarity_vs_pytorch"], "0.000000")
         self.assertEqual(by_scenario["golden/document/1"]["status"], "fail")
 
+    def test_collect_golden_parity_skips_on_dimension_mismatch(self):
+        bench = load_module()
+        golden = dict(self.GOLDEN, dim=512)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            golden_path = tmp / "golden.json"
+            golden_path.write_text(json.dumps(golden), encoding="utf-8")
+            args = ltembed_args(
+                golden_fixture_path=golden_path,
+                golden_parity_threshold=0.98,
+                output_dimension=768,  # != fixture dim -> cosine undefined, must skip
+                output_csv=tmp / "report.csv",
+            )
+            ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                                   model_source="hf", git_revision="sha", host={
+                                       "host_os": "linux", "host_arch": "arm64",
+                                       "cpu_model": "c", "runner_labels": ""})
+            with mock.patch.object(bench, "run_json_command") as run_mock:
+                rows = bench.collect_golden_parity_rows(args=args, ctx=ctx)
+        self.assertEqual(rows, [])
+        run_mock.assert_not_called()
+
+    def test_cold_iters_cli_rejects_non_positive(self):
+        bench = load_module()
+        argv = ["run_embedding_benchmarks.py", "--cold-iters", "0"]
+        with mock.patch.object(sys, "argv", argv), \
+             contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as ctx:
+            bench.parse_args()
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_collect_cold_rows_rejects_non_positive_cold_iters(self):
+        bench = load_module()
+        ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                               model_source="hf", git_revision="sha", host={
+                                   "host_os": "linux", "host_arch": "arm64",
+                                   "cpu_model": "c", "runner_labels": ""})
+        args = ltembed_args(cold_iters=0, scenario=None)
+        with self.assertRaisesRegex(ValueError, "cold_iters"):
+            bench.collect_cold_rows(args=args, ctx=ctx, implementations=["ltembed"])
+
     def test_collect_golden_parity_rows_raises_on_missing_embedding(self):
         bench = load_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -374,6 +417,7 @@ class GoldenParityTests(unittest.TestCase):
             args = ltembed_args(
                 golden_fixture_path=golden_path,
                 golden_parity_threshold=0.98,
+                output_dimension=2,  # matches the fixture's dim
                 output_csv=tmp / "report.csv",
             )
             ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
@@ -675,6 +719,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("scripts/write_benchmark_metadata.py", workflow)
         self.assertNotIn('"gguf_size_bytes"', workflow)
         self.assertIn('--static-llama-sha256 "$STATIC_LLAMA_SHA256"', workflow)
+
+    def test_report_job_receives_dispatched_quant_list(self):
+        workflow = self._workflow()
+        self.assertIn("needs: [prepare, benchmark]", workflow)
+        self.assertIn('--expected-quants "$EXPECTED_QUANTS"', workflow)
+        self.assertIn("EXPECTED_QUANTS: ${{ needs.prepare.outputs.quants }}", workflow)
 
 
 if __name__ == "__main__":

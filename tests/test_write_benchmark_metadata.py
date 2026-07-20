@@ -128,6 +128,29 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
             ["single/zh", "single/en", "single/medium", "single/long", "batch/medium/8"],
         )
 
+    def test_rejects_non_positive_run_parameters(self):
+        import contextlib
+        import io
+
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            env = self._make_env(tmp)
+            for key, bad in (
+                ("--cold-iters", "0"),
+                ("--timed-iters", "0"),
+                ("--threads", "0"),
+                ("--output-dimension", "0"),
+                ("--warmup-iters", "-1"),
+            ):
+                with contextlib.redirect_stderr(io.StringIO()), \
+                     self.assertRaises(SystemExit, msg=key) as ctx:
+                    module.parse_args(self._argv(tmp, env, **{key: bad}))
+                self.assertEqual(ctx.exception.code, 2)
+            # warmup of zero is legitimate
+            args = module.parse_args(self._argv(tmp, env, **{"--warmup-iters": "0"}))
+            self.assertEqual(args.warmup_iters, 0)
+
     def test_identity_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

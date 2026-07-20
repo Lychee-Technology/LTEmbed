@@ -518,7 +518,9 @@ def collect_cold_rows(
     the runner's stats carry one sample; the distribution across ``--cold-iters`` runs is
     computed here.
     """
-    cold_iters = max(1, int(getattr(args, "cold_iters", 1)))
+    cold_iters = int(getattr(args, "cold_iters", 1))
+    if cold_iters < 1:
+        raise ValueError(f"cold_iters must be >= 1, got {cold_iters}")
     scenarios = [scenario_from_name(args.scenario)] if getattr(args, "scenario", None) else SCENARIOS
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in implementations}
@@ -632,8 +634,20 @@ def collect_golden_parity_rows(
     Reuses the runner's retrieval mode: the golden texts are written out as a synthetic
     retrieval-eval case, embedded by ltembed, and compared against the checked-in
     embeddings with the pure-Python cosine.
+
+    Skipped (with a visible log line) when the requested output dimension differs from
+    the fixture's — cosine against unequal-length vectors is undefined, and dispatches
+    with a non-default dimension are still valid latency runs.
     """
     golden = load_golden_fixture(args.golden_fixture_path)
+    golden_dim = int(golden.get("dim") or 0)
+    if golden_dim and int(args.output_dimension) != golden_dim:
+        log_progress(
+            f"golden_parity (fixture dim {golden_dim} != output dimension "
+            f"{args.output_dimension})",
+            "SKIP",
+        )
+        return []
     spec, expected = build_golden_retrieval_case(golden)
 
     case_path = Path(args.output_csv).parent / "golden_parity_case.json"
@@ -818,13 +832,20 @@ def summary_lines(
     lines.append(f"transformers_version={pytorch_payload.get('transformers_version', '')}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
-        lines.append(f"cold_iters={max(1, int(getattr(args, 'cold_iters', 1)))}")
+        lines.append(f"cold_iters={int(getattr(args, 'cold_iters', 1))}")
     if retrieval_payloads is not None:
         lines.append("retrieval_eval=enabled")
         lines.append("correctness=derived")
     if getattr(args, "golden_parity", False):
         lines.append("golden_parity=enabled")
     return lines
+
+
+def positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -853,7 +874,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument(
         "--cold-iters",
-        type=int,
+        type=positive_int,
         default=10,
         help=(
             "Fresh-process cold-start invocations per scenario; the latency distribution "

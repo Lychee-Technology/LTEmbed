@@ -136,6 +136,10 @@ def _write_quant(
                 "cpu_model": "Neoverse-N1",
                 "cpu_flags": ["asimd"],
                 "threads": 1,
+                "cold_iters": 10,
+                "output_dimension": 512,
+                "l2_normalize": True,
+                "scenarios": SCENARIOS,
                 "git_sha": "abc123",
             }
         )
@@ -181,6 +185,10 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(record["runner_labels"], "ubuntu-24.04-arm")
         self.assertEqual(record["cpu_flags"], ["asimd"])
         self.assertEqual(record["git_sha"], "abc123")
+        # run/tuning configuration is denormalized onto every record
+        self.assertEqual(record["output_dimension"], 512)
+        self.assertIs(record["l2_normalize"], True)
+        self.assertEqual(record["cold_iters"], 10)
 
     def test_cold_records_reflect_cold_iters(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -294,6 +302,115 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(recommended, "IQ4_NL")
 
 
+class LambdaBudgetContractTests(unittest.TestCase):
+    def test_budget_is_package_limit_minus_binary_allowance(self):
+        mod = load_module()
+        self.assertEqual(mod.LAMBDA_PACKAGE_LIMIT_BYTES, 250 * 1024 * 1024)
+        self.assertEqual(
+            mod.LAMBDA_BUDGET_BYTES,
+            mod.LAMBDA_PACKAGE_LIMIT_BYTES - mod.LAMBDA_BINARY_ALLOWANCE_BYTES,
+        )
+
+    def test_real_world_q8_bundle_is_over_budget(self):
+        # The #150 tradeoff: Q8_0's ~233 MB GGUF (+~16 MB tokenizer -> ~238.5 MB bundle)
+        # must be excluded, while Q5_K_M's ~177.5 MB bundle fits.
+        mod = load_module()
+        q8 = mod.summarize_quant(
+            {"quant": "Q8_0", "model_size_bytes": 232_900_000, "bundle_size_bytes": 250_100_000},
+            [],
+        )
+        q5 = mod.summarize_quant(
+            {"quant": "Q5_K_M", "model_size_bytes": 168_900_000, "bundle_size_bytes": 186_100_000},
+            [],
+        )
+        self.assertFalse(q8["lambda_fit"])
+        self.assertTrue(q5["lambda_fit"])
+
+
+class IncompleteMatrixTests(unittest.TestCase):
+    def test_missing_quant_suppresses_recommendation_and_labels_report(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "bench-results"
+            base.mkdir()
+            _write_quant(base, "IQ4_NL", model_bytes=140_000_000, golden_cosines=(0.95, 0.96))
+            _write_quant(base, "Q5_K_M", model_bytes=177_000_000, golden_cosines=(0.995, 0.993))
+            out = Path(tmpdir) / "out"
+            code = mod.main(
+                [str(base), str(out), "--expected-quants", '["IQ4_NL", "Q5_K_M", "Q8_0"]']
+            )
+            self.assertEqual(code, 0)
+            payload = json.loads((out / "results.json").read_text(encoding="utf-8"))
+            report = (out / "report.md").read_text(encoding="utf-8")
+
+        self.assertEqual(payload["missing_quants"], ["Q8_0"])
+        self.assertFalse(payload["complete"])
+        self.assertIsNone(payload["recommendation"]["quant"])
+        self.assertIn("incomplete quant matrix", payload["recommendation"]["reason"])
+        self.assertIn("INCOMPLETE RUN", report)
+        self.assertIn("`Q8_0`", report)
+
+    def test_csv_expected_quants_also_accepted(self):
+        mod = load_module()
+        self.assertEqual(
+            mod.parse_expected_quants("IQ4_NL, Q5_K_M,Q8_0"),
+            ["IQ4_NL", "Q5_K_M", "Q8_0"],
+        )
+        self.assertEqual(
+            mod.parse_expected_quants('["IQ4_NL","Q8_0"]'), ["IQ4_NL", "Q8_0"]
+        )
+        self.assertEqual(mod.parse_expected_quants(""), [])
+
+    def test_complete_matrix_keeps_recommendation(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "bench-results"
+            base.mkdir()
+            _write_quant(base, "Q5_K_M", model_bytes=177_000_000)
+            out = Path(tmpdir) / "out"
+            code = mod.main([str(base), str(out), "--expected-quants", "Q5_K_M"])
+            self.assertEqual(code, 0)
+            payload = json.loads((out / "results.json").read_text(encoding="utf-8"))
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["recommendation"]["quant"], "Q5_K_M")
+
+
+class PartialCoverageTests(unittest.TestCase):
+    def test_partial_latency_coverage_is_labeled(self):
+        mod = load_module()
+        quants = [{
+            "quant": "Q5_K_M",
+            "scenarios": ["single/zh", "single/en"],
+            "model_id": "m",
+            "runner_labels": "arm",
+            "golden_parity": {"mean_cosine": 0.995, "min_cosine": 0.99, "count": 2, "pass": True},
+            "bundle_size_bytes": 178_000_000,
+            "bundle_size_mb": 169.8,
+            "model_size_mb": 160.0,
+            "lambda_fit": True,
+        }]
+        records = [{
+            "quant": "Q5_K_M", "scenario": "single/zh", "phase": "warm",
+            "latency_ms": {"min": 1, "mean": 1, "median": 1, "p95": 1, "p99": 1, "max": 1},
+        }]
+        notes = mod.latency_coverage_notes(quants, records)
+        self.assertEqual(len(notes), 2)
+        self.assertIn("no warm records for single/en", notes[0])
+        self.assertIn("no cold-start records", notes[1])
+        report = mod.build_report(quants, records, ("Q5_K_M", "reason"))
+        self.assertIn("Partial latency coverage", report)
+
+    def test_full_coverage_has_no_notes(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "bench-results"
+            base.mkdir()
+            _write_quant(base, "Q5_K_M", model_bytes=177_000_000)
+            quants, records = mod.collect_results(base)
+        self.assertEqual(mod.latency_coverage_notes(quants, records), [])
+        self.assertNotIn("Partial latency coverage", mod.build_report(quants, records, ("Q5_K_M", "r")))
+
+
 class OutputTests(unittest.TestCase):
     def test_results_json_schema_and_report_sections(self):
         mod = load_module()
@@ -310,7 +427,8 @@ class OutputTests(unittest.TestCase):
 
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["quality_gate"], 0.99)
-        self.assertEqual(payload["lambda_budget_bytes"], 250 * 1024 * 1024)
+        self.assertEqual(payload["lambda_package_limit_bytes"], 250 * 1024 * 1024)
+        self.assertEqual(payload["lambda_budget_bytes"], 230 * 1024 * 1024)
         self.assertEqual(len(payload["records"]), 2 * len(SCENARIOS) * 2)
         self.assertEqual([q["quant"] for q in payload["quants"]], ["Q5_K_M", "Q8_0"])
         self.assertEqual(payload["recommendation"]["quant"], "Q5_K_M")

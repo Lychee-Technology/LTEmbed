@@ -105,6 +105,20 @@ def build_metadata(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
+def non_negative_int(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {value}")
+    return value
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quant", required=True)
@@ -115,11 +129,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--static-llama-tag", required=True)
     parser.add_argument("--static-llama-sha256", required=True)
     parser.add_argument("--runner-labels", default=os.environ.get(RUNNER_LABELS_ENV, ""))
-    parser.add_argument("--threads", type=int, required=True)
-    parser.add_argument("--warmup-iters", type=int, required=True)
-    parser.add_argument("--timed-iters", type=int, required=True)
-    parser.add_argument("--cold-iters", type=int, required=True)
-    parser.add_argument("--output-dimension", type=int, required=True)
+    parser.add_argument("--threads", type=positive_int, required=True)
+    parser.add_argument("--warmup-iters", type=non_negative_int, required=True)
+    parser.add_argument("--timed-iters", type=positive_int, required=True)
+    parser.add_argument("--cold-iters", type=positive_int, required=True)
+    parser.add_argument("--output-dimension", type=positive_int, required=True)
     parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scenarios", default=DEFAULT_SCENARIOS, help="Comma-separated scenario names.")
     parser.add_argument("--git-sha", default="", help="Repo commit; defaults to `git rev-parse HEAD`.")

@@ -397,8 +397,11 @@ jobs:
 
   # Aggregate every quant's per-job artifact into one cross-quant comparison (report.md +
   # results.json) and surface it in the run summary, including a recommended quant.
+  # Runs even when matrix jobs fail (partial data is still useful for debugging), but the
+  # renderer is told the dispatched quant list: a partial matrix is labeled INCOMPLETE and
+  # produces no recommendation.
   report:
-    needs: benchmark
+    needs: [prepare, benchmark]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
     steps:
@@ -417,7 +420,11 @@ jobs:
           pattern: benchmark-arm64-*
 
       - name: Render cross-quant report
-        run: python3 scripts/render_benchmark_report.py bench-results .
+        env:
+          EXPECTED_QUANTS: ${{ needs.prepare.outputs.quants }}
+        run: |
+          python3 scripts/render_benchmark_report.py bench-results . \
+            --expected-quants "$EXPECTED_QUANTS"
 
       - name: Upload aggregated report
         uses: actions/upload-artifact@v7

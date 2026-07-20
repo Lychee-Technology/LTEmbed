@@ -26,6 +26,7 @@ Actions run UI. ``<output_dir>`` defaults to the current directory.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -39,10 +40,15 @@ SCHEMA_VERSION = 1
 # Mean cosine (vs PyTorch FP32) a quant must keep to be considered "quality-preserving".
 QUALITY_GATE = 0.99
 
-# Uncompressed AWS Lambda deployment-package limit. The whole bundle must fit, not just
-# the GGUF: metadata.json's bundle_size_bytes sums model.gguf + tokenizer.json +
-# build-info.json.
-LAMBDA_BUDGET_BYTES = 250 * 1024 * 1024
+# Lambda size contract: the deployed package is the GGUF bundle (model.gguf +
+# tokenizer.json + build-info.json — metadata.json's bundle_size_bytes) plus the
+# bootstrap binary. AWS caps the unzipped deployment package at 250 MiB, so the
+# bundle's effective budget reserves an allowance for the binary. This reproduces the
+# tradeoff #150 requires: a ~233 MB Q8_0 GGUF is over budget once the tokenizer and
+# binary ride along, while a ~169 MB Q5_K_M fits comfortably.
+LAMBDA_PACKAGE_LIMIT_BYTES = 250 * 1024 * 1024
+LAMBDA_BINARY_ALLOWANCE_BYTES = 20 * 1024 * 1024
+LAMBDA_BUDGET_BYTES = LAMBDA_PACKAGE_LIMIT_BYTES - LAMBDA_BINARY_ALLOWANCE_BYTES
 
 LATENCY_KEYS = ("min", "mean", "median", "p95", "p99", "max")
 PHASE_BY_MODE = {"warm_latency": "warm", "cold_start": "cold"}
@@ -63,6 +69,9 @@ RECORD_METADATA_KEYS = [
     "cpu_model",
     "cpu_flags",
     "git_sha",
+    "output_dimension",
+    "l2_normalize",
+    "cold_iters",
 ]
 
 
@@ -198,6 +207,7 @@ def summarize_quant(metadata: dict[str, Any], csv_rows: list[dict]) -> dict[str,
         "golden_parity": golden,
         "dynamic_parity": dynamic,
         "retrieval": retrieval,
+        "scenarios": metadata.get("scenarios"),
         "model_id": metadata.get("model_id"),
         "runner_labels": metadata.get("runner_labels"),
     }
@@ -248,6 +258,47 @@ def recommend(quants: list[dict[str, Any]]) -> tuple[str | None, str]:
             f"(best was `{best['quant']}` at mean_cosine={_fmt('cos', gate_cosine(best))})"
         )
     return None, "no cosine data available to rank quants"
+
+
+def parse_expected_quants(raw: str | None) -> list[str]:
+    """Accepts the workflow's quant list as either a JSON array or a CSV string."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def missing_quants(quants: list[dict[str, Any]], expected: list[str]) -> list[str]:
+    present = {q.get("quant") for q in quants}
+    return [name for name in expected if name not in present]
+
+
+def latency_coverage_notes(
+    quants: list[dict[str, Any]], records: list[dict[str, Any]]
+) -> list[str]:
+    """Per-quant notes when latency records don't cover every configured scenario/phase.
+
+    Single-scenario or no-cold-start dispatches are legitimate smoke runs; the report
+    labels them as partial instead of presenting them as full coverage.
+    """
+    notes: list[str] = []
+    for quant in quants:
+        name = quant.get("quant")
+        expected = quant.get("scenarios") or []
+        covered = {
+            (r.get("scenario"), r.get("phase")) for r in records if r.get("quant") == name
+        }
+        missing_warm = [s for s in expected if (s, "warm") not in covered]
+        if missing_warm:
+            notes.append(f"`{name}`: no warm records for {', '.join(missing_warm)}")
+        if expected and not any(phase == "cold" for _, phase in covered):
+            notes.append(f"`{name}`: no cold-start records")
+    return notes
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> str:
@@ -347,6 +398,7 @@ def build_report(
     quants: list[dict[str, Any]],
     records: list[dict[str, Any]],
     recommendation: tuple[str | None, str],
+    absent_quants: list[str] | None = None,
 ) -> str:
     if not quants:
         return "# Benchmark comparison\n\nNo quant results were found.\n"
@@ -354,13 +406,29 @@ def build_report(
     model_id = next((q.get("model_id") for q in quants if q.get("model_id")), "?")
     runner = next((q.get("runner_labels") for q in quants if q.get("runner_labels")), "?")
     budget_mb = _fmt("mb", _mb(LAMBDA_BUDGET_BYTES))
+    limit_mb = _fmt("mb", _mb(LAMBDA_PACKAGE_LIMIT_BYTES))
+    allowance_mb = _fmt("mb", _mb(LAMBDA_BINARY_ALLOWANCE_BYTES))
 
     parts = [
         "# Benchmark comparison — GGUF quants vs PyTorch FP32",
         "",
         f"Model: `{model_id}` · Runner: `{runner}` · Quality gate: mean cosine ≥ "
-        f"{QUALITY_GATE:.2f} · Lambda bundle budget: {budget_mb} MB",
+        f"{QUALITY_GATE:.2f} · Lambda bundle budget: {budget_mb} MB "
+        f"({limit_mb} MB package limit − {allowance_mb} MB binary allowance)",
         "",
+    ]
+    if absent_quants:
+        names = ", ".join(f"`{name}`" for name in absent_quants)
+        parts.append(
+            f"> ⚠️ **INCOMPLETE RUN** — no results for {names} (matrix job failed or "
+            "was skipped). No recommendation is made from a partial matrix."
+        )
+        parts.append("")
+    coverage = latency_coverage_notes(quants, records)
+    if coverage:
+        parts.append("> ⚠️ **Partial latency coverage** — " + "; ".join(coverage) + ".")
+        parts.append("")
+    parts += [
         "## Size & Lambda fit",
         "",
         _size_table(quants),
@@ -382,8 +450,9 @@ def build_report(
     if oversized:
         names = ", ".join(f"`{name}`" for name in oversized)
         parts.append("")
-        parts.append(f"_Over budget: {names} — bundle exceeds the {budget_mb} MB Lambda "
-                     "limit, excluded from recommendation regardless of parity._")
+        parts.append(f"_Over budget: {names} — bundle exceeds the {budget_mb} MB budget "
+                     f"({limit_mb} MB Lambda package limit − {allowance_mb} MB binary "
+                     "allowance), excluded from recommendation regardless of parity._")
     parts.append("")
     parts.append(
         "_Golden cosine compares each quant against the immutable PyTorch/F32 fixtures "
@@ -416,6 +485,8 @@ def build_results_payload(
     quants: list[dict[str, Any]],
     records: list[dict[str, Any]],
     recommendation: tuple[str | None, str],
+    expected: list[str] | None = None,
+    absent_quants: list[str] | None = None,
 ) -> dict[str, Any]:
     recommended, reason = recommendation
     return {
@@ -423,25 +494,54 @@ def build_results_payload(
         "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "model_id": next((q.get("model_id") for q in quants if q.get("model_id")), None),
         "quality_gate": QUALITY_GATE,
+        "lambda_package_limit_bytes": LAMBDA_PACKAGE_LIMIT_BYTES,
+        "lambda_binary_allowance_bytes": LAMBDA_BINARY_ALLOWANCE_BYTES,
         "lambda_budget_bytes": LAMBDA_BUDGET_BYTES,
+        "expected_quants": expected or [],
+        "missing_quants": absent_quants or [],
+        "complete": not absent_quants,
         "records": records,
         "quants": quants,
         "recommendation": {"quant": recommended, "reason": reason},
     }
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input_dir", type=Path)
+    parser.add_argument("output_dir", type=Path, nargs="?", default=Path("."))
+    parser.add_argument(
+        "--expected-quants",
+        default="",
+        help=(
+            "Quant list this run was dispatched with (JSON array or CSV). When any are "
+            "missing from the artifacts the report is marked incomplete and no "
+            "recommendation is made."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = argv if argv is not None else sys.argv[1:]
-    if not argv:
-        sys.exit("Usage: render_benchmark_report.py <input_dir> [output_dir]")
-    input_dir = Path(argv[0])
-    output_dir = Path(argv[1]) if len(argv) > 1 else Path(".")
+    args = parse_args(argv)
+    output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    quants, records = collect_results(input_dir)
-    recommendation = recommend(quants)
-    report = build_report(quants, records, recommendation)
-    payload = build_results_payload(quants, records, recommendation)
+    quants, records = collect_results(args.input_dir)
+    expected = parse_expected_quants(args.expected_quants)
+    absent = missing_quants(quants, expected)
+    if absent:
+        recommendation = (
+            None,
+            "incomplete quant matrix — no results for "
+            + ", ".join(f"`{name}`" for name in absent),
+        )
+    else:
+        recommendation = recommend(quants)
+    report = build_report(quants, records, recommendation, absent_quants=absent)
+    payload = build_results_payload(
+        quants, records, recommendation, expected=expected, absent_quants=absent
+    )
 
     (output_dir / "report.md").write_text(report, encoding="utf-8")
     (output_dir / "results.json").write_text(

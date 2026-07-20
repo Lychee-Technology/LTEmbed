@@ -28,6 +28,8 @@ DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 DEFAULT_MODEL_SOURCE = "huggingface"
 DEFAULT_CORRECTNESS_THRESHOLD = 0.98
 DEFAULT_RETRIEVAL_EVAL_PATH = ROOT / "scripts" / "retrieval_eval_cases.json"
+DEFAULT_GOLDEN_FIXTURE_PATH = ROOT / "tests" / "fixtures" / "test_fixtures.json"
+GOLDEN_CASE_NAME = "golden-parity-v1"
 RUNNER_LABELS_ENV = "BENCHMARK_RUNNER_LABELS"
 
 CSV_FIELDNAMES = [
@@ -104,6 +106,9 @@ class RunContext:
 SCENARIOS = [
     Scenario(name="single/zh", batch_size=1, text_profile="zh"),
     Scenario(name="single/en", batch_size=1, text_profile="en"),
+    Scenario(name="single/medium", batch_size=1, text_profile="medium"),
+    Scenario(name="single/long", batch_size=1, text_profile="long"),
+    Scenario(name="batch/medium/8", batch_size=8, text_profile="medium"),
 ]
 SCENARIO_BY_NAME = {scenario.name: scenario for scenario in SCENARIOS}
 
@@ -186,6 +191,34 @@ def rust_version() -> str:
 
 def python_version() -> str:
     return platform.python_version()
+
+
+def percentile_linear(sorted_samples: list[float], percentile: float) -> float:
+    """Linear-interpolation percentile, mirroring Rust ``LatencyStats``/``percentile_linear``."""
+    if len(sorted_samples) == 1:
+        return sorted_samples[0]
+    rank = min(max(percentile, 0.0), 100.0) / 100.0 * (len(sorted_samples) - 1)
+    lower_index = int(rank)
+    upper_index = min(lower_index + 1, len(sorted_samples) - 1)
+    if float(lower_index) == rank:
+        return sorted_samples[lower_index]
+    weight = rank - lower_index
+    return sorted_samples[lower_index] * (1.0 - weight) + sorted_samples[upper_index] * weight
+
+
+def compute_latency_stats(samples_ms: list[float]) -> dict[str, float]:
+    """Aggregate raw samples into the same stats shape the Rust runner emits."""
+    if not samples_ms:
+        raise ValueError("empty latency sample set")
+    ordered = sorted(samples_ms)
+    return {
+        "mean_ms": sum(samples_ms) / len(samples_ms),
+        "median_ms": percentile_linear(ordered, 50.0),
+        "p95_ms": percentile_linear(ordered, 95.0),
+        "p99_ms": percentile_linear(ordered, 99.0),
+        "min_ms": ordered[0],
+        "max_ms": ordered[-1],
+    }
 
 
 def cosine_similarity(lhs: list[float], rhs: list[float]) -> float:
@@ -479,15 +512,32 @@ def collect_cold_rows(
     ctx: RunContext,
     implementations: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
+    """Cold start per scenario: N fresh-process invocations aggregated into one distribution.
+
+    Each ``--mode cold`` run measures a single engine-load + embed in a fresh process, so
+    the runner's stats carry one sample; the distribution across ``--cold-iters`` runs is
+    computed here.
+    """
+    cold_iters = int(getattr(args, "cold_iters", 1))
+    if cold_iters < 1:
+        raise ValueError(f"cold_iters must be >= 1, got {cold_iters}")
+    scenarios = [scenario_from_name(args.scenario)] if getattr(args, "scenario", None) else SCENARIOS
     rows: list[dict[str, str]] = []
     results: dict[str, dict[str, Any]] = {implementation: {} for implementation in implementations}
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         for implementation in implementations:
-            payload = run_json_command(
-                build_benchmark_command(implementation, "cold", args, scenario.name),
-                f"{implementation} cold {scenario.name}",
-            )
-            results[implementation][scenario.name] = payload
+            samples_ms: list[float] = []
+            payload: dict[str, Any] = {}
+            for iteration in range(cold_iters):
+                payload = run_json_command(
+                    build_benchmark_command(implementation, "cold", args, scenario.name),
+                    f"{implementation} cold {scenario.name} {iteration + 1}/{cold_iters}",
+                )
+                samples_ms.append(float(payload["stats"]["mean_ms"]))
+            results[implementation][scenario.name] = {
+                "samples_ms": samples_ms,
+                "last_payload": payload,
+            }
             version = resolved_implementation_version(implementation, payload, ctx.git_revision)
             base_fields = base_row_fields(
                 ctx=ctx,
@@ -497,9 +547,9 @@ def collect_cold_rows(
                 mode="cold_start",
                 threads=args.threads,
                 warmup_iters=0,
-                timed_iters=1,
+                timed_iters=cold_iters,
             )
-            row = stats_row_from_runner(base_fields=base_fields, stats=payload["stats"])
+            row = stats_row_from_runner(base_fields=base_fields, stats=compute_latency_stats(samples_ms))
             rows.append(row)
     return rows, results
 
@@ -537,6 +587,104 @@ def derive_correctness_rows(
                 base_fields=base_fields, cosine_similarity=similarity,
                 threshold=args.correctness_threshold,
             ))
+    return rows
+
+
+def load_golden_fixture(path: Path) -> dict[str, Any]:
+    """Load the immutable PyTorch/F32 golden fixture. Read-only — never written back."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not payload.get("fixtures"):
+        raise ValueError(f"golden fixture {path} has no fixtures")
+    return payload
+
+
+def build_golden_retrieval_case(golden: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Turn the golden fixture into a retrieval-eval spec plus expected embeddings by id.
+
+    Items are routed by ``kind`` into queries vs documents so the runner applies the same
+    Query:/Document: prefixes the golden embeddings were generated with.
+    """
+    queries: list[dict[str, Any]] = []
+    documents: list[dict[str, str]] = []
+    expected: dict[str, dict[str, Any]] = {}
+    for index, fixture in enumerate(golden["fixtures"]):
+        kind = str(fixture["kind"])
+        if kind not in ("query", "document"):
+            raise ValueError(f"golden fixture {index} has unknown kind: {kind}")
+        entry_id = f"golden_{kind}_{index}"
+        expected[entry_id] = {
+            "embedding": fixture["embedding"],
+            "scenario": f"golden/{kind}/{index}",
+        }
+        if kind == "query":
+            queries.append({"id": entry_id, "text": fixture["text"], "relevant_document_ids": []})
+        else:
+            documents.append({"id": entry_id, "text": fixture["text"]})
+    spec = {"cases": [{"name": GOLDEN_CASE_NAME, "documents": documents, "queries": queries}]}
+    return spec, expected
+
+
+def collect_golden_parity_rows(
+    *,
+    args: argparse.Namespace,
+    ctx: RunContext,
+) -> list[dict[str, str]]:
+    """Cosine of this bundle's embeddings vs the immutable golden, one row per fixture item.
+
+    Reuses the runner's retrieval mode: the golden texts are written out as a synthetic
+    retrieval-eval case, embedded by ltembed, and compared against the checked-in
+    embeddings with the pure-Python cosine.
+
+    Skipped (with a visible log line) when the requested output dimension differs from
+    the fixture's — cosine against unequal-length vectors is undefined, and dispatches
+    with a non-default dimension are still valid latency runs.
+    """
+    golden = load_golden_fixture(args.golden_fixture_path)
+    golden_dim = int(golden.get("dim") or 0)
+    if golden_dim and int(args.output_dimension) != golden_dim:
+        log_progress(
+            f"golden_parity (fixture dim {golden_dim} != output dimension "
+            f"{args.output_dimension})",
+            "SKIP",
+        )
+        return []
+    spec, expected = build_golden_retrieval_case(golden)
+
+    case_path = Path(args.output_csv).parent / "golden_parity_case.json"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+
+    golden_args = argparse.Namespace(**vars(args))
+    golden_args.retrieval_eval_path = case_path
+    payload = run_json_command(
+        build_benchmark_command("ltembed", "retrieval", golden_args), "ltembed golden_parity"
+    )
+
+    version = resolved_implementation_version("ltembed", payload, ctx.git_revision)
+    rows: list[dict[str, str]] = []
+    compared: set[str] = set()
+    for result in payload["results"]:
+        for group in ("queries", "documents"):
+            for item in result.get(group, []):
+                item_id = str(item["id"])
+                golden_entry = expected[item_id]
+                similarity = cosine_similarity(item["embedding"], golden_entry["embedding"])
+                compared.add(item_id)
+                scenario = Scenario(
+                    name=golden_entry["scenario"], batch_size=1, text_profile="golden"
+                )
+                base_fields = base_row_fields(
+                    ctx=ctx, implementation="ltembed", implementation_version=version,
+                    scenario=scenario, mode="golden_parity", threads=args.threads,
+                    warmup_iters=0, timed_iters=0,
+                )
+                rows.append(build_correctness_row(
+                    base_fields=base_fields, cosine_similarity=similarity,
+                    threshold=args.golden_parity_threshold,
+                ))
+    missing = set(expected) - compared
+    if missing:
+        raise RuntimeError(f"golden parity run returned no embedding for: {sorted(missing)}")
     return rows
 
 
@@ -684,10 +832,20 @@ def summary_lines(
     lines.append(f"transformers_version={pytorch_payload.get('transformers_version', '')}")
     if cold_payloads is not None:
         lines.append("cold_start=enabled")
+        lines.append(f"cold_iters={int(getattr(args, 'cold_iters', 1))}")
     if retrieval_payloads is not None:
         lines.append("retrieval_eval=enabled")
         lines.append("correctness=derived")
+    if getattr(args, "golden_parity", False):
+        lines.append("golden_parity=enabled")
     return lines
+
+
+def positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -714,6 +872,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
+    parser.add_argument(
+        "--cold-iters",
+        type=positive_int,
+        default=10,
+        help=(
+            "Fresh-process cold-start invocations per scenario; the latency distribution "
+            "is aggregated across them."
+        ),
+    )
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument(
         "--retrieval-eval-path",
@@ -758,6 +925,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-cold-start", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--include-retrieval-eval", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--correctness-threshold", type=float, default=DEFAULT_CORRECTNESS_THRESHOLD)
+    parser.add_argument(
+        "--golden-parity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compare this bundle's embeddings against the immutable PyTorch/F32 golden fixture.",
+    )
+    parser.add_argument(
+        "--golden-fixture-path",
+        type=Path,
+        default=DEFAULT_GOLDEN_FIXTURE_PATH,
+    )
+    parser.add_argument(
+        "--golden-parity-threshold",
+        type=float,
+        default=DEFAULT_CORRECTNESS_THRESHOLD,
+    )
     parser.add_argument(
         "--output-csv",
         type=Path,
@@ -854,6 +1037,9 @@ def _run(
             ltembed_retrieval=retrieval_payloads["ltembed"],
             reference_retrieval=retrieval_payloads["pytorch"],
         ))
+
+    if getattr(args, "golden_parity", False):
+        rows.extend(collect_golden_parity_rows(args=args, ctx=ctx))
 
     write_csv_report(rows, args.output_csv)
 

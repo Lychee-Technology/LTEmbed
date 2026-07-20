@@ -4,7 +4,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError:  # heavy optional dep; CI's python-tests job runs without it
+    torch = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +22,7 @@ def load_module():
     return module
 
 
+@unittest.skipUnless(torch is not None, "torch not installed")
 class BenchPyTorchTests(unittest.TestCase):
     def test_scenarios_and_fixture_machinery_removed(self):
         bench = load_module()

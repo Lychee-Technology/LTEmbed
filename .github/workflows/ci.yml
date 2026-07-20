@@ -58,6 +58,12 @@ jobs:
       - name: Run library unit tests
         run: cargo test --lib
 
+      # Benchmark support tests and the benchmark binary's unit tests are not covered by
+      # --lib or --test integration_tests; run them explicitly so scenario/corpus changes
+      # are gated.
+      - name: Run benchmark support and binary tests
+        run: cargo test --test benchmarking_support_tests --bin benchmark_ltembed
+
       - name: Verify Rust API example compiles
         run: cargo check --example api_usage
 
@@ -97,6 +103,25 @@ jobs:
 
       - name: Run integration tests (llama.cpp GGUF inference)
         run: cargo test --test integration_tests
+
+  python-tests:
+    name: Python script tests
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: pip install pytest numpy
+
+      # Covers both unittest-style and pytest-style test modules under tests/.
+      - name: Run Python script tests
+        run: python3 -m pytest tests/ -q
 
   lint:
     name: Lint

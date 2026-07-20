@@ -322,7 +322,7 @@ class OutputTests(unittest.TestCase):
         self.assertIn("Recommended quant: `Q5_K_M`", report)
         self.assertIn("batch/medium/8", report)
         # the oversized quant is called out explicitly
-        self.assertIn("`Q8_0` exceed", report)
+        self.assertIn("Over budget: `Q8_0`", report)
 
     def test_empty_input_renders_placeholder(self):
         mod = load_module()

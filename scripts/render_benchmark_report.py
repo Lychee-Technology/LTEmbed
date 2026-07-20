@@ -382,8 +382,8 @@ def build_report(
     if oversized:
         names = ", ".join(f"`{name}`" for name in oversized)
         parts.append("")
-        parts.append(f"_{names} exceed the {budget_mb} MB Lambda bundle budget and are "
-                     "excluded from recommendation regardless of parity._")
+        parts.append(f"_Over budget: {names} — bundle exceeds the {budget_mb} MB Lambda "
+                     "limit, excluded from recommendation regardless of parity._")
     parts.append("")
     parts.append(
         "_Golden cosine compares each quant against the immutable PyTorch/F32 fixtures "

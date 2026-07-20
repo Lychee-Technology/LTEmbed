@@ -7,6 +7,13 @@ from unittest import mock
 
 import numpy as np
 
+# The script under test loads bench_pytorch (and thus torch) at import time; torch is a
+# heavy optional dep the CI python-tests job does not install.
+try:
+    import torch  # noqa: F401
+except ModuleNotFoundError:
+    torch = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "compare_q4f16_onnx_vs_pytorch.py"
@@ -20,6 +27,7 @@ def load_module():
     return module
 
 
+@unittest.skipUnless(torch is not None, "torch not installed")
 class CompareQ4f16OnnxVsPyTorchTests(unittest.TestCase):
     def test_pool_last_token_numpy_uses_attention_mask_lengths(self):
         compare = load_module()

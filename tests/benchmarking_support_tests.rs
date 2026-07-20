@@ -29,12 +29,55 @@ impl Tokenizer for CountingTokenizer {
 }
 
 #[test]
-fn test_benchmark_scenarios_are_single_zh_and_en() {
+fn test_benchmark_scenarios_cover_all_five() {
     let names: Vec<_> = benchmark_scenarios().iter().map(|s| s.name).collect();
-    assert_eq!(names, vec!["single/zh", "single/en"]);
+    assert_eq!(
+        names,
+        vec![
+            "single/zh",
+            "single/en",
+            "single/medium",
+            "single/long",
+            "batch/medium/8"
+        ]
+    );
     assert_eq!(scenario_by_name("single/zh").unwrap().batch_size, 1);
     assert_eq!(scenario_by_name("single/en").unwrap().text_profile, "en");
+    assert_eq!(
+        scenario_by_name("single/medium").unwrap().text_profile,
+        "medium"
+    );
+    assert_eq!(
+        scenario_by_name("single/long").unwrap().text_profile,
+        "long"
+    );
+    assert_eq!(scenario_by_name("batch/medium/8").unwrap().batch_size, 8);
     assert!(scenario_by_name("missing/scenario").is_none());
+}
+
+#[test]
+fn test_corpus_scenarios_yield_expected_input_counts_and_kinds() {
+    let medium = scenario_inputs(scenario_by_name("single/medium").expect("exists"));
+    assert_eq!(medium.len(), 1);
+    assert_eq!(medium[0].kind, EmbeddingInputKind::Query);
+
+    let long = scenario_inputs(scenario_by_name("single/long").expect("exists"));
+    assert_eq!(long.len(), 1);
+    assert_eq!(long[0].kind, EmbeddingInputKind::Query);
+    // Long must dwarf medium but stay under the token budget after the "Query: " prefix
+    // (~4 chars/token heuristic against BENCHMARK_MAX_LENGTH = 8192).
+    assert!(long[0].text.len() > 4 * medium[0].text.len());
+    assert!(long[0].text.len() < 28_000);
+
+    let batch = scenario_inputs(scenario_by_name("batch/medium/8").expect("exists"));
+    assert_eq!(batch.len(), 8);
+    assert!(batch
+        .iter()
+        .all(|input| input.kind == EmbeddingInputKind::Query));
+    let mut texts: Vec<_> = batch.iter().map(|input| input.text.as_str()).collect();
+    texts.sort_unstable();
+    texts.dedup();
+    assert_eq!(texts.len(), 8, "batch texts must be distinct");
 }
 
 #[test]

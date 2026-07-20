@@ -1092,6 +1092,34 @@ mod tests {
     }
 
     #[test]
+    fn test_scenario_inputs_resolved_builtin_batch_yields_eight_inputs() {
+        let inputs = scenario_inputs_resolved("batch/medium/8", None).unwrap();
+        assert_eq!(inputs.len(), 8);
+        assert!(inputs
+            .iter()
+            .all(|input| input.kind == EmbeddingInputKind::Query));
+    }
+
+    #[test]
+    fn test_scenario_inputs_resolved_accepts_fixture_covering_all_scenarios() {
+        let entry = r#"[{"kind": "query", "text": "x"}]"#;
+        let fixture: ResolvedFixture = serde_json::from_str(&format!(
+            r#"{{ "scenarios": {{
+                "single/zh": {entry},
+                "single/en": {entry},
+                "single/medium": {entry},
+                "single/long": {entry},
+                "batch/medium/8": {entry}
+            }} }}"#
+        ))
+        .unwrap();
+        for scenario in ltembed::benchmarking::benchmark_scenarios() {
+            let inputs = scenario_inputs_resolved(scenario.name, Some(&fixture)).unwrap();
+            assert_eq!(inputs.len(), 1);
+        }
+    }
+
+    #[test]
     fn test_scenario_inputs_resolved_errors_on_missing_scenario_in_fixture() {
         let fixture: ResolvedFixture =
             serde_json::from_str(r#"{"scenarios": {"single/zh": []}}"#).unwrap();

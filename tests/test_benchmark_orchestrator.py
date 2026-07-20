@@ -40,11 +40,17 @@ def ltembed_args(**overrides):
 
 
 class CommandBuilderTests(unittest.TestCase):
-    def test_scenarios_are_single_zh_and_en(self):
+    def test_scenarios_cover_all_five(self):
         bench = load_module()
-        self.assertEqual([s.name for s in bench.SCENARIOS], ["single/zh", "single/en"])
-        self.assertTrue(all(s.batch_size == 1 for s in bench.SCENARIOS))
+        self.assertEqual(
+            [s.name for s in bench.SCENARIOS],
+            ["single/zh", "single/en", "single/medium", "single/long", "batch/medium/8"],
+        )
         self.assertEqual(bench.scenario_from_name("single/zh").text_profile, "zh")
+        self.assertEqual(bench.scenario_from_name("single/medium").batch_size, 1)
+        self.assertEqual(bench.scenario_from_name("single/long").text_profile, "long")
+        self.assertEqual(bench.scenario_from_name("batch/medium/8").batch_size, 8)
+        self.assertEqual(bench.scenario_from_name("batch/medium/8").text_profile, "medium")
 
     def test_ltembed_command_uses_bundle_dir_and_mode(self):
         bench = load_module()
@@ -220,6 +226,174 @@ class RetrievalMetricTests(unittest.TestCase):
         self.assertEqual(row["recall_at_3"], "0.750000")
 
 
+class LatencyStatsTests(unittest.TestCase):
+    def test_compute_latency_stats_mirrors_rust_percentiles(self):
+        bench = load_module()
+        # Same fixture as the Rust LatencyStats test: linear-interpolation percentiles.
+        stats = bench.compute_latency_stats([10.0, 20.0, 30.0, 40.0])
+        self.assertEqual(stats["mean_ms"], 25.0)
+        self.assertEqual(stats["median_ms"], 25.0)
+        self.assertEqual(stats["p95_ms"], 38.5)
+        self.assertAlmostEqual(stats["p99_ms"], 39.7, places=9)
+        self.assertEqual(stats["min_ms"], 10.0)
+        self.assertEqual(stats["max_ms"], 40.0)
+
+    def test_compute_latency_stats_single_sample_is_degenerate(self):
+        bench = load_module()
+        stats = bench.compute_latency_stats([500.0])
+        self.assertTrue(all(value == 500.0 for value in stats.values()))
+
+    def test_compute_latency_stats_rejects_empty(self):
+        bench = load_module()
+        with self.assertRaises(ValueError):
+            bench.compute_latency_stats([])
+
+
+class ColdItersTests(unittest.TestCase):
+    def test_cold_rows_aggregate_fresh_process_samples(self):
+        bench = load_module()
+        ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                               model_source="hf", git_revision="sha", host={
+                                   "host_os": "linux", "host_arch": "arm64",
+                                   "cpu_model": "c", "runner_labels": ""})
+        args = ltembed_args(cold_iters=3, scenario=None)
+        samples = iter([100.0, 200.0, 300.0] * len(bench.SCENARIOS))
+
+        def fake_run(command, label):
+            value = next(samples)
+            stats = {k: value for k in ("mean_ms", "median_ms", "p95_ms", "p99_ms", "min_ms", "max_ms")}
+            return {"implementation": "ltembed", "stats": stats}
+
+        with mock.patch.object(bench, "run_json_command", side_effect=fake_run) as run_mock, \
+             mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+            rows, results = bench.collect_cold_rows(args=args, ctx=ctx, implementations=["ltembed"])
+
+        # one aggregated row per scenario, three invocations each
+        self.assertEqual(len(rows), len(bench.SCENARIOS))
+        self.assertEqual(run_mock.call_count, 3 * len(bench.SCENARIOS))
+        row = rows[0]
+        self.assertEqual(row["mode"], "cold_start")
+        self.assertEqual(row["timed_iters"], "3")
+        self.assertEqual(row["warmup_iters"], "0")
+        self.assertEqual(row["mean_ms"], "200.000000")
+        self.assertEqual(row["min_ms"], "100.000000")
+        self.assertEqual(row["max_ms"], "300.000000")
+        self.assertEqual(results["ltembed"]["single/zh"]["samples_ms"], [100.0, 200.0, 300.0])
+
+    def test_cold_rows_respect_single_scenario_filter(self):
+        bench = load_module()
+        ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                               model_source="hf", git_revision="sha", host={
+                                   "host_os": "linux", "host_arch": "arm64",
+                                   "cpu_model": "c", "runner_labels": ""})
+        args = ltembed_args(cold_iters=2, scenario="single/long")
+
+        def fake_run(command, label):
+            self.assertIn("single/long", label)
+            stats = {k: 1.0 for k in ("mean_ms", "median_ms", "p95_ms", "p99_ms", "min_ms", "max_ms")}
+            return {"implementation": "ltembed", "stats": stats}
+
+        with mock.patch.object(bench, "run_json_command", side_effect=fake_run) as run_mock, \
+             mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+            rows, _ = bench.collect_cold_rows(args=args, ctx=ctx, implementations=["ltembed"])
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["scenario"], "single/long")
+        self.assertEqual(run_mock.call_count, 2)
+
+
+class GoldenParityTests(unittest.TestCase):
+    GOLDEN = {
+        "model": "test-model",
+        "raw_dim": 4,
+        "dim": 2,
+        "max_length": 8192,
+        "fixtures": [
+            {"kind": "query", "text": "他感冒了", "embedding": [1.0, 0.0]},
+            {"kind": "document", "text": "He caught a cold.", "embedding": [0.0, 1.0]},
+        ],
+    }
+
+    def test_build_golden_retrieval_case_routes_by_kind(self):
+        bench = load_module()
+        spec, expected = bench.build_golden_retrieval_case(self.GOLDEN)
+        case = spec["cases"][0]
+        self.assertEqual(case["name"], bench.GOLDEN_CASE_NAME)
+        self.assertEqual([q["id"] for q in case["queries"]], ["golden_query_0"])
+        self.assertEqual(case["queries"][0]["relevant_document_ids"], [])
+        self.assertEqual([d["id"] for d in case["documents"]], ["golden_document_1"])
+        self.assertEqual(expected["golden_query_0"]["scenario"], "golden/query/0")
+        self.assertEqual(expected["golden_document_1"]["embedding"], [0.0, 1.0])
+
+    def test_collect_golden_parity_rows_scores_each_fixture(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            golden_path = tmp / "golden.json"
+            golden_path.write_text(json.dumps(self.GOLDEN), encoding="utf-8")
+            args = ltembed_args(
+                golden_fixture_path=golden_path,
+                golden_parity_threshold=0.98,
+                output_csv=tmp / "report.csv",
+            )
+            ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                                   model_source="hf", git_revision="sha", host={
+                                       "host_os": "linux", "host_arch": "arm64",
+                                       "cpu_model": "c", "runner_labels": ""})
+
+            def fake_run(command, label):
+                self.assertEqual(label, "ltembed golden_parity")
+                # the synthetic case file is passed instead of the regular eval path
+                case_path = command[command.index("--retrieval-eval-path") + 1]
+                spec = json.loads(Path(case_path).read_text(encoding="utf-8"))
+                self.assertEqual(spec["cases"][0]["name"], bench.GOLDEN_CASE_NAME)
+                return {"implementation": "ltembed", "results": [{
+                    "dataset_name": bench.GOLDEN_CASE_NAME,
+                    "queries": [{"id": "golden_query_0", "embedding": [1.0, 0.0]}],
+                    "documents": [{"id": "golden_document_1", "embedding": [1.0, 0.0]}],
+                }]}
+
+            with mock.patch.object(bench, "run_json_command", side_effect=fake_run), \
+                 mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+                rows = bench.collect_golden_parity_rows(args=args, ctx=ctx)
+
+        by_scenario = {row["scenario"]: row for row in rows}
+        self.assertEqual(set(by_scenario), {"golden/query/0", "golden/document/1"})
+        self.assertTrue(all(row["mode"] == "golden_parity" for row in rows))
+        self.assertEqual(by_scenario["golden/query/0"]["cosine_similarity_vs_pytorch"], "1.000000")
+        self.assertEqual(by_scenario["golden/query/0"]["status"], "pass")
+        self.assertEqual(by_scenario["golden/document/1"]["cosine_similarity_vs_pytorch"], "0.000000")
+        self.assertEqual(by_scenario["golden/document/1"]["status"], "fail")
+
+    def test_collect_golden_parity_rows_raises_on_missing_embedding(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            golden_path = tmp / "golden.json"
+            golden_path.write_text(json.dumps(self.GOLDEN), encoding="utf-8")
+            args = ltembed_args(
+                golden_fixture_path=golden_path,
+                golden_parity_threshold=0.98,
+                output_csv=tmp / "report.csv",
+            )
+            ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
+                                   model_source="hf", git_revision="sha", host={
+                                       "host_os": "linux", "host_arch": "arm64",
+                                       "cpu_model": "c", "runner_labels": ""})
+
+            def fake_run(command, label):
+                return {"implementation": "ltembed", "results": [{
+                    "dataset_name": bench.GOLDEN_CASE_NAME,
+                    "queries": [{"id": "golden_query_0", "embedding": [1.0, 0.0]}],
+                    "documents": [],
+                }]}
+
+            with mock.patch.object(bench, "run_json_command", side_effect=fake_run), \
+                 mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None), \
+                 self.assertRaisesRegex(RuntimeError, "golden_document_1"):
+                bench.collect_golden_parity_rows(args=args, ctx=ctx)
+
+
 class ReferenceModeTests(unittest.TestCase):
     def test_gather_payload_reads_pytorch_from_reference(self):
         bench = load_module()
@@ -316,6 +490,7 @@ class RunTests(unittest.TestCase):
             l2_normalize=True,
             warmup=10,
             iters=100,
+            cold_iters=1,
             threads=1,
             scenario=None,
             ltembed_cargo_features="",
@@ -326,6 +501,9 @@ class RunTests(unittest.TestCase):
             include_cold_start=True,
             include_retrieval_eval=True,
             correctness_threshold=0.98,
+            golden_parity=False,
+            golden_fixture_path=ROOT / "tests" / "fixtures" / "test_fixtures.json",
+            golden_parity_threshold=0.98,
             output_csv=tmp / "report.csv",
             output_summary=tmp / "summary.txt",
         )
@@ -375,7 +553,8 @@ class RunTests(unittest.TestCase):
             if " warm" in label:
                 return self._warm_payload(impl, version, scenarios)
             if " cold" in label:
-                return self._cold_payload(impl, version, label.rsplit(" ", 1)[1])
+                # label format: "<impl> cold <scenario> <i>/<cold_iters>"
+                return self._cold_payload(impl, version, label.split(" ")[2])
             if " retrieval" in label:
                 return self._retrieval_payload(impl, version)
             raise AssertionError(f"unexpected label {label!r}")

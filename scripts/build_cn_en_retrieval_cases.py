@@ -26,6 +26,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CSV = ROOT / "tests" / "CN_EN_Data.csv"
 DEFAULT_NAME = "cn-en-crosslingual-v1"
+DEFAULT_CORPUS = ROOT / "scripts" / "benchmark_corpus.json"
 
 
 def load_pairs(csv_path: Path) -> list[tuple[str, str]]:
@@ -73,12 +74,27 @@ def pick_representative(pairs: list[tuple[str, str]]) -> tuple[str, str]:
     return ranked[len(ranked) // 2]
 
 
-def build_fixture(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+def _corpus_entry(item: dict[str, Any]) -> dict[str, str]:
+    return {"kind": str(item["kind"]), "text": str(item["text"])}
+
+
+def build_fixture(pairs: list[tuple[str, str]], corpus_path: Path = DEFAULT_CORPUS) -> dict[str, Any]:
+    """Resolved latency fixture covering every benchmark scenario.
+
+    The runner errors when the fixture is missing a scenario, so this must stay in sync
+    with the scenario lists in ``run_embedding_benchmarks.py`` and ``src/benchmarking.rs``.
+    zh/en come from the CN/EN representative pair; medium/long/batch come from the
+    checked-in deterministic corpus (``scripts/benchmark_corpus.json``).
+    """
     zh, en = pick_representative(pairs)
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
     return {
         "scenarios": {
             "single/zh": [{"kind": "query", "text": zh}],
             "single/en": [{"kind": "query", "text": en}],
+            "single/medium": [_corpus_entry(corpus["medium"])],
+            "single/long": [_corpus_entry(corpus["long"])],
+            "batch/medium/8": [_corpus_entry(item) for item in corpus["batch_medium_8"]],
         }
     }
 

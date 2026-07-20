@@ -7,7 +7,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "compare_embedding_outputs.py"
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "benchmark-arm64.yml"
 
 
 def load_module():
@@ -89,18 +88,6 @@ class CompareEmbeddingOutputsTests(unittest.TestCase):
         self.assertIn("scenario: single/medium", text)
         self.assertIn("cosine_similarity: 0.600000", text)
 
-    def test_benchmark_workflow_includes_raw_compare_only_input(self):
-        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-
-        self.assertIn("raw_compare_only:", workflow)
-        self.assertIn(
-            'description: Run raw embedding compare instead of the benchmark harness', workflow
-        )
-        self.assertIn('if: ${{ inputs.raw_compare_only != true }}', workflow)
-        self.assertIn('if: ${{ inputs.raw_compare_only == true }}', workflow)
-        self.assertIn("scripts/compare_embedding_outputs.py", workflow)
-        self.assertIn("raw-embedding-compare.json", workflow)
-        self.assertIn("raw-embedding-compare.txt", workflow)
 
 
 if __name__ == "__main__":

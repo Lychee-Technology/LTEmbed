@@ -663,6 +663,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("--reference-path reference/reference.json", workflow)
         self.assertNotIn("--no-include-correctness", workflow)
 
+    def test_matrix_jobs_pass_cold_iters_and_golden_parity(self):
+        workflow = self._workflow()
+        self.assertIn("cold_iters:", workflow)
+        self.assertIn('--cold-iters "${{ inputs.cold_iters }}"', workflow)
+        self.assertIn("--golden-parity", workflow)
+        self.assertIn("--golden-fixture-path tests/fixtures/test_fixtures.json", workflow)
+
+    def test_metadata_step_uses_script_not_heredoc(self):
+        workflow = self._workflow()
+        self.assertIn("scripts/write_benchmark_metadata.py", workflow)
+        self.assertNotIn('"gguf_size_bytes"', workflow)
+        self.assertIn('--static-llama-sha256 "$STATIC_LLAMA_SHA256"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

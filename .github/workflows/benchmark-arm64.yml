@@ -18,6 +18,10 @@ on:
         description: Timed iterations per scenario
         required: false
         default: "100"
+      cold_iters:
+        description: Fresh-process cold-start runs per scenario (aggregated into one distribution)
+        required: false
+        default: "10"
       threads:
         description: CPU threads per implementation
         required: false
@@ -344,10 +348,13 @@ jobs:
             --output-dimension "${{ inputs.output_dimension }}" \
             --warmup "${{ inputs.warmup }}" \
             --iters "${{ inputs.iters }}" \
+            --cold-iters "${{ inputs.cold_iters }}" \
             --threads "${{ inputs.threads }}" \
             --retrieval-eval-path reference/cn_en_retrieval_cases.json \
             --reference-path reference/reference.json \
             --fixture-path reference/cn_en_fixture.json \
+            --golden-parity \
+            --golden-fixture-path tests/fixtures/test_fixtures.json \
             --output-csv "artifacts/${{ matrix.quant }}/benchmark-report.csv" \
             --output-summary "artifacts/${{ matrix.quant }}/benchmark-summary.txt" \
             $EXTRA_ARGS
@@ -355,26 +362,31 @@ jobs:
       - name: Record run metadata
         run: |
           set -euo pipefail
-          size_bytes=$(stat -c%s "$BUNDLE_DIR/model.gguf")
-          static_contract=$(grep -o '"artifact_contract_version": *"[0-9]*"' "$STATIC_LLAMA_DIR/build-info.json" | grep -o '[0-9]*')
-          cat > "artifacts/${{ matrix.quant }}/metadata.json" <<JSON
-          {
-            "backend": "llama.cpp",
-            "quant": "${{ matrix.quant }}",
-            "model_id": "$MODEL_ID",
-            "gguf_file": "v5-nano-retrieval-${{ matrix.quant }}.gguf",
-            "gguf_sha256": "$(sha256sum "$BUNDLE_DIR/model.gguf" | cut -d' ' -f1)",
-            "gguf_size_bytes": $size_bytes,
-            "static_llama_tag": "$STATIC_LLAMA_TAG",
-            "static_llama_contract_version": "$static_contract",
-            "runner_labels": "$BENCHMARK_RUNNER_LABELS",
-            "threads": "${{ inputs.threads }}",
-            "warmup": "${{ inputs.warmup }}",
-            "iters": "${{ inputs.iters }}",
-            "output_dimension": "${{ inputs.output_dimension }}"
-          }
-          JSON
-          cat "artifacts/${{ matrix.quant }}/metadata.json"
+          SCENARIO_ARGS=()
+          if [ -n "${{ inputs.scenario }}" ]; then
+            SCENARIO_ARGS=(--scenarios "${{ inputs.scenario }}")
+          fi
+          L2_ARGS=(--l2-normalize)
+          if [ "${{ inputs.l2_normalize }}" != "true" ]; then
+            L2_ARGS=(--no-l2-normalize)
+          fi
+          python3 scripts/write_benchmark_metadata.py \
+            --quant "${{ matrix.quant }}" \
+            --model-id "$MODEL_ID" \
+            --model-file "v5-nano-retrieval-${{ matrix.quant }}.gguf" \
+            --bundle-dir "$BUNDLE_DIR" \
+            --static-llama-dir "$STATIC_LLAMA_DIR" \
+            --static-llama-tag "$STATIC_LLAMA_TAG" \
+            --static-llama-sha256 "$STATIC_LLAMA_SHA256" \
+            --runner-labels "$BENCHMARK_RUNNER_LABELS" \
+            --threads "${{ inputs.threads }}" \
+            --warmup-iters "${{ inputs.warmup }}" \
+            --timed-iters "${{ inputs.iters }}" \
+            --cold-iters "${{ inputs.cold_iters }}" \
+            --output-dimension "${{ inputs.output_dimension }}" \
+            "${L2_ARGS[@]}" \
+            "${SCENARIO_ARGS[@]}" \
+            --output "artifacts/${{ matrix.quant }}/metadata.json"
 
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v7

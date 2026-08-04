@@ -49,18 +49,24 @@ This configures the current clone or worktree to use versioned hooks from `.gith
 
 - `pre-commit`: runs `cargo fmt --all --check` when staged Rust-related files changed
 - `pre-push`: runs `cargo clippy --all-targets -- -D warnings` — natively on aarch64 Linux with
-  `STATIC_LLAMA_DIR` set, otherwise in a `linux/arm64` `rust:1.94` container using
-  `.llama-artifacts/extracted/` (requires Docker and the downloaded, SHA-verified release)
+  `STATIC_LLAMA_DIR` set, otherwise in a `linux/arm64` `rust:1.94.0` container using
+  `.llama-artifacts/extracted/` (requires Docker and the downloaded, SHA-verified release;
+  toolchain and cargo registry persist in the `ltembed-rustup` / `ltembed-cargo-registry`
+  docker volumes, build output in `target-linux-arm64/`)
 
 ## Manual Checks
 
-If you want to run the same checks manually:
+If you want to run the same checks manually (inside the dev container on non-aarch64-linux
+hosts — `clippy` and `test` run `build.rs`, which needs the aarch64 artifacts):
 
 ```bash
-cargo fmt --all --check
+cargo fmt --all --check    # works on any host (no build script involved)
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+On a macOS host, `./.githooks/pre-push` runs the clippy check directly — it picks the
+docker fallback described above automatically.
 
 ## API Sanity Check
 

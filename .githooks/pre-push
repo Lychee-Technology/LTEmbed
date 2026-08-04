@@ -14,8 +14,11 @@ if [[ "$(uname -sm)" == "Linux aarch64" && -n "${STATIC_LLAMA_DIR:-}" ]]; then
     "${clippy_cmd[@]}"
 else
     artifacts="$repo_root/.llama-artifacts/extracted"
-    # Everything build.rs consumes from the release (CONTRACT.md "Release layout").
-    required=(lib/libllama.a lib/libggml.a lib/libggml-cpu.a lib/libggml-base.a bindings.rs)
+    # Everything build.rs consumes from the release (CONTRACT.md "Release layout"),
+    # plus build-info.json for the contract-version check below. SHA verification is
+    # the download step's responsibility (fetch-static-llama.sh / manual download);
+    # the hook trusts a verified download and only validates layout + contract here.
+    required=(lib/libllama.a lib/libggml.a lib/libggml-cpu.a lib/libggml-base.a bindings.rs build-info.json)
     for f in "${required[@]}"; do
         if [[ ! -f "$artifacts/$f" ]]; then
             echo "pre-push: $artifacts/$f not found — download and SHA-verify the" >&2
@@ -23,6 +26,14 @@ else
             exit 1
         fi
     done
+    # Same check as .github/scripts/fetch-static-llama.sh: fail closed on a release
+    # built against a different artifact contract.
+    contract="$(grep -o '"artifact_contract_version": *"[0-9]*"' "$artifacts/build-info.json" | grep -o '[0-9]*' || true)"
+    if [[ "$contract" != "2" ]]; then
+        echo "pre-push: unexpected artifact_contract_version '${contract:-<missing>}' in $artifacts/build-info.json" >&2
+        echo "(expected 2) — re-download the pinned release (see docs/development.md)" >&2
+        exit 1
+    fi
     if ! docker info >/dev/null 2>&1; then
         echo "pre-push: docker daemon not reachable — install/start Docker to run clippy on this host (see docs/development.md)" >&2
         exit 1

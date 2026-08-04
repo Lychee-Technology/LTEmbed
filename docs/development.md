@@ -48,7 +48,9 @@ This configures the current clone or worktree to use versioned hooks from `.gith
 ## Hook Behavior
 
 - `pre-commit`: runs `cargo fmt --all --check` when staged Rust-related files changed
-- `pre-push`: runs `cargo clippy --all-targets -- -D warnings`
+- `pre-push`: runs `cargo clippy --all-targets -- -D warnings` — natively on aarch64 Linux with
+  `STATIC_LLAMA_DIR` set, otherwise in a `linux/arm64` `rust:1.94` container using
+  `.llama-artifacts/extracted/` (requires Docker and the downloaded, SHA-verified release)
 
 ## Manual Checks
 

@@ -4,5 +4,31 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-echo "pre-push: running cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets -- -D warnings
+clippy_cmd=(cargo clippy --all-targets -- -D warnings)
+
+# Native cargo only works on aarch64 Linux with the static llama.cpp release
+# present (build.rs requires STATIC_LLAMA_DIR). On any other host, run the same
+# check in a linux/arm64 container against .llama-artifacts/extracted/.
+if [[ "$(uname -sm)" == "Linux aarch64" && -n "${STATIC_LLAMA_DIR:-}" ]]; then
+    echo "pre-push: running ${clippy_cmd[*]}"
+    "${clippy_cmd[@]}"
+else
+    artifacts="$repo_root/.llama-artifacts/extracted"
+    if [[ ! -f "$artifacts/lib/libllama.a" ]]; then
+        echo "pre-push: $artifacts/lib/libllama.a not found — download and SHA-verify the" >&2
+        echo "static-llama-cpp release into .llama-artifacts/extracted/ (see docs/development.md)" >&2
+        exit 1
+    fi
+    if ! command -v docker >/dev/null; then
+        echo "pre-push: docker is required to run clippy on this host (see docs/development.md)" >&2
+        exit 1
+    fi
+    echo "pre-push: running ${clippy_cmd[*]} in linux/arm64 container"
+    docker run --rm --platform linux/arm64 \
+        -v "$repo_root":/work \
+        -v "$artifacts":/opt/static-llama \
+        -w /work \
+        -e STATIC_LLAMA_DIR=/opt/static-llama \
+        -e CARGO_TARGET_DIR=/work/target-linux-arm64 \
+        rust:1.94 "${clippy_cmd[@]}"
+fi

@@ -55,3 +55,8 @@ perf-results/
 .llama-artifacts/
 *.gguf
 
+docs/superpowers/
+.ruff_cache/
+.sessions/
+_session/
+.pytest_cache/

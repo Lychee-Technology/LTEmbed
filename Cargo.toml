@@ -15,8 +15,10 @@ path = "src/lib.rs"
 # crates.io dependency for it: the static libs + bindgen bindings are consumed via raw FFI,
 # so this crate builds only on aarch64-linux with STATIC_LLAMA_DIR set (see docs/development.md).
 
-# Tokenization — uses pure-Rust fancy-regex backend by default (no C deps)
-tokenizers = "0.22"
+# Tokenization — Oniguruma regex backend (C, built via cc), the same engine as the Python
+# `tokenizers` used for the golden fixtures. Not fancy-regex: it silently stops splitting once
+# its backtrack limit is hit (~1M-char whitespace runs). Training-only defaults are disabled.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
 # Structured metadata / fixture parsing
 serde_json = "1"

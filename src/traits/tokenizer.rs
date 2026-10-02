@@ -33,7 +33,7 @@ pub trait Tokenizer: Send + Sync {
     fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError>;
 }
 
-/// Backed by the HuggingFace `tokenizers` crate (pure Rust).
+/// Backed by the HuggingFace `tokenizers` crate.
 #[derive(Debug)]
 pub struct HFTokenizer {
     inner: tokenizers::Tokenizer,

@@ -8,6 +8,14 @@ Regenerates `tests/fixtures/test_fixtures.json` for `jinaai/jina-embeddings-v5-t
 - pooling: last token
 - post-processing: truncate `768 -> 512`, then normalize
 
+## `generate_token_ids.py`
+
+Regenerates `tests/fixtures/token_ids.json`, the token-id parity fixture for `HFTokenizer`
+(`pip install tokenizers`; no model weights). It downloads `tokenizer.json` at the pinned
+`REVISION`, which must equal `HF_REVISION` in `.github/workflows/ci.yml`, and records
+single and batch encodings plus the file's sha256. Rerun it after changing its inputs or
+bumping the revision.
+
 ## `bench_pytorch.py`
 
 PyTorch retrieval-eval reference runner (retrieval-only).

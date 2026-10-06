@@ -1,5 +1,7 @@
 // src/traits/tokenizer.rs
 
+use tokenizers::models::ModelWrapper;
+
 use crate::error::{LTEmbedError, ModelLoadError};
 
 /// Output of a tokenization call. All three vecs have the same length.
@@ -71,14 +73,30 @@ fn tokenizer_outputs_from_encodings(
         .collect()
 }
 
+/// Turns off the BPE word cache. Since `tokenizers` 0.23 that cache lives in thread-locals
+/// keyed by model instance, and dropping the model never frees its entries, so every
+/// `EmbeddingEngine` built and dropped in a process would strand up to 10k cached words on
+/// each thread that tokenized. Uncached BPE yields the same ids; it costs a few µs per text,
+/// next to milliseconds of inference. Capacity 0 still registers one empty map per thread
+/// per load (~100 B), but no cached words.
+fn disable_bpe_cache(tokenizer: &mut tokenizers::Tokenizer) {
+    if let ModelWrapper::BPE(bpe) = tokenizer.get_model() {
+        // There is no `get_model_mut`; the clone keeps every field and gets a new cache id.
+        let mut bpe = bpe.clone();
+        bpe.resize_cache(0);
+        tokenizer.with_model(bpe);
+    }
+}
+
 impl HFTokenizer {
     /// Load from a `tokenizer.json` file path.
     pub fn from_file(path: &str) -> Result<Self, LTEmbedError> {
-        let inner = tokenizers::Tokenizer::from_file(path).map_err(|e| {
+        let mut inner = tokenizers::Tokenizer::from_file(path).map_err(|e| {
             LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
                 "Failed to load tokenizer: {e}"
             )))
         })?;
+        disable_bpe_cache(&mut inner);
         Ok(Self { inner })
     }
 

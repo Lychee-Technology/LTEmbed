@@ -267,6 +267,8 @@ fn test_golden_parity_cosine_similarity() {
 /// whitespace run that fancy-regex splits differently) and its added-token matcher.
 #[test]
 fn test_token_ids_match_python_tokenizers() {
+    // Gated on the env var alone, not bundle_available(): only tokenizer.json is needed, and a
+    // bundle dir without it should fail below rather than skip.
     let Some(bundle_dir) = bundle_dir() else {
         eprintln!("Skipping token-id parity test: {TEST_BUNDLE_ENV} not set");
         return;

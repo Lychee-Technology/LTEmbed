@@ -40,6 +40,8 @@ Always safe for CI and local smoke runs:
 Local or manually gated checks:
 
 - Rust outputs match regenerated Python/Jina fixtures to the configured cosine threshold
+- `HFTokenizer` token ids, attention masks and type ids (`encode` and padded `encode_batch`)
+  match the Python `tokenizers` fixture exactly; this needs only the bundle's `tokenizer.json`
 - output vectors are unit-normalized
 - `embed_batch` ordering matches repeated single-input calls
 
@@ -52,3 +54,18 @@ Fixtures must be generated with `scripts/generate_fixtures.py` and use:
 - `embedding`: final `512`-d truncated-and-normalized reference vector
 
 If the fixture file still advertises an older dimension, the parity test skips rather than silently comparing against the wrong baseline.
+
+## Token-ID Fixture Contract
+
+`tests/fixtures/token_ids.json` is generated with `scripts/generate_token_ids.py` from the
+`tokenizer.json` at the Hugging Face revision that CI pins (`HF_REVISION` in
+`.github/workflows/ci.yml`). It records:
+
+- `tokenizer`: source repo, revision and the file's `sha256`
+- `tokenizers_version`: the Python `tokenizers` version that produced the ids
+- `cases`: each input as `text` or as a `repeat` spec (the 1M-space run is never stored as a
+  literal), with its `single` encoding and its row of one batch encoding of all cases
+- `padding`: right-padding values; batch rows store their trailing padding as a `padding` count
+
+If the bundle's `tokenizer.json` hash differs from the recorded one, the test fails with
+instructions to regenerate the fixture instead of reporting a bare id mismatch.

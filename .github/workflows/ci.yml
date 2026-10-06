@@ -58,6 +58,10 @@ jobs:
       - name: Run library unit tests
         run: cargo test --lib
 
+      # Its own test binary (it installs a counting global allocator), so --lib skips it.
+      - name: Run tokenizer reload memory test
+        run: cargo test --test tokenizer_reload_tests
+
       # Benchmark support tests and the benchmark binary's unit tests are not covered by
       # --lib or --test integration_tests; run them explicitly so scenario/corpus changes
       # are gated.

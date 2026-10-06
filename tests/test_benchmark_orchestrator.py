@@ -605,7 +605,8 @@ class RunTests(unittest.TestCase):
 
         with mock.patch.object(bench, "run_json_command", side_effect=mock_run) as run_mock, \
              mock.patch.object(bench, "SCENARIOS", [bench.scenario_from_name(s) for s in scenarios]), \
-             mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+             mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None), \
+             mock.patch.object(bench, "rust_version", return_value="rustc 1.94.0"):
             rows: list[dict] = []
             code = bench._run(
                 args=args, timestamp="2026-01-01T00:00:00", git_revision="abc123", host=host, rows=rows,

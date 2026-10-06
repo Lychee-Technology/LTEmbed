@@ -62,7 +62,8 @@ If the fixture file still advertises an older dimension, the parity test skips r
 `.github/workflows/ci.yml`). It records:
 
 - `tokenizer`: source repo, revision and the file's `sha256`
-- `tokenizers_version`: the Python `tokenizers` version that produced the ids
+- `tokenizers_version`: the Python `tokenizers` version that produced the ids; the script
+  refuses to run unless it equals the Rust `tokenizers` version in `Cargo.lock`
 - `cases`: each input as `text` or as a `repeat` spec (the 1M-space run is never stored as a
   literal), with its `single` encoding and its row of one batch encoding of all cases
 - `padding`: right-padding values; batch rows store their trailing padding as a `padding` count

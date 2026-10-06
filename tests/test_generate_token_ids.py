@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "generate_token_ids.py"
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "token_ids.json"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+CARGO_LOCK_PATH = ROOT / "Cargo.lock"
 
 
 def load_module():
@@ -29,6 +30,23 @@ class GenerateTokenIdsTests(unittest.TestCase):
         spec = {"repeat": {"prefix": "a", "unit": " ", "count": 3, "suffix": "b"}}
         self.assertEqual(generate.build_text(spec), "a   b")
         self.assertEqual(generate.build_text({"text": "Query: hi"}), "Query: hi")
+
+    def test_locked_tokenizers_version_reads_the_tokenizers_package(self):
+        generate = load_module()
+        lock = (
+            '[[package]]\nname = "tokenizers"\nversion = "0.23.2"\n\n'
+            '[[package]]\nname = "tokenizers-extra"\nversion = "1.0.0"\n'
+        )
+        self.assertEqual(generate.locked_tokenizers_version(lock), "0.23.2")
+        two_versions = lock + lock.replace("0.23.2", "0.22.2")
+        for bad in ("", two_versions):
+            with self.assertRaises(ValueError):
+                generate.locked_tokenizers_version(bad)
+        # The real Cargo.lock must parse too, or regenerating the fixture would fail.
+        self.assertRegex(
+            generate.locked_tokenizers_version(CARGO_LOCK_PATH.read_text(encoding="utf-8")),
+            r"^\d+\.\d+\.\d+",
+        )
 
     def test_strip_right_padding_keeps_real_tokens_and_counts_padding(self):
         generate = load_module()

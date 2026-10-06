@@ -8,7 +8,10 @@ downloads. `test_token_ids_match_python_tokenizers` in tests/integration_tests.r
 same inputs with `HFTokenizer` and requires identical input ids, attention masks and type ids.
 
 Requirements:
-    pip install tokenizers
+    pip install tokenizers==<version>, where <version> is the Rust `tokenizers` crate version in
+    Cargo.lock. Python and Rust `tokenizers` releases share version numbers, so the fixture then
+    compares HFTokenizer with the Python binding of the same release. The script exits with the
+    pip command to run if the installed version differs.
 
 Usage:
     python3 scripts/generate_token_ids.py
@@ -24,6 +27,7 @@ and says to rerun this script.
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 import urllib.request
@@ -33,6 +37,7 @@ from pathlib import Path
 REPO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 REVISION = "ac5d898c8d382b17167c33e5c8af644a3519b47d"
 OUTPUT_PATH = Path("tests/fixtures/token_ids.json")
+CARGO_LOCK_PATH = Path("Cargo.lock")
 MAX_LENGTH = 8192  # ltembed::engine::MAX_LENGTH: HFTokenizer rejects longer inputs
 
 # Each input is {"text": ...} or {"repeat": {prefix, unit, count, suffix}}. Long inputs use
@@ -98,6 +103,14 @@ def build_text(spec: dict) -> str:
     return repeat["prefix"] + repeat["unit"] * repeat["count"] + repeat["suffix"]
 
 
+def locked_tokenizers_version(cargo_lock: str) -> str:
+    """The version of the Rust `tokenizers` crate locked in Cargo.lock."""
+    versions = re.findall(r'^name = "tokenizers"\nversion = "([^"]+)"$', cargo_lock, re.MULTILINE)
+    if len(versions) != 1:
+        raise ValueError(f"expected one tokenizers package in Cargo.lock, found versions {versions}")
+    return versions[0]
+
+
 def encoding_fields(encoding) -> dict:
     return {
         "input_ids": list(encoding.ids),
@@ -141,6 +154,13 @@ def format_json(value, level: int = 0) -> str:
 def main():
     # Imported here so that the helpers above can be tested without `tokenizers` installed.
     import tokenizers
+
+    locked = locked_tokenizers_version(CARGO_LOCK_PATH.read_text(encoding="utf-8"))
+    if tokenizers.__version__ != locked:
+        raise SystemExit(
+            f"Python tokenizers is {tokenizers.__version__}, but Cargo.lock locks the Rust crate "
+            f"at {locked}. Run `pip install tokenizers=={locked}` and rerun this script."
+        )
 
     url = f"https://huggingface.co/{REPO}/resolve/{REVISION}/tokenizer.json"
     with tempfile.TemporaryDirectory() as tmp:

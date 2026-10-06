@@ -11,10 +11,11 @@ Regenerates `tests/fixtures/test_fixtures.json` for `jinaai/jina-embeddings-v5-t
 ## `generate_token_ids.py`
 
 Regenerates `tests/fixtures/token_ids.json`, the token-id parity fixture for `HFTokenizer`
-(`pip install tokenizers`; no model weights). It downloads `tokenizer.json` at the pinned
+(`pip install tokenizers==<version>` with the Rust `tokenizers` version from `Cargo.lock`,
+which the script checks; no model weights). It downloads `tokenizer.json` at the pinned
 `REVISION`, which must equal `HF_REVISION` in `.github/workflows/ci.yml`, and records
-single and batch encodings plus the file's sha256. Rerun it after changing its inputs or
-bumping the revision.
+single and batch encodings plus the file's sha256. Rerun it after changing its inputs,
+bumping the revision, or bumping `tokenizers` in `Cargo.lock`.
 
 ## `bench_pytorch.py`
 

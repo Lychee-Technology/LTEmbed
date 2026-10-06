@@ -17,7 +17,8 @@ path = "src/lib.rs"
 
 # Tokenization — Oniguruma regex backend (C, built via cc), the same engine as the Python
 # `tokenizers` used for the golden fixtures. Not fancy-regex: it silently stops splitting once
-# its backtrack limit is hit (~1M-char whitespace runs). Training-only defaults are disabled.
+# its backtrack limit is hit (~1M-char whitespace runs). test_token_ids_match_python_tokenizers
+# (tests/integration_tests.rs) enforces this. Training-only defaults are disabled.
 # HFTokenizer::from_file turns off 0.23's per-thread BPE cache, which leaks on drop; recheck
 # that workaround when bumping.
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
@@ -52,3 +53,5 @@ lto = "thin"
 approx = "0.5"
 static_assertions = "1"
 serde = { version = "1", features = ["derive"] }
+# Hashes the bundle tokenizer.json against tests/fixtures/token_ids.json.
+sha2 = "0.11"

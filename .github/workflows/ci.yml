@@ -78,15 +78,19 @@ jobs:
       - name: Assemble GGUF bundle for model-backed tests
         env:
           GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+          # Pinned so that an upstream push cannot change the bundle under the tests.
+          # tests/fixtures/token_ids.json records the sha256 of this revision's tokenizer.json;
+          # when bumping, also update REVISION in scripts/generate_token_ids.py and rerun it.
+          HF_REVISION: ac5d898c8d382b17167c33e5c8af644a3519b47d
           QUANT: Q5_K_M
         run: |
           set -euo pipefail
           BUNDLE="${{ github.workspace }}/ci_gguf_bundle"
           mkdir -p "$BUNDLE"
           curl -fsSL -o "$BUNDLE/model.gguf" \
-            "https://huggingface.co/$GGUF_REPO/resolve/main/v5-nano-retrieval-$QUANT.gguf"
+            "https://huggingface.co/$GGUF_REPO/resolve/$HF_REVISION/v5-nano-retrieval-$QUANT.gguf"
           curl -fsSL -o "$BUNDLE/tokenizer.json" \
-            "https://huggingface.co/$GGUF_REPO/resolve/main/tokenizer.json"
+            "https://huggingface.co/$GGUF_REPO/resolve/$HF_REVISION/tokenizer.json"
           cat > "$BUNDLE/build-info.json" <<'JSON'
           {
             "target_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",

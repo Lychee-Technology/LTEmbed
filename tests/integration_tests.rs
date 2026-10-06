@@ -3,13 +3,16 @@ use ltembed::engine::{
     EmbeddingEngine, EmbeddingInput, EngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
 };
 use ltembed::error::{LTEmbedError, ModelLoadError};
+use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer, TokenizerOutput};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
+const TOKEN_IDS_FIXTURE: &str = "tests/fixtures/token_ids.json";
 const TOKENIZER: &str = "assets/tokenizer.json";
 const TEST_BUNDLE_ENV: &str = "LTEMBED_TEST_BUNDLE_DIR";
 
@@ -60,6 +63,132 @@ struct Fixture {
 struct FixtureFile {
     dim: Option<usize>,
     fixtures: Vec<Fixture>,
+}
+
+/// `tests/fixtures/token_ids.json`, written by `scripts/generate_token_ids.py`.
+#[derive(Deserialize)]
+struct TokenIdFixtureFile {
+    tokenizer: TokenizerSource,
+    tokenizers_version: String,
+    padding: BatchPadding,
+    cases: Vec<TokenIdCase>,
+}
+
+/// The `tokenizer.json` the fixture was generated from.
+#[derive(Deserialize)]
+struct TokenizerSource {
+    repo: String,
+    revision: String,
+    sha256: String,
+}
+
+/// Values of right-padding tokens. The generator rejects any other padding direction.
+#[derive(Deserialize)]
+struct BatchPadding {
+    pad_id: u32,
+    pad_type_id: u32,
+}
+
+#[derive(Deserialize)]
+struct TokenIdCase {
+    name: String,
+    input: TokenIdInput,
+    single: TokenIds,
+    batch: PaddedTokenIds,
+}
+
+/// A literal text, or a long text described by a repeated unit.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TokenIdInput {
+    Text(String),
+    Repeat {
+        prefix: String,
+        unit: String,
+        count: usize,
+        suffix: String,
+    },
+}
+
+impl TokenIdInput {
+    fn build(&self) -> String {
+        match self {
+            TokenIdInput::Text(text) => text.clone(),
+            TokenIdInput::Repeat {
+                prefix,
+                unit,
+                count,
+                suffix,
+            } => format!("{prefix}{}{suffix}", unit.repeat(*count)),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TokenIds {
+    input_ids: Vec<u32>,
+    attention_mask: Vec<u32>,
+    type_ids: Vec<u32>,
+}
+
+/// A batch row without its trailing padding, which is `padding` tokens long.
+#[derive(Deserialize)]
+struct PaddedTokenIds {
+    #[serde(flatten)]
+    unpadded: TokenIds,
+    padding: usize,
+}
+
+impl PaddedTokenIds {
+    fn padded(&self, pad: &BatchPadding) -> TokenIds {
+        let pad_with = |values: &[u32], value: u32| -> Vec<u32> {
+            values
+                .iter()
+                .copied()
+                .chain(std::iter::repeat_n(value, self.padding))
+                .collect()
+        };
+        TokenIds {
+            input_ids: pad_with(&self.unpadded.input_ids, pad.pad_id),
+            attention_mask: pad_with(&self.unpadded.attention_mask, 0),
+            type_ids: pad_with(&self.unpadded.type_ids, pad.pad_type_id),
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Describes how `actual` differs from `expected` without printing sequences that can be
+/// thousands of tokens long.
+fn sequence_mismatch(field: &str, actual: &[u32], expected: &[u32]) -> Option<String> {
+    let lengths = format!("lengths {} vs {}", actual.len(), expected.len());
+    match actual.iter().zip(expected).position(|(a, e)| a != e) {
+        Some(i) => Some(format!(
+            "{field}[{i}] is {}, expected {} ({lengths})",
+            actual[i], expected[i]
+        )),
+        None => (actual.len() != expected.len()).then(|| format!("{field}: {lengths}")),
+    }
+}
+
+fn token_id_mismatches(actual: &TokenizerOutput, expected: &TokenIds) -> Vec<String> {
+    [
+        ("input_ids", &actual.input_ids, &expected.input_ids),
+        (
+            "attention_mask",
+            &actual.attention_mask,
+            &expected.attention_mask,
+        ),
+        ("type_ids", &actual.token_type_ids, &expected.type_ids),
+    ]
+    .into_iter()
+    .filter_map(|(field, actual, expected)| sequence_mismatch(field, actual, expected))
+    .collect()
 }
 
 fn unique_temp_dir() -> PathBuf {
@@ -131,6 +260,68 @@ fn test_golden_parity_cosine_similarity() {
             &fixture.text[..50.min(fixture.text.len())]
         );
     }
+}
+
+/// `HFTokenizer` must produce the same ids as the Python `tokenizers` behind the golden
+/// fixtures. The fixture's inputs exercise the model's Oniguruma `Split` regex (a 1M-char
+/// whitespace run that fancy-regex splits differently) and its added-token matcher.
+#[test]
+fn test_token_ids_match_python_tokenizers() {
+    // Gated on the env var alone, not bundle_available(): only tokenizer.json is needed, and a
+    // bundle dir without it should fail below rather than skip.
+    let Some(bundle_dir) = bundle_dir() else {
+        eprintln!("Skipping token-id parity test: {TEST_BUNDLE_ENV} not set");
+        return;
+    };
+    let fixture_str = fs::read_to_string(TOKEN_IDS_FIXTURE)
+        .expect("tests/fixtures/token_ids.json not found — run scripts/generate_token_ids.py");
+    let fixture: TokenIdFixtureFile = serde_json::from_str(&fixture_str).unwrap();
+
+    let tokenizer_path = bundle_dir.join("tokenizer.json");
+    let tokenizer_json = fs::read(&tokenizer_path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", tokenizer_path.display()));
+    let source = &fixture.tokenizer;
+    assert_eq!(
+        sha256_hex(&tokenizer_json),
+        source.sha256,
+        "{} is not the tokenizer.json that {TOKEN_IDS_FIXTURE} was generated from ({} at \
+         revision {}). If the upstream tokenizer changed, regenerate the fixture: set REVISION \
+         in scripts/generate_token_ids.py and HF_REVISION in .github/workflows/ci.yml to the \
+         new revision, then run `python3 scripts/generate_token_ids.py`.",
+        tokenizer_path.display(),
+        source.repo,
+        source.revision,
+    );
+
+    let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy()).unwrap();
+    let texts: Vec<String> = fixture
+        .cases
+        .iter()
+        .map(|case| case.input.build())
+        .collect();
+    let batch = tokenizer
+        .encode_batch(&texts, MAX_LENGTH)
+        .unwrap_or_else(|e| panic!("encode_batch failed: {e}"));
+    assert_eq!(batch.len(), fixture.cases.len());
+
+    let mut mismatches = Vec::new();
+    for ((case, text), batch_row) in fixture.cases.iter().zip(&texts).zip(&batch) {
+        let single = tokenizer
+            .encode(text, MAX_LENGTH)
+            .unwrap_or_else(|e| panic!("{}: encode failed: {e}", case.name));
+        for mismatch in token_id_mismatches(&single, &case.single) {
+            mismatches.push(format!("{} (encode): {mismatch}", case.name));
+        }
+        for mismatch in token_id_mismatches(batch_row, &case.batch.padded(&fixture.padding)) {
+            mismatches.push(format!("{} (encode_batch): {mismatch}", case.name));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "HFTokenizer output differs from Python tokenizers {}:\n  {}",
+        fixture.tokenizers_version,
+        mismatches.join("\n  ")
+    );
 }
 
 #[test]
@@ -290,7 +481,6 @@ fn test_long_input_returns_input_too_long_error() {
         eprintln!("Skipping: tokenizer asset not found");
         return;
     }
-    use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer};
     let tok = HFTokenizer::from_file(TOKENIZER).unwrap();
     let long_text = "hello world ".repeat(12000);
     let result = tok.encode(&long_text, MAX_LENGTH);

@@ -81,6 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `scripts/bench_pytorch.py` is the Python reference runner for the Jina model.
 - `scripts/generate_fixtures.py` regenerates the **immutable PyTorch/F32 golden** fixtures
   (`kind + text + embedding` schema) — never regenerate the golden from GGUF output.
+- `scripts/generate_token_ids.py` regenerates the token-id parity fixture: Python `tokenizers`
+  ids for the tokenizer.json at the Hugging Face revision that CI pins.
 - `scripts/run_embedding_benchmarks.py` orchestrates warm, cold, and correctness runs against a GGUF `--bundle-dir`.
 - Quant selection and parity/latency results are documented in [`docs/llama-cpp-spike-results.md`](./docs/llama-cpp-spike-results.md).
 

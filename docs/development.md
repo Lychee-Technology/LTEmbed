@@ -20,10 +20,15 @@ script.
 ## Static llama.cpp artifacts
 
 `build.rs` requires `STATIC_LLAMA_DIR` to point at an **extracted, SHA-verified** release of
-[`static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
-containing `lib/libllama.a`, `lib/libggml.a`, `lib/libggml-cpu.a`, `lib/libggml-base.a` and
-`bindings.rs`. If it does not, the build panics. The pinned release is set in
-`.github/workflows/ci.yml`:
+[`static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder).
+It panics if `lib/libllama.a` or `bindings.rs` is missing there. It links `lib/libggml.a`,
+`lib/libggml-cpu.a` and `lib/libggml-base.a` without checking them first, so a partial
+extraction fails at link time instead. The full release is validated by the `SHA256SUMS`
+check in the download steps below and, on hosts where it uses the container, by the
+`pre-push` hook (see [Git hooks](#git-hooks)).
+
+The release is pinned by three variables, set to the same values in
+`.github/workflows/ci.yml` and `.github/workflows/benchmark-arm64.yml`:
 
 | Variable | Value |
 |---|---|
@@ -62,9 +67,13 @@ export STATIC_LLAMA_DIR="$PWD/.llama-artifacts/extracted"
 
 `.llama-artifacts/` is gitignored. The repo-pinned hash matters because the release's own
 `.sha256` sidecar lives on the same mutable tag and proves only that the download was not
-corrupted. When bumping the release, update all three variables in **both**
-`.github/workflows/ci.yml` and `.github/workflows/benchmark-arm64.yml`, then check the
-contract version that `fetch-static-llama.sh` and `.githooks/pre-push` accept.
+corrupted.
+
+The rest of the pin is not in the workflows. `fetch-static-llama.sh` selects the
+`*-aarch64-graviton2.tar.gz` asset, and both it and `.githooks/pre-push` reject any
+artifact contract other than `2`. When bumping the release, update all three variables in
+**both** workflows, and update the script and the hook if the new release changes the asset
+name or the contract version.
 
 ## Building on aarch64 Linux
 
@@ -76,8 +85,8 @@ cargo test --lib
 
 ## Non-aarch64 hosts
 
-On macOS or x86_64, run cargo inside a `linux/arm64` `rust:1.94.0` container. This is the
-same invocation the `pre-push` hook uses:
+On macOS or x86_64, run cargo inside a `linux/arm64` `rust:1.94.0` container. From the
+repository root:
 
 ```bash
 docker run --rm --platform linux/arm64 \
@@ -91,6 +100,9 @@ docker run --rm --platform linux/arm64 \
   rust:1.94.0 cargo test --lib
 ```
 
+- The image, mounts and environment are the ones the `pre-push` hook uses. The hook ends
+  with `cargo clippy --all-targets -- -D warnings` instead of `cargo test --lib`; any cargo
+  command can go in that position.
 - The named volumes keep the toolchain and registry between runs, and
   `target-linux-arm64/` (gitignored) keeps container builds apart from the host `target/`.
 - To run Tier 2 tests, put a bundle under the repo and pass its container path, for

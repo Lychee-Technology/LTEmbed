@@ -27,8 +27,11 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release (`v0.1.151-1`, Graviton2 build, artifact
-  contract `2`) is set in `.github/workflows/ci.yml`.
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.151-1`, Graviton2 build, artifact
+  contract `2`. No single file holds the whole pin: the workflows set the tag and SHA-256,
+  `fetch-static-llama.sh` picks the Graviton2 asset, and that script and
+  `.githooks/pre-push` check the contract version. See
+  [development.md](./development.md#static-llamacpp-artifacts) before bumping it.
 
 ## Model
 

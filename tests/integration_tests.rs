@@ -6,6 +6,7 @@ use ltembed::error::{LTEmbedError, ModelLoadError};
 use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer, TokenizerOutput};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::env::VarError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,21 +16,63 @@ const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
 const TOKEN_IDS_FIXTURE: &str = "tests/fixtures/token_ids.json";
 const TOKENIZER: &str = "assets/tokenizer.json";
 const TEST_BUNDLE_ENV: &str = "LTEMBED_TEST_BUNDLE_DIR";
+/// `1` turns every bundle-gated skip into a failure. CI sets it so that losing
+/// `LTEMBED_TEST_BUNDLE_DIR` cannot leave the model-backed tests silently skipped.
+const REQUIRE_TEST_BUNDLE_ENV: &str = "LTEMBED_REQUIRE_TEST_BUNDLE";
+/// Bundle files the engine tests need. A missing `build-info.json` is not a skip: the engine
+/// reports it as a load error and the test fails.
+const ENGINE_BUNDLE_FILES: &[&str] = &["model.gguf", "tokenizer.json"];
 
-fn bundle_dir() -> Option<PathBuf> {
-    std::env::var_os(TEST_BUNDLE_ENV).map(PathBuf::from)
+/// The test bundle directory if it holds `files`. Otherwise the test should return early
+/// (`None`), unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic instead.
+/// Bundle-gated tests go through here, never through `LTEMBED_TEST_BUNDLE_DIR` directly.
+fn test_bundle(files: &[&str]) -> Option<PathBuf> {
+    bundle_or_skip(
+        std::env::var_os(TEST_BUNDLE_ENV).map(PathBuf::from),
+        test_bundle_required(),
+        files,
+    )
 }
 
-fn bundle_available() -> bool {
-    bundle_dir()
-        .map(|dir| dir.join("model.gguf").exists() && dir.join("tokenizer.json").exists())
-        .unwrap_or(false)
+fn test_bundle_required() -> bool {
+    match std::env::var(REQUIRE_TEST_BUNDLE_ENV).as_deref() {
+        Err(VarError::NotPresent) | Ok("" | "0") => false,
+        Ok("1") => true,
+        // Fail closed: a typo such as `true` must not quietly turn the guard off.
+        Ok(value) => panic!("{REQUIRE_TEST_BUNDLE_ENV} must be 0 or 1, got {value:?}"),
+        Err(e) => panic!("{REQUIRE_TEST_BUNDLE_ENV}: {e}"),
+    }
 }
 
-fn make_engine() -> EmbeddingEngine {
-    let bundle_dir = bundle_dir().expect("LTEMBED_TEST_BUNDLE_DIR must be set for bundle tests");
+/// `test_bundle` with the environment passed in, so the tests below can check the decision.
+fn bundle_or_skip(dir: Option<PathBuf>, required: bool, files: &[&str]) -> Option<PathBuf> {
+    let reason = match dir {
+        None => format!("{TEST_BUNDLE_ENV} is not set"),
+        Some(dir) => {
+            let missing: Vec<&str> = files
+                .iter()
+                .copied()
+                .filter(|file| !dir.join(file).exists())
+                .collect();
+            if missing.is_empty() {
+                return Some(dir);
+            }
+            format!("{} has no {}", dir.display(), missing.join(" or "))
+        }
+    };
+    if required {
+        panic!(
+            "{REQUIRE_TEST_BUNDLE_ENV}=1 requires the test bundle, but {reason} \
+             (see docs/integ-test.md)"
+        );
+    }
+    eprintln!("Skipping: {reason}");
+    None
+}
+
+fn make_engine(bundle_dir: &Path) -> EmbeddingEngine {
     EmbeddingEngine::from_gguf_bundle_dir(
-        &bundle_dir,
+        bundle_dir,
         EngineConfig {
             output_dimension: EMBEDDING_DIMENSION,
             l2_normalize: true,
@@ -231,11 +274,10 @@ fn valid_build_info_json() -> &'static str {
 
 #[test]
 fn test_golden_parity_cosine_similarity() {
-    if !bundle_available() {
-        eprintln!("Skipping golden parity test: {TEST_BUNDLE_ENV} not set");
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
-    }
-    let engine = make_engine();
+    };
+    let engine = make_engine(&bundle_dir);
     let fixture_str = std::fs::read_to_string(FIXTURES)
         .expect("tests/fixtures/test_fixtures.json not found — run scripts/generate_fixtures.py");
     let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
@@ -267,10 +309,8 @@ fn test_golden_parity_cosine_similarity() {
 /// whitespace run that fancy-regex splits differently) and its added-token matcher.
 #[test]
 fn test_token_ids_match_python_tokenizers() {
-    // Gated on the env var alone, not bundle_available(): only tokenizer.json is needed, and a
-    // bundle dir without it should fail below rather than skip.
-    let Some(bundle_dir) = bundle_dir() else {
-        eprintln!("Skipping token-id parity test: {TEST_BUNDLE_ENV} not set");
+    // Needs only tokenizer.json, so a directory holding just that file is enough to run it.
+    let Some(bundle_dir) = test_bundle(&["tokenizer.json"]) else {
         return;
     };
     let fixture_str = fs::read_to_string(TOKEN_IDS_FIXTURE)
@@ -499,11 +539,10 @@ fn test_long_input_returns_input_too_long_error() {
 
 #[test]
 fn test_embed_batch_consistency() {
-    if !bundle_available() {
-        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
-    }
-    let engine = make_engine();
+    };
+    let engine = make_engine(&bundle_dir);
     let inputs = [
         EmbeddingInput::query("hello"),
         EmbeddingInput::query("world"),
@@ -518,11 +557,10 @@ fn test_embed_batch_consistency() {
 
 #[test]
 fn test_output_is_l2_normalized() {
-    if !bundle_available() {
-        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
-    }
-    let engine = make_engine();
+    };
+    let engine = make_engine(&bundle_dir);
     let v = engine
         .embed(EmbeddingInput::query("normalization check"))
         .unwrap();
@@ -532,13 +570,45 @@ fn test_output_is_l2_normalized() {
 
 #[test]
 fn test_output_dimension_is_512() {
-    if !bundle_available() {
-        eprintln!("Skipping: {TEST_BUNDLE_ENV} not set");
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
-    }
-    let engine = make_engine();
+    };
+    let engine = make_engine(&bundle_dir);
     let v = engine
         .embed(EmbeddingInput::query("dimension check"))
         .unwrap();
     assert_eq!(v.len(), EMBEDDING_DIMENSION);
+}
+
+#[test]
+fn test_missing_bundle_skips_unless_required() {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    write_tokenizer(&temp_dir);
+
+    assert_eq!(bundle_or_skip(None, false, ENGINE_BUNDLE_FILES), None);
+    assert_eq!(
+        bundle_or_skip(Some(temp_dir.clone()), false, ENGINE_BUNDLE_FILES),
+        None
+    );
+    assert_eq!(
+        bundle_or_skip(Some(temp_dir.clone()), true, &["tokenizer.json"]),
+        Some(temp_dir.clone())
+    );
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+#[should_panic(
+    expected = "LTEMBED_REQUIRE_TEST_BUNDLE=1 requires the test bundle, but LTEMBED_TEST_BUNDLE_DIR is not set"
+)]
+fn test_required_bundle_fails_when_dir_unset() {
+    bundle_or_skip(None, true, ENGINE_BUNDLE_FILES);
+}
+
+#[test]
+#[should_panic(expected = "has no model.gguf or tokenizer.json")]
+fn test_required_bundle_fails_when_files_missing() {
+    bundle_or_skip(Some(unique_temp_dir()), true, ENGINE_BUNDLE_FILES);
 }

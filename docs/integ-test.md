@@ -24,6 +24,29 @@ They also require the build/link prerequisites (aarch64-linux + `STATIC_LLAMA_DI
 tests must remain runnable without local model weights (they still link the static libs but
 do not run inference).
 
+## Skipping vs. Failing Without a Bundle
+
+By default a Tier 2 test skips (returns early and passes, printing `Skipping: …` to the
+captured output) when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks a file
+the test reads: `model.gguf` and `tokenizer.json` for the engine tests, only `tokenizer.json`
+for the token-id test. Local runs without a bundle therefore still pass.
+
+`LTEMBED_REQUIRE_TEST_BUNDLE=1` turns each of those skips into a failure that names the
+missing variable or file. `0`, empty or unset keeps skipping; any other value fails, so a typo
+cannot quietly switch the check off.
+
+The CI `Test` job sets `LTEMBED_REQUIRE_TEST_BUNDLE=1` at job level. The bundle step hands
+`LTEMBED_TEST_BUNDLE_DIR` to later steps through `$GITHUB_ENV`. If that hand-off breaks, the
+integration step fails instead of passing with no model-backed assertions run.
+
+```bash
+# Local run without a bundle: Tier 2 tests skip.
+cargo test --test integration_tests
+# As in CI: Tier 2 tests must run.
+LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR=/path/to/bundle \
+  cargo test --test integration_tests
+```
+
 ## Tier 1
 
 Always safe for CI and local smoke runs:
@@ -37,7 +60,7 @@ Always safe for CI and local smoke runs:
 
 ## Tier 2
 
-Local or manually gated checks:
+Run in CI and locally when `LTEMBED_TEST_BUNDLE_DIR` points at a bundle:
 
 - Rust outputs match regenerated Python/Jina fixtures to the configured cosine threshold
 - `HFTokenizer` token ids, attention masks and type ids (`encode` and padded `encode_batch`)
@@ -53,7 +76,7 @@ Fixtures must be generated with `scripts/generate_fixtures.py` and use:
 - `text`: raw caller text without retrieval prefix
 - `embedding`: final `512`-d truncated-and-normalized reference vector
 
-If the fixture file still advertises an older dimension, the parity test skips rather than silently comparing against the wrong baseline.
+If the fixture file still advertises an older dimension, the parity test skips rather than silently comparing against the wrong baseline. `LTEMBED_REQUIRE_TEST_BUNDLE` does not affect this skip.
 
 ## Token-ID Fixture Contract
 

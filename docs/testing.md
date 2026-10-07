@@ -68,8 +68,9 @@ temp directory and check load-time validation:
   and skips if that file is missing.
 - the skip and require logic itself (`bundle_or_skip`)
 - `tests/fixtures/test_fixtures.json` matches `EMBEDDING_DIMENSION`
-  (`test_golden_fixture_matches_engine_dimension`; see
-  [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson))
+  (`test_golden_fixture_matches_engine_dimension`), and the check itself fails on
+  synthetic stale fixtures (`parse_golden_fixtures`); see
+  [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson)
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`:
 

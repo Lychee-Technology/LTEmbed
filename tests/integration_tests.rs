@@ -108,11 +108,23 @@ struct FixtureFile {
     fixtures: Vec<Fixture>,
 }
 
-/// `tests/fixtures/test_fixtures.json`. Panics on any problem `golden_fixture_problem` reports.
+/// `tests/fixtures/test_fixtures.json`, checked by `parse_golden_fixtures`.
 fn golden_fixtures() -> FixtureFile {
     let fixture_str = fs::read_to_string(FIXTURES)
         .expect("tests/fixtures/test_fixtures.json not found — run scripts/generate_fixtures.py");
-    let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
+    parse_golden_fixtures(&fixture_str)
+}
+
+/// `golden_fixtures` with the file's contents passed in, so the tests below can check that a
+/// bad fixture fails. Panics if `json` does not parse, or on any problem
+/// `golden_fixture_problem` reports.
+fn parse_golden_fixtures(json: &str) -> FixtureFile {
+    let data: FixtureFile = serde_json::from_str(json).unwrap_or_else(|e| {
+        panic!(
+            "{FIXTURES} does not parse: {e}. Regenerate it with scripts/generate_fixtures.py \
+             (see docs/testing.md)."
+        )
+    });
     if let Some(problem) = golden_fixture_problem(&data) {
         panic!(
             "{FIXTURES} {problem}. It must hold the PyTorch reference at the engine tests' \
@@ -382,6 +394,23 @@ fn test_golden_fixture_problems() {
             dim / 2
         ))
     );
+}
+
+/// Detecting a stale fixture is not enough: loading it must fail the run. `dim` 0 can never
+/// equal `EMBEDDING_DIMENSION`, and the file once shipped with it.
+#[test]
+#[should_panic(expected = "records dim 0, but EMBEDDING_DIMENSION is")]
+fn test_stale_golden_fixture_fails() {
+    parse_golden_fixtures(
+        r#"{"dim": 0, "fixtures": [{"kind": "query", "text": "text", "embedding": []}]}"#,
+    );
+}
+
+/// A fixture without `dim` fails too, rather than loading with its dimension unknown.
+#[test]
+#[should_panic(expected = "missing field `dim`")]
+fn test_golden_fixture_without_dim_fails() {
+    parse_golden_fixtures(r#"{"fixtures": [{"kind": "query", "text": "text", "embedding": []}]}"#);
 }
 
 /// `HFTokenizer` must produce the same ids as the Python `tokenizers` behind the golden

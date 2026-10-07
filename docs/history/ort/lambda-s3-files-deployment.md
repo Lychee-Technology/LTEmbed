@@ -1,5 +1,13 @@
 # Lambda Deployment with S3 Files
 
+> [!NOTE]
+> **Status:** Historical\
+> **Applies to:** the ONNX Runtime backend (`OnnxEngine`, `ort_bundle`), kept on the `ort` branch; written 2026-05-13\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> ONNX Runtime was removed from `main` in #149 (2026-07-09). This deployment design was never ported to the GGUF bundle, and `main` has no supported Lambda deployment workflow (see [docs/releases.md](../../releases.md)).
+
 Deploy LTEmbed as a Lambda ZIP with `libonnxruntime.so` in-package
 and model weights served from an S3 Files mount.
 

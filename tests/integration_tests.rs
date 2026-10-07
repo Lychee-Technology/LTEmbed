@@ -63,7 +63,7 @@ fn bundle_or_skip(dir: Option<PathBuf>, required: bool, files: &[&str]) -> Optio
     if required {
         panic!(
             "{REQUIRE_TEST_BUNDLE_ENV}=1 requires the test bundle, but {reason} \
-             (see docs/integ-test.md)"
+             (see docs/testing.md)"
         );
     }
     eprintln!("Skipping: {reason}");

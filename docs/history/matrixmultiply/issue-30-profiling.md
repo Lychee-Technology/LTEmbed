@@ -1,5 +1,13 @@
 # Issue 30 Profiling Notes
 
+> [!NOTE]
+> **Status:** Historical\
+> **Applies to:** the pure-Rust BERT / `matrixmultiply` backend (issue #30, 2026-03-16/17), kept on the `matrixmultiply` branch\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> Measurements were taken on macOS ARM64 (Apple Silicon), not on Graviton. Commands use flags such as `--model-dir` that the current `benchmark_ltembed` does not accept. Links to `/Users/...` and `/tmp/...` point at the author's machine and do not resolve.
+
 ## Scope
 
 This note captures the reproducible profiling and benchmark workflow used for issue `#30` on macOS ARM64, plus the current hotspot summary after adding the fused masked-softmax path.

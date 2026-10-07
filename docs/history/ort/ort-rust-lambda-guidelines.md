@@ -1,5 +1,13 @@
 # Building ONNX Runtime for Rust AWS Lambda (ARM64)
 
+> [!NOTE]
+> **Status:** Historical\
+> **Applies to:** the ONNX Runtime backend (`OnnxEngine`, `ort_bundle`), kept on the `ort` branch; written 2026-03-28\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> ONNX Runtime was removed from `main` in #149 (2026-07-09). `ORT_DYLIB_PATH`, `libonnxruntime.so`, `model.ort` and the Lambda build steps below do not apply to `main`, and `main` has no supported Lambda deployment workflow (see [docs/releases.md](../../releases.md)).
+
 **Guidelines for production-grade embedding inference on AWS Lambda Graviton**
 
 ---

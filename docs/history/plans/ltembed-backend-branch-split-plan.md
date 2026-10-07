@@ -1,5 +1,13 @@
 # LTEmbed Backend Branch Split Plan
 
+> [!NOTE]
+> **Status:** Completed / superseded\
+> **Applies to:** the May 2026 split of the `matrixmultiply` line off `main`; written 2026-05-17\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> The split was carried out: `matrixmultiply` and `backup/local-main-9bb3dd3` both exist on `origin`. The repository does not show whether Task 3's selective cherry-picks were applied. The plan's premise that `main` stays ONNX Runtime-only was superseded by #149 (2026-07-09): `main` moved to llama.cpp/GGUF and the ONNX Runtime line was frozen on the `ort` branch.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Split LTEmbed into a `matrixmultiply` branch that preserves the legacy matrixmultiply backend line and a `main` branch that remains ONNXRuntime-only.

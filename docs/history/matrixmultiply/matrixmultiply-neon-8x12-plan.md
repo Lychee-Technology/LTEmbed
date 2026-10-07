@@ -1,5 +1,13 @@
 # matrixmultiply NEON 8x12 Opt-In Implementation Plan
 
+> [!NOTE]
+> **Status:** Historical (plan; not carried to `main`)\
+> **Applies to:** the pure-Rust BERT / `matrixmultiply` backend, kept on the `matrixmultiply` branch; written 2026-03-24\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> Whatever this plan achieved lives on the `matrixmultiply` branch only. `main` no longer depends on `matrixmultiply`.
+
 > For agentic workers: execute this plan with TDD where practical. Keep the default `matrixmultiply` AArch64 NEON behavior unchanged unless the opt-in feature is enabled.
 
 ## Goal

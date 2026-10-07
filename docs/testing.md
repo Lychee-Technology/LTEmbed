@@ -72,11 +72,11 @@ directory and check load-time validation:
 
 | Test | Bundle files read | Checks |
 |---|---|---|
-| `test_golden_parity_cosine_similarity` | `model.gguf`, `tokenizer.json` | Cosine > 0.99 against each golden vector |
+| `test_golden_parity_cosine_similarity` | `model.gguf`, `tokenizer.json`, `build-info.json` | Cosine > 0.99 against each golden vector |
 | `test_token_ids_match_python_tokenizers` | `tokenizer.json` only | `HFTokenizer` ids, masks and type ids equal the Python fixture exactly |
-| `test_embed_batch_consistency` | `model.gguf`, `tokenizer.json` | `embed_batch(..)[0] == embed(..)` |
-| `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json` | Unit norm |
-| `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json` | Output length 512 |
+| `test_embed_batch_consistency` | `model.gguf`, `tokenizer.json`, `build-info.json` | `embed_batch(..)[0] == embed(..)` |
+| `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json`, `build-info.json` | Unit norm |
+| `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
 
 The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
 the bundle's `output_embedding_dimension`.
@@ -84,8 +84,14 @@ the bundle's `output_embedding_dimension`.
 ### Skipping vs. failing without a bundle
 
 By default a Tier 2 test **skips**: it returns early, passes, and prints `Skipping: …`. That
-happens when `LTEMBED_TEST_BUNDLE_DIR` is unset or the directory lacks a file the test
-reads. Local runs without a bundle therefore pass.
+happens when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks `model.gguf` or
+`tokenizer.json`. The token-id test checks only `tokenizer.json`, so a directory holding
+just that file is enough to run it. Local runs without a bundle therefore pass.
+
+`build-info.json` is not part of that check. If the directory has `model.gguf` and
+`tokenizer.json` but no `build-info.json`, the engine-backed tests do not skip. Each one
+fails when it builds the engine, with `ModelLoad(MissingFile)`, whether or not
+`LTEMBED_REQUIRE_TEST_BUNDLE` is set.
 
 `LTEMBED_REQUIRE_TEST_BUNDLE=1` turns each skip into a failure that names the missing
 variable or file. `0`, empty or unset keeps the skip. Any other value fails, so a typo such

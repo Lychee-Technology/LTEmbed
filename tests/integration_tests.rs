@@ -104,8 +104,50 @@ struct Fixture {
 
 #[derive(Deserialize)]
 struct FixtureFile {
-    dim: Option<usize>,
+    dim: usize,
     fixtures: Vec<Fixture>,
+}
+
+/// `tests/fixtures/test_fixtures.json`. Panics on any problem `golden_fixture_problem` reports.
+fn golden_fixtures() -> FixtureFile {
+    let fixture_str = fs::read_to_string(FIXTURES)
+        .expect("tests/fixtures/test_fixtures.json not found — run scripts/generate_fixtures.py");
+    let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
+    if let Some(problem) = golden_fixture_problem(&data) {
+        panic!(
+            "{FIXTURES} {problem}. It must hold the PyTorch reference at the engine tests' \
+             output dimension, so changing EMBEDDING_DIMENSION means regenerating it: set \
+             OUTPUT_DIM in scripts/generate_fixtures.py to {EMBEDDING_DIMENSION} and run the \
+             script (see docs/testing.md)."
+        );
+    }
+    data
+}
+
+/// Why `data` cannot be compared with the `EMBEDDING_DIMENSION`-d vectors the engine tests
+/// produce, or `None` if it can. A stale fixture is a problem in the repository, not a missing
+/// local resource, so it fails every run instead of skipping the way a missing bundle does.
+fn golden_fixture_problem(data: &FixtureFile) -> Option<String> {
+    if data.dim != EMBEDDING_DIMENSION {
+        return Some(format!(
+            "records dim {}, but EMBEDDING_DIMENSION is {EMBEDDING_DIMENSION}",
+            data.dim
+        ));
+    }
+    if data.fixtures.is_empty() {
+        return Some("has no fixtures".to_string());
+    }
+    data.fixtures
+        .iter()
+        .enumerate()
+        .find(|(_, fixture)| fixture.embedding.len() != data.dim)
+        .map(|(i, fixture)| {
+            format!(
+                "records dim {}, but fixture {i} has {} values",
+                data.dim,
+                fixture.embedding.len()
+            )
+        })
 }
 
 /// `tests/fixtures/token_ids.json`, written by `scripts/generate_token_ids.py`.
@@ -277,17 +319,8 @@ fn test_golden_parity_cosine_similarity() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
+    let data = golden_fixtures();
     let engine = make_engine(&bundle_dir);
-    let fixture_str = std::fs::read_to_string(FIXTURES)
-        .expect("tests/fixtures/test_fixtures.json not found — run scripts/generate_fixtures.py");
-    let data: FixtureFile = serde_json::from_str(&fixture_str).unwrap();
-    if data.dim != Some(EMBEDDING_DIMENSION) {
-        eprintln!(
-            "Skipping golden parity test: fixtures are not regenerated for {}-d engine outputs",
-            EMBEDDING_DIMENSION
-        );
-        return;
-    }
 
     for fixture in &data.fixtures {
         let input = match fixture.kind {
@@ -302,6 +335,53 @@ fn test_golden_parity_cosine_similarity() {
             &fixture.text[..50.min(fixture.text.len())]
         );
     }
+}
+
+/// Needs no bundle, so a fixture left stale by an output-dimension change fails every run,
+/// not only the runs that can execute the parity test.
+#[test]
+fn test_golden_fixture_matches_engine_dimension() {
+    golden_fixtures();
+}
+
+#[test]
+fn test_golden_fixture_problems() {
+    let fixture_file = |dim: usize, lengths: &[usize]| FixtureFile {
+        dim,
+        fixtures: lengths
+            .iter()
+            .map(|&len| Fixture {
+                kind: FixtureKind::Query,
+                text: "text".to_string(),
+                embedding: vec![0.0; len],
+            })
+            .collect(),
+    };
+    let dim = EMBEDDING_DIMENSION;
+
+    assert_eq!(
+        golden_fixture_problem(&fixture_file(dim, &[dim, dim])),
+        None
+    );
+    // The output dimension changed and the fixture was not regenerated.
+    assert_eq!(
+        golden_fixture_problem(&fixture_file(2 * dim, &[2 * dim])),
+        Some(format!(
+            "records dim {}, but EMBEDDING_DIMENSION is {dim}",
+            2 * dim
+        ))
+    );
+    assert_eq!(
+        golden_fixture_problem(&fixture_file(dim, &[])),
+        Some("has no fixtures".to_string())
+    );
+    assert_eq!(
+        golden_fixture_problem(&fixture_file(dim, &[dim, dim / 2])),
+        Some(format!(
+            "records dim {dim}, but fixture 1 has {} values",
+            dim / 2
+        ))
+    );
 }
 
 /// `HFTokenizer` must produce the same ids as the Python `tokenizers` behind the golden

@@ -1,5 +1,13 @@
 # matrixmultiply NEON Kernel Tuning Investigation
 
+> [!NOTE]
+> **Status:** Historical\
+> **Applies to:** the pure-Rust BERT / `matrixmultiply` backend, kept on the `matrixmultiply` branch; written 2026-03-23\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> `main` no longer contains this backend, `src/gemm.rs` or `src/models/`. GEMM throughput numbers here describe that backend, not llama.cpp.
+
 ## Problem statement
 
 LTEmbed on ARM64 reaches ~11.7 GFLOPS effective throughput on the projection/FFN

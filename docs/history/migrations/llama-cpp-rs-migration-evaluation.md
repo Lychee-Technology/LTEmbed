@@ -1,5 +1,13 @@
 # Evaluation: replace `ort` with `llama-cpp-rs`
 
+> [!NOTE]
+> **Status:** Historical (decision record, superseded)\
+> **Applies to:** the ORT → llama.cpp evaluation of 2026-07-08 (#148), written while `main` was ONNX Runtime-only\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
+>
+> The migration went ahead in #149, but not as proposed here: `main` does not use the `llama-cpp-2` / `llama-cpp-sys-2` crates or a `--features llama` gate. It links the prebuilt static llama.cpp archives through raw FFI, and the crate defines no Cargo features.
+
 Status: **exploratory / non-binding decision record** (no code change). `main` remains
 ORT-only / `OnnxEngine` / `ort_bundle` (see `README.md`, `docs/design.md`,
 `docs/development.md`); this document does **not** commit the project to a migration.

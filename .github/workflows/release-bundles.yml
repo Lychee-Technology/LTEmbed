@@ -30,7 +30,7 @@ jobs:
       matrix:
         include:
           # Q5_K_M is the smallest quant that clears the ≥0.99 parity gate while fitting the
-          # 250 MB Lambda limit (≈169 MB gguf + ≈17 MB tokenizer). See docs/llama-cpp-spike-results.md.
+          # 250 MB Lambda limit (≈169 MB gguf + ≈17 MB tokenizer). See docs/releases.md.
           - gguf_repo: jinaai/jina-embeddings-v5-text-nano-retrieval
             quant: Q5_K_M
             expected_model_id: jinaai/jina-embeddings-v5-text-nano-retrieval

@@ -85,11 +85,13 @@ gguf_bundle/
 
 Use `bundle.rs` and current CI/release bundle generation as the authoritative metadata contract. `docs/bundle-format.md` documents it and must stay in sync.
 
-The tokenizer must match the model.
+Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata, a tokenizer or GGUF that fails to load, and a GGUF embedding width that differs from `raw_embedding_dimension`. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
 
-Do not use `assets/tokenizer.json` as a runtime replacement merely because it parses successfully. It is currently treated as a stale placeholder.
+Loading does **not** check that `tokenizer.json` belongs to the model. A valid but mismatched tokenizer loads without error and produces wrong embeddings; only the bundle-gated tests catch it, and only for the bundle they run against (`docs/testing.md`). So:
 
-Bundle incompatibilities should fail explicitly during model loading.
+- the tokenizer must come from the same Hugging Face repository and revision as the GGUF;
+- do not use `assets/tokenizer.json` as a runtime replacement because it parses. It is a stale 30k-vocab placeholder;
+- do not describe tokenizer/model matching as validated unless a load-time check is added.
 
 ## llama.cpp FFI
 

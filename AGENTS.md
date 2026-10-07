@@ -40,17 +40,17 @@ Do not casually change these semantics:
 - callers use `EmbeddingInput::query(...)` or `EmbeddingInput::document(...)`;
 - retrieval prefixes are applied internally;
 - the current backend is llama.cpp/GGUF;
-- runtime bundles use the model's matching tokenizer;
-- malformed or incompatible bundles fail explicitly;
+- a runtime bundle's `tokenizer.json` is the model's own tokenizer. Nothing checks this: a valid but mismatched tokenizer loads and produces wrong embeddings;
+- the bundle checks made at load time (required files, `build-info.json` metadata, GGUF embedding width; see `docs/bundle-format.md`) fail explicitly. Do not weaken them, and do not describe a check the loader does not make;
 - correctness fixtures are independent reference data, not output captured from the implementation being tested.
 
 If one of these contracts intentionally changes, update implementation, tests, examples, workflows, and documentation together.
 
 ## Build Environment
 
-`build.rs` links the static llama.cpp/ggml archives, so every `cargo build`, `test`, `check`, and `clippy` needs `STATIC_LLAMA_DIR` pointing at a verified, extracted artifact release. `cargo fmt` is the only cargo command that works without it.
+Cargo commands that compile the crate (`build`, `check`, `clippy`, `test`, `run`, `doc`) run `build.rs`, which needs `STATIC_LLAMA_DIR` pointing at a verified, extracted static llama.cpp release. The archives are ARM64 Linux objects, so run those commands on ARM64 Linux or in the `linux/arm64` container. Commands that do not compile the crate, such as `cargo fmt`, `cargo metadata`, and `cargo tree`, need neither and work on any host.
 
-The archives are ARM64 Linux objects. `docs/development.md` is the authority for this setup: § "Static llama.cpp artifacts" for download and verification, § "Non-aarch64 hosts" for the `linux/arm64` container on other hosts. Use that container workflow rather than inventing a second build path.
+`docs/development.md` is the authority for this setup: § "Static llama.cpp artifacts" for download and verification, § "Non-aarch64 hosts" for the container. Use that container workflow rather than inventing a second build path.
 
 Use the Rust toolchain pinned in `rust-toolchain.toml`.
 
@@ -74,7 +74,7 @@ Raise unrelated problems separately.
 
 The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: formatting, Clippy, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
 
-Every cargo command except `cargo fmt` needs ARM64 Linux (or the container) and the static llama.cpp artifacts. The model-backed integration tests also need a GGUF bundle.
+Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The model-backed integration tests also need a GGUF bundle.
 
 Never report a command as passing unless it actually ran successfully. A model-backed test that skipped because no bundle was available did not pass. If validation cannot run because of architecture, artifacts, model weights, Docker, or another environmental limitation, state that explicitly.
 

@@ -28,6 +28,11 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04-arm
+    env:
+      # Bundle-gated integration tests fail instead of skipping when LTEMBED_TEST_BUNDLE_DIR
+      # is missing. Set here rather than in the assemble step so that it does not depend on
+      # the $GITHUB_ENV hand-off it guards.
+      LTEMBED_REQUIRE_TEST_BUNDLE: "1"
 
     steps:
       - name: Checkout
@@ -71,10 +76,11 @@ jobs:
       - name: Verify Rust API example compiles
         run: cargo check --example api_usage
 
-      # Assemble a real GGUF bundle so the model-backed integration tests (golden parity,
-      # batch/normalization/dimension) actually run inference through the llama.cpp backend.
-      # Without this the bundle-gated tests silently skip and CI can pass on a broken engine
-      # (e.g. the batch-padding pooling bug).
+      # Assemble a real GGUF bundle so the bundle-gated integration tests actually run: golden
+      # parity and batch/normalization/dimension through llama.cpp inference, token-id parity
+      # against the bundle's tokenizer.json. A CI pass must not hide a broken engine (e.g. the
+      # batch-padding pooling bug), so if LTEMBED_TEST_BUNDLE_DIR does not reach the
+      # integration step, LTEMBED_REQUIRE_TEST_BUNDLE (job env above) makes them fail, not skip.
       - name: Assemble GGUF bundle for model-backed tests
         env:
           GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval

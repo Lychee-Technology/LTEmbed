@@ -14,8 +14,10 @@ Linux. For what the tests cover see [testing.md](./testing.md); for the design s
 | A GGUF bundle | Only to run inference (Tier 2 tests, example, benchmarks) | [bundle-format.md](./bundle-format.md) |
 | Python 3.13 with `pytest`, `numpy` | Script tests; CI uses 3.13 | `.github/workflows/ci.yml` |
 
-`cargo fmt` is the one cargo command that works anywhere, because it does not run the build
-script.
+Only cargo commands that compile the crate need the artifacts: `build`, `check`, `clippy`,
+`test`, `run` and `doc` run `build.rs`, which panics without `STATIC_LLAMA_DIR`. Commands
+that do not compile it, such as `cargo fmt`, `cargo metadata` and `cargo tree`, work on any
+host.
 
 ## Static llama.cpp artifacts
 

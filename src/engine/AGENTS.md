@@ -58,12 +58,15 @@ Do not require callers to manually add retrieval prefixes. Prefixes come from va
 
 ## Current Model Contract
 
-The current model/runtime contract includes:
+The current model/runtime contract is described in `docs/architecture.md` § "Model" and defined by the public constants in `src/engine/mod.rs`:
 
-- raw embedding dimension: 768;
-- default returned embedding dimension: 512;
-- maximum tokenizer length: 8192;
+- `RAW_EMBEDDING_DIMENSION` (768);
+- `EMBEDDING_DIMENSION` (512, the default returned dimension);
+- `MAX_LENGTH` (8192);
+- `QUERY_PREFIX` / `DOCUMENT_PREFIX`;
 - pooling: last token.
+
+At load time the engine reads the raw dimension, maximum length, and prefixes from the bundle's `build-info.json`; the constants do not override them. `EMBEDDING_DIMENSION` is the `EngineConfig::default()` output size. The same values are also repeated elsewhere, such as `BENCHMARK_MAX_LENGTH` in `src/benchmarking.rs`, so changing a constant alone is an incomplete change.
 
 If intentionally changing one, inspect and update all related runtime validation, constants, bundle metadata, tests, fixtures, benchmark tools, CI/release bundle assembly, and documentation.
 
@@ -80,7 +83,7 @@ gguf_bundle/
 └── build-info.json
 ```
 
-Use `bundle.rs` and current CI/release bundle generation as the authoritative metadata contract.
+Use `bundle.rs` and current CI/release bundle generation as the authoritative metadata contract. `docs/bundle-format.md` documents it and must stay in sync.
 
 The tokenizer must match the model.
 

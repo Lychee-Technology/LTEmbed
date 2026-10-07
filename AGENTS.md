@@ -48,11 +48,9 @@ If one of these contracts intentionally changes, update implementation, tests, e
 
 ## Build Environment
 
-The crate requires the static llama.cpp artifacts consumed by `build.rs`.
+`build.rs` links the static llama.cpp/ggml archives, so every `cargo build`, `test`, `check`, and `clippy` needs `STATIC_LLAMA_DIR` pointing at a verified, extracted artifact release. `cargo fmt` is the only cargo command that works without it.
 
-`STATIC_LLAMA_DIR` must point to a verified extracted artifact bundle.
-
-The primary native target is ARM64 Linux. On unsupported development hosts, use the repository's documented container workflow rather than inventing a second build path.
+The archives are ARM64 Linux objects. `docs/development.md` is the authority for this setup: § "Static llama.cpp artifacts" for download and verification, § "Non-aarch64 hosts" for the `linux/arm64` container on other hosts. Use that container workflow rather than inventing a second build path.
 
 Use the Rust toolchain pinned in `rust-toolchain.toml`.
 
@@ -74,20 +72,11 @@ Raise unrelated problems separately.
 
 ## Baseline Validation
 
-For Rust changes, run as much of the following as the environment supports:
+The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: formatting, Clippy, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
 
-```bash
-cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test --lib
-cargo test --test tokenizer_reload_tests
-cargo test --test benchmarking_support_tests --bin benchmark_ltembed
-cargo check --example api_usage
-```
+Every cargo command except `cargo fmt` needs ARM64 Linux (or the container) and the static llama.cpp artifacts. The model-backed integration tests also need a GGUF bundle.
 
-Some commands require ARM64 Linux and valid static llama.cpp artifacts.
-
-Never report a command as passing unless it actually ran successfully. If validation cannot run because of architecture, artifacts, model weights, Docker, or another environmental limitation, state that explicitly.
+Never report a command as passing unless it actually ran successfully. A model-backed test that skipped because no bundle was available did not pass. If validation cannot run because of architecture, artifacts, model weights, Docker, or another environmental limitation, state that explicitly.
 
 ## Public Examples
 
@@ -106,6 +95,12 @@ Before working in these areas, read their local instructions:
 - `docs/AGENTS.md` — current documentation rules
 - `docs/history/AGENTS.md` — historical-document preservation
 - `.github/AGENTS.md` — CI, artifact pinning, and releases
+
+## Keeping This Guidance Current
+
+The `AGENTS.md` files link to authoritative documents such as `docs/README.md`, `docs/development.md`, `docs/testing.md`, and `scripts/README.md` instead of copying their file or command lists. Keep it that way: add a link, not another inventory.
+
+When a change renames, moves, or removes a path, command, or constant that an `AGENTS.md` names, update that `AGENTS.md` in the same change. `git grep -n '<old name>'` finds the references.
 
 ## Completion Report
 

@@ -4,6 +4,8 @@ These instructions apply to tests and test fixtures.
 
 Also follow `/AGENTS.md`.
 
+`docs/testing.md` is the detailed reference for the test suites, the Tier 1/Tier 2 split, skip-versus-fail behavior, and fixture provenance.
+
 ## Test Philosophy
 
 Tests define behavioral contracts.

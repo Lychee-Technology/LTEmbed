@@ -6,17 +6,7 @@ Also follow `/AGENTS.md`.
 
 ## Script Roles
 
-Important tools include:
-
-```text
-generate_fixtures.py
-generate_token_ids.py
-bench_pytorch.py
-run_embedding_benchmarks.py
-compare_benchmarks.py
-render_benchmark_report.py
-write_benchmark_metadata.py
-```
+`scripts/README.md` describes each script, its inputs, and its dependencies. Keep it current when adding, renaming, or changing a script.
 
 Understand whether a script is a correctness reference, fixture generator, benchmark orchestrator, benchmark comparison tool, or report generator. Do not blur these roles.
 
@@ -52,4 +42,4 @@ Historical measurement data itself should not be rewritten.
 
 ## Python Tests
 
-When modifying a Python utility that has corresponding tests under `tests/`, run those focused tests in addition to repository-wide Rust validation when applicable.
+When modifying a Python utility that has corresponding tests under `tests/test_*.py`, run those focused tests (`python3 -m pytest tests/test_<name>.py -q`) and then the full `python3 -m pytest tests/ -q`, in addition to repository-wide Rust validation when applicable.

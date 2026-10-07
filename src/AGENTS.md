@@ -6,7 +6,7 @@ Repository-wide rules in `/AGENTS.md` also apply.
 
 ## Rust Changes
 
-Follow existing module boundaries and repository conventions.
+Follow existing module boundaries and the conventions in `docs/rust-coding-std.md`.
 
 Prefer:
 

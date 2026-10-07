@@ -14,17 +14,21 @@ For example, an ONNX migration document may legitimately contain `OnnxEngine`, `
 
 ## Add Status, Don't Rewrite History
 
-Prefer adding a short status banner such as:
+Every historical document starts with a status banner. Match the banners already in `docs/history/`:
 
 ```markdown
 > [!NOTE]
-> **Status:** Historical / Superseded
-> **Applies to:** former ONNX Runtime backend
-> **Current implementation:** llama.cpp/GGUF on `main`
-> **Current documentation:** ../../architecture.md
+> **Status:** Historical (superseded)\
+> **Applies to:** the former ONNX Runtime backend, kept on the `ort` branch\
+> **Current implementation:** llama.cpp/GGUF on `main`\
+> **Current documentation:** [docs/architecture.md](../../architecture.md)
 ```
 
-Then preserve the original technical narrative where practical.
+The trailing backslashes keep the fields on separate lines. The link is relative to the document: `../../architecture.md` is correct for `docs/history/<category>/<name>.md`, the layout all historical documents use; adjust the depth for any other location.
+
+Below the banner, preserve the original technical narrative where practical.
+
+When adding a historical document, put it in a category directory under `docs/history/` and list it in `docs/README.md` § "History".
 
 ## Obsolete Commands
 

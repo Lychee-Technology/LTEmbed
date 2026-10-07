@@ -19,13 +19,7 @@ Do not copy artifact versions or hashes from old documentation when the workflow
 
 ## Static llama.cpp Artifacts
 
-Relevant sources include:
-
-```text
-.github/workflows/ci.yml
-.github/scripts/fetch-static-llama.sh
-build.rs
-```
+The release pin is set in more than one workflow, and the asset name and artifact contract are also checked outside the workflows. `docs/development.md` § "Static llama.cpp artifacts" lists every location and what must change together when bumping the release; follow it rather than editing one copy.
 
 Preserve repository-pinned artifact identity, SHA verification, and artifact-contract validation.
 
@@ -42,6 +36,8 @@ LTEMBED_REQUIRE_TEST_BUNDLE=1
 so bundle-gated integration tests fail instead of silently skipping if `LTEMBED_TEST_BUNDLE_DIR` or required files are missing.
 
 Preserve that fail-closed behavior when changing bundle assembly or test invocation.
+
+`docs/testing.md` § "What CI runs" and `docs/development.md` § "Checks before pushing" mirror the CI test commands, and `/AGENTS.md` uses the latter as the baseline for local validation. Update both when you add, remove, or change a CI check.
 
 ## CI Changes
 

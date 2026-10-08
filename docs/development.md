@@ -109,10 +109,13 @@ and the hook if the new release changes an asset name, a variant or the contract
 ## Native builds
 
 On aarch64 Linux, or on x86_64 Linux with an x86-64-v3 CPU, point `STATIC_LLAMA_DIR` at the
-variant for that host:
+variant for that host, in the directory the download steps above extracted it to:
 
 ```bash
+# aarch64 Linux:
 export STATIC_LLAMA_DIR=/abs/path/to/.llama-artifacts/extracted
+# x86-64-v3 Linux instead:
+# export STATIC_LLAMA_DIR=/abs/path/to/.llama-artifacts/extracted-x86_64-v3
 cargo build
 cargo test --lib
 ```

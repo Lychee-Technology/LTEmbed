@@ -73,7 +73,10 @@ pins (`v0.1.159-1`, llama.cpp `v0.6.0`), in the variant for the host: `aarch64-g
 or `x86_64-v3`.
 
 ```bash
+# aarch64 Linux:
 export STATIC_LLAMA_DIR=/abs/path/to/.llama-artifacts/extracted
+# x86-64-v3 Linux instead:
+# export STATIC_LLAMA_DIR=/abs/path/to/.llama-artifacts/extracted-x86_64-v3
 cargo build --release
 cargo run --example api_usage        # needs ./gguf_bundle
 ```

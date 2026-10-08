@@ -25,11 +25,15 @@ You also need:
 ## 2. Fetch the static llama.cpp release
 
 Follow [development.md → Static llama.cpp artifacts](./development.md#static-llamacpp-artifacts).
-It downloads and verifies the pinned release's variant for your CPU
-(`aarch64-graviton2` or `x86_64-v3`) into `.llama-artifacts/extracted/`. Then:
+It downloads and verifies the pinned release's variant for your CPU into its own
+directory: `.llama-artifacts/extracted/` for `aarch64-graviton2`,
+`.llama-artifacts/extracted-x86_64-v3/` for `x86_64-v3`. Then, from the repository root:
 
 ```bash
+# aarch64 Linux:
 export STATIC_LLAMA_DIR="$PWD/.llama-artifacts/extracted"
+# x86-64-v3 Linux instead:
+# export STATIC_LLAMA_DIR="$PWD/.llama-artifacts/extracted-x86_64-v3"
 ```
 
 Without this variable, every `cargo build`, `cargo test` and `cargo run` fails in

@@ -25,10 +25,11 @@ ltembed-<version>-jinaai__jina-embeddings-v5-text-nano-retrieval-Q5_K_M-linux-ar
 - `<version>` is `package.version` from `Cargo.toml`.
 - `gguf_bundle/` follows [bundle-format.md](./bundle-format.md).
 - The tarball contains **no compiled binary and no static llama.cpp archives**. To build
-  from it, you still need aarch64 Linux and `STATIC_LLAMA_DIR`; see
+  from it, you still need aarch64 Linux or x86-64-v3 Linux and `STATIC_LLAMA_DIR`; see
   [development.md](./development.md).
-- `linux-arm64` in the name reflects the only supported build platform. The tarball itself
-  holds source code and model files.
+- `linux-arm64` in the name dates from when aarch64 Linux was the only supported build
+  platform. The tarball itself holds source code and model files, which build on either
+  supported platform.
 - Check the bundle after downloading:
 
   ```bash
@@ -106,8 +107,9 @@ deployment target this repository supports:
 - There is no Lambda handler, bootstrap binary, packaging script, layer or deploy workflow
   on `main`.
 - The release tarball is source plus a model bundle, not a Lambda package.
-- The static llama.cpp archives are built for Graviton2 (Neoverse N1) on Amazon Linux
-  2023. Nothing in this repository builds, runs or tests LTEmbed on Lambda.
+- The static llama.cpp archives are built in an Amazon Linux 2023 image; the aarch64
+  variant targets Graviton2 (Neoverse N1). Nothing in this repository builds, runs or tests
+  LTEmbed on Lambda.
 
 The ONNX Runtime-era Lambda notes are kept for reference in
 [history/ort/](./history/ort/ort-rust-lambda-guidelines.md). They do not apply to `main`.

@@ -57,7 +57,7 @@ Build-time prerequisite checks may fail hard where `build.rs` already establishe
 Before adding a dependency:
 
 - check whether the standard library or an existing dependency is sufficient;
-- consider ARM64 Linux compatibility;
+- consider ARM64 and x86-64-v3 Linux compatibility;
 - consider native build requirements;
 - consider binary/package size;
 - disable unnecessary default features where appropriate.

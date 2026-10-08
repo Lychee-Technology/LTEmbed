@@ -48,9 +48,9 @@ If one of these contracts intentionally changes, update implementation, tests, e
 
 ## Build Environment
 
-Cargo commands that compile the crate (`build`, `check`, `clippy`, `test`, `run`, `doc`) run `build.rs`, which needs `STATIC_LLAMA_DIR` pointing at a verified, extracted static llama.cpp release. The archives are ARM64 Linux objects, so run those commands on ARM64 Linux or in the `linux/arm64` container. Commands that do not compile the crate, such as `cargo fmt`, `cargo metadata`, and `cargo tree`, need neither and work on any host.
+Cargo commands that compile the crate (`build`, `check`, `clippy`, `test`, `run`, `doc`) run `build.rs`, which needs `STATIC_LLAMA_DIR` pointing at a verified, extracted static llama.cpp release of the variant for the host. The release ships an `aarch64-graviton2` and an `x86_64-v3` variant of Linux objects, so run those commands on ARM64 Linux, on x86_64 Linux whose CPU supports x86-64-v3, or in the `linux/arm64` container. An x86_64 CPU below v3 is not a supported host. Commands that do not compile the crate, such as `cargo fmt`, `cargo metadata`, and `cargo tree`, need neither and work on any host.
 
-`docs/development.md` is the authority for this setup: § "Static llama.cpp artifacts" for download and verification, § "Non-aarch64 hosts" for the container. Use that container workflow rather than inventing a second build path.
+`docs/development.md` is the authority for this setup: § "Static llama.cpp artifacts" for download and verification, § "Native builds" for ARM64 and x86-64-v3 hosts, § "Container builds" for the container. Use those workflows rather than inventing another build path.
 
 Use the Rust toolchain pinned in `rust-toolchain.toml`.
 

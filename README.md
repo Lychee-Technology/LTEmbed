@@ -9,8 +9,10 @@ on the CPU through **llama.cpp**, using a quantized **GGUF** model. Its entry po
   [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   through raw FFI. There is no ONNX Runtime or other shared library to ship; only system
   libraries (`libstdc++`, `libpthread`, `libm`, `libdl`) are linked dynamically.
-- **Platform:** aarch64 Linux only (`aarch64-unknown-linux-gnu`). The archives are built
-  for Graviton2 / Neoverse N1. On macOS or x86_64, build inside a `linux/arm64` container.
+- **Platform:** Linux on two CPU baselines. `aarch64-unknown-linux-gnu` uses archives built
+  for Graviton2 / Neoverse N1. `x86_64-unknown-linux-gnu` uses archives built for
+  x86-64-v3 (AVX2, FMA, BMI2). x86-64 CPUs below v3 are not supported: the code faults
+  with `SIGILL`. On macOS or such CPUs, build inside a `linux/arm64` container.
 - **Output:** 768 raw dimensions, truncated to 512 and L2-normalized by default.
 - **Max input:** 8192 tokens. Longer inputs return an error; nothing is truncated.
 
@@ -67,7 +69,8 @@ handles one call at a time.
 
 Every `cargo build`, `test`, `clippy` or `run` needs `STATIC_LLAMA_DIR` set to the
 extracted, checksum-verified static llama.cpp release that `.github/workflows/ci.yml`
-pins.
+pins (`v0.1.159-1`, llama.cpp `v0.6.0`), in the variant for the host: `aarch64-graviton2`
+or `x86_64-v3`.
 
 ```bash
 export STATIC_LLAMA_DIR=/abs/path/to/.llama-artifacts/extracted
@@ -100,7 +103,8 @@ The full index, including archived design documents, is [docs/README.md](./docs/
   and a model bundle. It has no AWS Lambda handler, packaging or deploy workflow. The
   bundle is sized to fit Lambda's 250 MB package limit, but Lambda is not a supported
   target.
-- **Other platforms and accelerators.** No x86_64, macOS or Windows builds, and no GPU.
+- **Other platforms and accelerators.** No macOS or Windows builds, no x86-64 builds
+  below x86-64-v3, and no GPU.
 - **Other models.** Only this model is tested, and there is no model conversion tooling.
 - **Multi-sequence batching.** `embed_batch` encodes inputs one after another.
 

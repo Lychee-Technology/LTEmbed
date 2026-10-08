@@ -27,10 +27,12 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.151-1`, Graviton2 build, artifact
-  contract `2`. No single file holds the whole pin: the workflows set the tag and SHA-256,
-  `fetch-static-llama.sh` picks the Graviton2 asset, and that script and
-  `.githooks/pre-push` check the contract version. See
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-1` (llama.cpp `v0.6.0`,
+  artifact contract `4`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
+  No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
+  one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
+  architecture and checks the contract version, variant and commit; `.githooks/pre-push`
+  checks the contract version and target of its local copy. See
   [development.md](./development.md#static-llamacpp-artifacts) before bumping it.
 
 ## Model
@@ -90,7 +92,9 @@ INFO/DEBUG lines and forwards WARN and above to stderr.
    - keep only real tokens (attention mask `1`) and drop right padding;
    - clear the KV memory;
    - run `llama_encode` on that single sequence;
-   - copy the pooled vector from `llama_get_embeddings_seq`.
+   - copy the pooled vector from `llama_get_embeddings_seq`. It holds
+     `llama_model_n_embd_out` floats, the size llama.cpp allocates for it; for this model
+     that equals `n_embd`, and step 4 rejects any other length with `OutputShape`.
 
    Inputs are encoded **one at a time**. A batch call saves tokenizer and call overhead,
    not model compute; multi-sequence batching is not implemented.
@@ -129,14 +133,24 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` mismatch, context creation failure |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The tokenizer rejects the input |
-| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code |
+| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code, `OutputShape` a pooled vector whose length is not `raw_embedding_dimension` |
 
 ## Platform constraint
 
-The static archives are aarch64 Linux objects built for Graviton2, so the crate builds and
-links only for `aarch64-unknown-linux-gnu`. `build.rs` panics unless `STATIC_LLAMA_DIR` points
-at an extracted release containing `lib/libllama.a` and `bindings.rs`. It does not check the
-target triple itself. The crate defines no Cargo features, so there is nothing to switch off.
+The static archives are native Linux objects, one variant per target:
+
+| Target | Variant | CPU requirement |
+|---|---|---|
+| `aarch64-unknown-linux-gnu` | `aarch64-graviton2` | `armv8.2-a+fp16+dotprod+rcpc` (Graviton2 / Neoverse N1 or newer) |
+| `x86_64-unknown-linux-gnu` | `x86_64-v3` | x86-64-v3 (AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE) |
+
+The crate builds and links only for these two targets, with `STATIC_LLAMA_DIR` pointing at
+the matching variant. llama.cpp has no runtime ISA dispatch in these builds, so a CPU below
+the variant's baseline faults with `SIGILL`; x86-64 CPUs below v3 are not supported.
+`build.rs` panics unless `STATIC_LLAMA_DIR` points at an extracted release containing
+`lib/libllama.a` and `bindings.rs`. It does not check the target triple itself; the other
+variant's archives fail to link. The crate defines no Cargo features, so there is nothing to
+switch off.
 
 ## What was replaced
 

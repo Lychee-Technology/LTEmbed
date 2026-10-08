@@ -4,13 +4,18 @@ From a fresh clone to your first embedding.
 
 ## 1. Check the platform
 
-LTEmbed builds only on **aarch64 Linux** (`aarch64-unknown-linux-gnu`), because it links
-prebuilt static llama.cpp archives for that target. The archives use
-`armv8.2-a+fp16+dotprod+rcpc` and are tuned for AWS Graviton2 (Neoverse N1), so the CPU
-needs those extensions.
+LTEmbed links prebuilt static llama.cpp archives, so it builds only on Linux, on one of two
+CPU baselines:
 
-On macOS or x86_64, run the commands below inside a `linux/arm64` container; see
-[development.md](./development.md#non-aarch64-hosts).
+- **aarch64** (`aarch64-unknown-linux-gnu`): `armv8.2-a+fp16+dotprod+rcpc`, tuned for AWS
+  Graviton2 (Neoverse N1). The CPU needs those extensions.
+- **x86_64** (`x86_64-unknown-linux-gnu`): x86-64-v3 (AVX2, BMI1/2, F16C, FMA, LZCNT,
+  MOVBE). Older x86-64 CPUs are not supported. On such a CPU the archives crash with
+  `SIGILL` rather than fall back. `/lib64/ld-linux-x86-64.so.2 --help` must list
+  `x86-64-v3 (supported, searched)`.
+
+On macOS, or on an x86_64 CPU below v3, run the commands below inside a `linux/arm64`
+container; see [development.md](./development.md#container-builds).
 
 You also need:
 
@@ -20,7 +25,8 @@ You also need:
 ## 2. Fetch the static llama.cpp release
 
 Follow [development.md → Static llama.cpp artifacts](./development.md#static-llamacpp-artifacts).
-It downloads and verifies the pinned release into `.llama-artifacts/extracted/`. Then:
+It downloads and verifies the pinned release's variant for your CPU
+(`aarch64-graviton2` or `x86_64-v3`) into `.llama-artifacts/extracted/`. Then:
 
 ```bash
 export STATIC_LLAMA_DIR="$PWD/.llama-artifacts/extracted"

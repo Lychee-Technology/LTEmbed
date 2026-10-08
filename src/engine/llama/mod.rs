@@ -66,6 +66,9 @@ impl Drop for ModelContext {
 pub(crate) struct LlamaBackend {
     inner: Mutex<ModelContext>,
     raw_dim: usize,
+    /// Length of the pooled vector llama.cpp returns per sequence (`llama_model_n_embd_out`),
+    /// i.e. the size of the buffer behind `llama_get_embeddings_seq`.
+    pooled_dim: usize,
     /// Context length (also the max single-sequence token count llama can pool at once).
     n_ctx: usize,
 }
@@ -131,6 +134,10 @@ impl LlamaBackend {
                     "GGUF embedding dimension {n_embd} != expected {raw_embedding_dimension}"
                 ))));
             }
+            // llama.cpp sizes each pooled sequence buffer by `n_embd_out`, which a GGUF may set
+            // apart from `n_embd`. `embed_one` reads exactly that many floats; a width other
+            // than `raw_dim` is then rejected by the engine's output-shape check.
+            let pooled_dim = ffi::llama_model_n_embd_out(model) as usize;
 
             let n = n_ctx;
             let mut cparams = ffi::llama_context_default_params();
@@ -158,6 +165,7 @@ impl LlamaBackend {
             Ok(Self {
                 inner: Mutex::new(ModelContext { model, ctx }),
                 raw_dim: raw_embedding_dimension,
+                pooled_dim,
                 n_ctx: context_length,
             })
         }
@@ -214,7 +222,8 @@ impl LlamaBackend {
                 "llama_get_embeddings_seq returned null".into(),
             )));
         }
-        let raw = std::slice::from_raw_parts(ptr, self.raw_dim).to_vec();
+        // The buffer holds `n_embd_out` floats and stays valid until the next encode on `ctx`.
+        let raw = std::slice::from_raw_parts(ptr, self.pooled_dim).to_vec();
         ffi::llama_batch_free(batch);
         Ok(raw)
     }

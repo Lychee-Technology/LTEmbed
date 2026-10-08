@@ -265,8 +265,8 @@ impl EmbeddingBackend for LlamaBackend {
 
         let mut embeddings = Vec::with_capacity(tokenized.len());
         let mut run_ms = 0.0;
-        // Sequences are decoded independently (one decode per input). True multi-sequence
-        // batching in a single decode is a future throughput optimization.
+        // Sequences run independently (one `llama_encode` per input). True multi-sequence
+        // batching in a single `llama_encode` is a future throughput optimization.
         for item in tokenized {
             let start = collect_profile.then(Instant::now);
             // Feed only the real tokens, never the batch padding. `encode_batch` right-pads

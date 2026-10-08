@@ -7,7 +7,7 @@ use crate::traits::tokenizer::TokenizerOutput;
 pub(crate) struct BackendRunProfile {
     /// Building backend inputs (batches/tensors), in ms.
     pub tensorize_ms: f64,
-    /// Running the model (e.g. `llama_decode`), in ms.
+    /// Running the model (e.g. `llama_encode`), in ms.
     pub run_ms: f64,
     /// Extracting the pooled embeddings, in ms.
     pub extract_ms: f64,

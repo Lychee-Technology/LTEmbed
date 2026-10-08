@@ -81,7 +81,7 @@ pub enum InferenceError {
     #[error("{0}")]
     Tensor(String),
 
-    /// Backend inference (e.g. `llama_decode`) failure.
+    /// Backend inference (e.g. `llama_encode`) failure.
     #[error("{0}")]
     Backend(String),
 

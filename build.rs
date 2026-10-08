@@ -1,11 +1,13 @@
-// Links the prebuilt Graviton2 static llama.cpp archives from the
-// `static-llama-cpp-rs-builder` release. llama.cpp/GGUF is the crate's only inference
-// backend, so this always runs — the crate builds only on aarch64-linux with the artifacts
-// present (see docs/development.md).
+// Links the prebuilt static llama.cpp archives from the `static-llama-cpp-rs-builder`
+// release. llama.cpp/GGUF is the crate's only inference backend, so this always runs — the
+// crate builds only on Linux with the artifacts present (see docs/development.md).
 //
 // Mirrors the release's `consume.build.rs` (the single source of truth for the tested
 // link line). Point STATIC_LLAMA_DIR at a VERIFIED, extracted release directory
-// (SHA256SUMS already checked) containing `lib/*.a` and `bindings.rs`.
+// (SHA256SUMS already checked) containing `lib/*.a` and `bindings.rs`, for the variant whose
+// build-info.json `target_triple` equals the crate target: `aarch64-graviton2` for
+// aarch64-unknown-linux-gnu, `x86_64-v3` for x86_64-unknown-linux-gnu. The archives hold
+// native code for that target only, so the other variant fails to link.
 use std::{env, path::PathBuf};
 
 fn main() {

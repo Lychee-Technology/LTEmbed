@@ -18,16 +18,32 @@ env:
   CARGO_HOME: ${{ github.workspace }}/.cargo
   # Prebuilt static llama.cpp archives the crate links against (see build.rs). The crate
   # cannot build without these, so every job fetches + verifies them and exports
-  # STATIC_LLAMA_DIR before running cargo.
+  # STATIC_LLAMA_DIR before running cargo. .github/scripts/fetch-static-llama.sh picks the
+  # variant for the runner's architecture.
   STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
-  STATIC_LLAMA_TAG: v0.1.151-1
+  STATIC_LLAMA_TAG: v0.1.159-1
+  # llama.cpp v0.6.0, the engine commit the release compiles (build-info.json llama_cpp.commit).
+  STATIC_LLAMA_LLAMA_CPP_COMMIT: d81235049384534c167caea52b85a694f6103d14
   # Repo-pinned sha256 of static-llama-cpp-${STATIC_LLAMA_TAG}-aarch64-graviton2.tar.gz.
-  STATIC_LLAMA_SHA256: 48f3aa293824086d667d3938b40be37390d31275af20fd20a88c3880bfee2b90
+  STATIC_LLAMA_SHA256_AARCH64: 5a65f7f4359810b7b7efb29117b9e3974c63706cc57ffda9d29a4c38620fc69d
+  # Repo-pinned sha256 of static-llama-cpp-${STATIC_LLAMA_TAG}-x86_64-v3-linux-gnu.tar.gz.
+  STATIC_LLAMA_SHA256_X86_64: fed3c972c2bbd6c938f8488fdb375ec0144c3481756547169d3d094f42b2794e
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-24.04-arm
+    # The ARM64 entry keeps the plain `Test` check name.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Test
+            runner: ubuntu-24.04-arm
+          # The x86_64 archives need an x86-64-v3 CPU; fetch-static-llama.sh checks the
+          # runner and fails the job, rather than letting the tests SIGILL, if it is not.
+          - name: Test (x86_64-v3)
+            runner: ubuntu-24.04
     env:
       # Bundle-gated integration tests fail instead of skipping when LTEMBED_TEST_BUNDLE_DIR
       # is missing. Set here rather than in the assemble step so that it does not depend on
@@ -48,9 +64,9 @@ jobs:
             .cargo/registry
             .cargo/git
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-v2-
 
       - name: Fetch prebuilt static llama.cpp artifacts
         env:

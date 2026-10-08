@@ -52,8 +52,8 @@ batching.
 
 ## Running `benchmark_ltembed` directly
 
-The binary needs the same build environment as the library (aarch64 Linux and
-`STATIC_LLAMA_DIR`; see [development.md](./development.md)) and a bundle (see
+The binary needs the same build environment as the library (aarch64 or x86-64-v3 Linux
+and `STATIC_LLAMA_DIR`; see [development.md](./development.md)) and a bundle (see
 [bundle-format.md](./bundle-format.md)).
 
 ```bash

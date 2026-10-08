@@ -65,9 +65,33 @@ impl Drop for ModelContext {
 
 pub(crate) struct LlamaBackend {
     inner: Mutex<ModelContext>,
+    /// Length of each pooled vector. `load` checked that the GGUF's `n_embd` and
+    /// `n_embd_out` both equal it (see [`check_embedding_widths`]).
     raw_dim: usize,
     /// Context length (also the max single-sequence token count llama can pool at once).
     n_ctx: usize,
+}
+
+/// Checks the GGUF's embedding widths against the bundle's `raw_embedding_dimension`.
+///
+/// `n_embd` is the model's hidden width. `n_embd_out` is the length of each pooled vector,
+/// i.e. of the buffer behind `llama_get_embeddings_seq`, and a GGUF may set it apart from
+/// `n_embd`. `embed_one` reads `raw_embedding_dimension` floats from that buffer, so both must
+/// equal it. The widths go through `usize::try_from`, not `as`, so a negative value cannot
+/// wrap into a match.
+fn check_embedding_widths(
+    n_embd: i32,
+    n_embd_out: i32,
+    raw_embedding_dimension: usize,
+) -> Result<(), LTEmbedError> {
+    for (name, width) in [("n_embd", n_embd), ("n_embd_out", n_embd_out)] {
+        if usize::try_from(width).ok() != Some(raw_embedding_dimension) {
+            return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                "GGUF {name} {width} != expected raw_embedding_dimension {raw_embedding_dimension}"
+            ))));
+        }
+    }
+    Ok(())
 }
 
 impl LlamaBackend {
@@ -124,12 +148,13 @@ impl LlamaBackend {
                 ))));
             }
 
-            let n_embd = ffi::llama_model_n_embd(model) as usize;
-            if n_embd != raw_embedding_dimension {
+            if let Err(err) = check_embedding_widths(
+                ffi::llama_model_n_embd(model),
+                ffi::llama_model_n_embd_out(model),
+                raw_embedding_dimension,
+            ) {
                 ffi::llama_model_free(model);
-                return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "GGUF embedding dimension {n_embd} != expected {raw_embedding_dimension}"
-                ))));
+                return Err(err);
             }
 
             let n = n_ctx;
@@ -214,6 +239,8 @@ impl LlamaBackend {
                 "llama_get_embeddings_seq returned null".into(),
             )));
         }
+        // The buffer holds `n_embd_out` floats, which `load` checked equals `raw_dim`. It stays
+        // valid until the next encode on `ctx`.
         let raw = std::slice::from_raw_parts(ptr, self.raw_dim).to_vec();
         ffi::llama_batch_free(batch);
         Ok(raw)
@@ -259,5 +286,47 @@ impl EmbeddingBackend for LlamaBackend {
             extract_ms: 0.0,
         });
         Ok((embeddings, profile))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::RAW_EMBEDDING_DIMENSION;
+
+    const RAW: i32 = RAW_EMBEDDING_DIMENSION as i32;
+
+    fn rejected_width(result: Result<(), LTEmbedError>) -> String {
+        match result {
+            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => msg,
+            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_embedding_widths_accepts_matching_widths() {
+        check_embedding_widths(RAW, RAW, RAW_EMBEDDING_DIMENSION).unwrap();
+    }
+
+    #[test]
+    fn test_check_embedding_widths_rejects_n_embd_mismatch() {
+        let msg = rejected_width(check_embedding_widths(1024, 1024, RAW_EMBEDDING_DIMENSION));
+        assert!(msg.contains("n_embd 1024"), "{msg}");
+    }
+
+    /// A GGUF whose pooled output is narrower than its hidden width: reading
+    /// `raw_embedding_dimension` floats from the pooled buffer would overrun it.
+    #[test]
+    fn test_check_embedding_widths_rejects_n_embd_out_apart_from_n_embd() {
+        let msg = rejected_width(check_embedding_widths(RAW, 512, RAW_EMBEDDING_DIMENSION));
+        assert!(msg.contains("n_embd_out 512"), "{msg}");
+    }
+
+    #[test]
+    fn test_check_embedding_widths_rejects_negative_widths() {
+        rejected_width(check_embedding_widths(RAW, -1, RAW_EMBEDDING_DIMENSION));
+        rejected_width(check_embedding_widths(-1, RAW, RAW_EMBEDDING_DIMENSION));
+        // `-1_i32 as usize` is `usize::MAX`; a cast before the comparison would accept this.
+        rejected_width(check_embedding_widths(-1, -1, usize::MAX));
     }
 }

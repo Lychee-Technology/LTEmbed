@@ -19,9 +19,9 @@ Do not copy artifact versions or hashes from old documentation when the workflow
 
 ## Static llama.cpp Artifacts
 
-The release pin is set in more than one workflow, and the asset name and artifact contract are also checked outside the workflows. `docs/development.md` § "Static llama.cpp artifacts" lists every location and what must change together when bumping the release; follow it rather than editing one copy.
+The release pin is set in more than one workflow, with one repository-pinned SHA-256 per variant (`aarch64-graviton2`, `x86_64-v3`). The asset names, variant identity (`target_profile`, `target_triple`), llama.cpp commit and artifact contract are also checked outside the workflows. `docs/development.md` § "Static llama.cpp artifacts" lists every location and what must change together when bumping the release; follow it rather than editing one copy.
 
-Preserve repository-pinned artifact identity, SHA verification, and artifact-contract validation.
+Preserve repository-pinned artifact identity, SHA verification, artifact-contract validation, and the variant and llama.cpp commit checks.
 
 Do not weaken integrity checks to make setup easier.
 
@@ -44,7 +44,8 @@ Preserve that fail-closed behavior when changing bundle assembly or test invocat
 When modifying a workflow:
 
 - consider cache behavior;
-- keep ARM64 requirements explicit;
+- keep ARM64 and x86-64-v3 requirements explicit;
+- do not treat an `x86_64` runner label as x86-64-v3: an x86_64 job must keep the CPU check in `.github/scripts/fetch-static-llama.sh`, which fails the job instead of letting the tests run on an unsupported CPU;
 - preserve reproducibility;
 - avoid silently skipping model-backed validation;
 - verify shell commands with `set -euo pipefail` semantics where applicable.

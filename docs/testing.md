@@ -2,8 +2,9 @@
 
 What each test suite checks, what it needs, and exactly what CI runs. Every Rust target
 links the static llama.cpp archives, so all `cargo test` and `cargo clippy` commands need
-aarch64 Linux with `STATIC_LLAMA_DIR` set. On other hosts, run them in the container from
-[development.md](./development.md#non-aarch64-hosts).
+aarch64 Linux or x86-64-v3 Linux, with `STATIC_LLAMA_DIR` set to the matching variant. On
+other hosts, run them in the container from
+[development.md](./development.md#container-builds).
 
 ## Suites
 
@@ -26,13 +27,17 @@ growing memory, which guards the BPE-cache workaround in `src/traits/tokenizer.r
 
 ## What CI runs
 
-`.github/workflows/ci.yml` runs on every push and pull request to `main`, on
-`ubuntu-24.04-arm`. It has three jobs.
+`.github/workflows/ci.yml` runs on every push and pull request to `main`. It has three
+jobs. `Test` runs twice, as a matrix: `Test` on `ubuntu-24.04-arm` with the
+`aarch64-graviton2` variant, and `Test (x86_64-v3)` on `ubuntu-24.04` with the `x86_64-v3`
+variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 
-**`Test`** (job env `LTEMBED_REQUIRE_TEST_BUNDLE=1`):
+**`Test`** and **`Test (x86_64-v3)`** (job env `LTEMBED_REQUIRE_TEST_BUNDLE=1`):
 
 1. `.github/scripts/fetch-static-llama.sh`: download, verify and extract the pinned static
-   llama.cpp release, then export `STATIC_LLAMA_DIR`.
+   llama.cpp release for the runner's architecture, then export `STATIC_LLAMA_DIR`. On
+   x86_64 it first checks that the runner's CPU supports x86-64-v3 and fails the job if
+   not. The `x86_64` runner label alone does not guarantee that.
 2. `mkdir -p assets`
 3. `cargo test --lib`
 4. `cargo test --test tokenizer_reload_tests`
@@ -81,6 +86,7 @@ temp directory and check load-time validation:
 | `test_embed_batch_consistency` | `model.gguf`, `tokenizer.json`, `build-info.json` | `embed_batch(..)[0] == embed(..)` |
 | `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json`, `build-info.json` | Unit norm |
 | `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
+| `test_gguf_width_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `raw_embedding_dimension` changed to 1024, loading fails with `ModelLoad(Runtime)` |
 
 The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
 the bundle's `output_embedding_dimension`.

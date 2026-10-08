@@ -197,8 +197,11 @@ jobs:
       GGUF_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
       BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
-      STATIC_LLAMA_TAG: v0.1.151-1
-      STATIC_LLAMA_SHA256: 48f3aa293824086d667d3938b40be37390d31275af20fd20a88c3880bfee2b90
+      STATIC_LLAMA_TAG: v0.1.159-1
+      STATIC_LLAMA_LLAMA_CPP_COMMIT: d81235049384534c167caea52b85a694f6103d14
+      # Repo-pinned sha256 of the aarch64-graviton2 tarball. fetch-static-llama.sh exports it
+      # as STATIC_LLAMA_SHA256, which the metadata step records.
+      STATIC_LLAMA_SHA256_AARCH64: 5a65f7f4359810b7b7efb29117b9e3974c63706cc57ffda9d29a4c38620fc69d
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout

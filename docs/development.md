@@ -65,15 +65,17 @@ STATIC_LLAMA_REPO=Lychee-Technology/static-llama-cpp-rs-builder
 STATIC_LLAMA_TAG=v0.1.159-1
 STATIC_LLAMA_LLAMA_CPP_COMMIT=d81235049384534c167caea52b85a694f6103d14
 
-# aarch64 Linux, or the linux/arm64 container:
+# aarch64 Linux, or the linux/arm64 container (and the pre-push hook):
 VARIANT=aarch64-graviton2 PROFILE=aarch64-graviton2 TRIPLE=aarch64-unknown-linux-gnu
 SHA256=5a65f7f4359810b7b7efb29117b9e3974c63706cc57ffda9d29a4c38620fc69d
+DEST=.llama-artifacts/extracted
 # x86-64-v3 Linux instead:
 # VARIANT=x86_64-v3-linux-gnu PROFILE=x86_64-v3 TRIPLE=x86_64-unknown-linux-gnu
 # SHA256=fed3c972c2bbd6c938f8488fdb375ec0144c3481756547169d3d094f42b2794e
+# DEST=.llama-artifacts/extracted-x86_64-v3
 
 TARBALL="static-llama-cpp-${STATIC_LLAMA_TAG}-${VARIANT}.tar.gz"
-mkdir -p .llama-artifacts/dl .llama-artifacts/extracted
+mkdir -p .llama-artifacts/dl "$DEST"
 gh release download "$STATIC_LLAMA_TAG" --repo "$STATIC_LLAMA_REPO" \
   --pattern "$TARBALL" --pattern "$TARBALL.sha256" --dir .llama-artifacts/dl
 (
@@ -81,21 +83,21 @@ gh release download "$STATIC_LLAMA_TAG" --repo "$STATIC_LLAMA_REPO" \
   echo "${SHA256}  ${TARBALL}" | sha256sum -c -   # repo-pinned hash
   sha256sum -c "${TARBALL}.sha256"                # release sidecar
 )
-tar -xzf ".llama-artifacts/dl/$TARBALL" -C .llama-artifacts/extracted
-(cd .llama-artifacts/extracted && sha256sum -c SHA256SUMS)
+tar -xzf ".llama-artifacts/dl/$TARBALL" -C "$DEST"
+(cd "$DEST" && sha256sum -c SHA256SUMS)
 # Each line must print the expected value: 4, the profile, the triple, the commit.
 jq -r '.artifact_contract_version, .target_profile, .target_triple, .llama_cpp.commit' \
-  .llama-artifacts/extracted/build-info.json
+  "$DEST/build-info.json"
 echo "expected: 4 $PROFILE $TRIPLE $STATIC_LLAMA_LLAMA_CPP_COMMIT"
 
-export STATIC_LLAMA_DIR="$PWD/.llama-artifacts/extracted"
+export STATIC_LLAMA_DIR="$PWD/$DEST"
 ```
 
-`.llama-artifacts/` is gitignored. Extract each variant into its own directory; do not
-extract one over the other. The repo-pinned hash matters because the release's own
-`.sha256` sidecar and `SHA256SUMS` live on the same mutable tag and prove only that the
-download is complete and uncorrupted. The pinned values were checked against both before
-they were committed.
+`.llama-artifacts/` is gitignored. Extract each variant into its own empty directory, as
+above; do not extract one over the other. The repo-pinned hash matters because the
+release's own `.sha256` sidecar and `SHA256SUMS` live on the same mutable tag and prove
+only that the download is complete and uncorrupted. The pinned values were checked against
+both before they were committed.
 
 The rest of the pin is not in the workflows. `fetch-static-llama.sh` maps `uname -m` to the
 asset name, `target_profile` and `target_triple`, and on x86_64 refuses to continue unless

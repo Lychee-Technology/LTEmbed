@@ -57,8 +57,8 @@ Benchmarks run only by hand; see [benchmarking.md](./benchmarking.md).
 
 `tests/integration_tests.rs` mixes two kinds of tests.
 
-**Tier 1** never needs model weights. These tests build throwaway bundles in a temp
-directory and check load-time validation:
+**Tier 1** never needs model weights. Most of these tests build throwaway bundles in a
+temp directory and check load-time validation:
 
 - missing `model.gguf`, `tokenizer.json` or `build-info.json` → `ModelLoad(MissingFile)`
 - malformed `build-info.json` → `ModelLoad(Metadata)`
@@ -67,6 +67,10 @@ directory and check load-time validation:
 - input over 8192 tokens → `InputTooLong { max: 8192 }`. This uses `assets/tokenizer.json`
   and skips if that file is missing.
 - the skip and require logic itself (`bundle_or_skip`)
+- `tests/fixtures/test_fixtures.json` matches `EMBEDDING_DIMENSION`
+  (`test_golden_fixture_matches_engine_dimension`), and the check itself fails on
+  synthetic stale fixtures (`parse_golden_fixtures`); see
+  [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson)
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`:
 
@@ -138,9 +142,15 @@ document), each with its final 512-d, truncated and L2-normalized vector:
 - Regenerate it, from PyTorch, only when the reference itself changes: a different model,
   different `TEST_INPUTS`, or a change to pooling, prefixes or output dimension. The script
   downloads the model's latest Hugging Face revision; it does not pin one.
-- If `dim` is not 512, the parity test skips rather than compare against the wrong
-  baseline. `LTEMBED_REQUIRE_TEST_BUNDLE` does not affect this skip. The file once shipped
-  with `dim: 0`, and parity was silently skipped until the llama.cpp migration.
+- `dim` and the length of every vector must equal `EMBEDDING_DIMENSION`, and the file must
+  hold at least one fixture. Otherwise `test_golden_fixture_matches_engine_dimension` (Tier 1)
+  fails in every run, and so does the parity test whenever a bundle lets it run. A mismatch
+  never skips, with or without `LTEMBED_REQUIRE_TEST_BUNDLE`: a stale fixture is a problem in
+  the repository, not a missing local resource. Changing `EMBEDDING_DIMENSION` therefore
+  requires regenerating the fixture in the same change, with `OUTPUT_DIM` in
+  `scripts/generate_fixtures.py` set to the new value. The parity test used to skip on a
+  mismatch instead. The file once shipped with `dim: 0`, and parity went unchecked until
+  the llama.cpp migration.
 
 ## Token-id fixture: `tests/fixtures/token_ids.json`
 

@@ -624,6 +624,39 @@ fn test_output_dimension_larger_than_raw_returns_model_load_error() {
     fs::remove_dir_all(temp_dir).unwrap();
 }
 
+/// The test bundle with only `raw_embedding_dimension` changed. The GGUF is 768 wide, so the
+/// load itself must fail, not the first `embed`.
+#[test]
+fn test_gguf_width_mismatch_returns_model_load_error() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    for file in ENGINE_BUNDLE_FILES {
+        std::os::unix::fs::symlink(
+            fs::canonicalize(bundle_dir.join(file)).unwrap(),
+            temp_dir.join(file),
+        )
+        .unwrap();
+    }
+    let build_info = fs::read_to_string(bundle_dir.join("build-info.json")).unwrap();
+    let mut build_info: serde_json::Value = serde_json::from_str(&build_info).unwrap();
+    build_info["model_metadata"]["raw_embedding_dimension"] = 1024.into();
+    write_build_info(&temp_dir, &build_info.to_string());
+
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
+    match result {
+        Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+            assert!(msg.contains("raw_embedding_dimension 1024"), "{msg}");
+        }
+        Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        Ok(_) => panic!("a 1024-wide bundle loaded against the 768-wide GGUF"),
+    }
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
 #[test]
 fn test_long_input_returns_input_too_long_error() {
     if !std::path::Path::new(TOKENIZER).exists() {

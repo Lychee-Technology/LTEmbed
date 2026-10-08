@@ -23,8 +23,9 @@ converts models.
 - A GGUF build of `jinaai/jina-embeddings-v5-text-nano-retrieval`. The Hugging Face repo
   publishes one file per quant as `v5-nano-retrieval-<QUANT>.gguf`, which the workflows
   rename to `model.gguf`.
-- Its embedding size (`n_embd`) must equal `raw_embedding_dimension` from
-  `build-info.json`. Otherwise loading fails with `ModelLoad(Runtime)`.
+- Its embedding size (`n_embd`) and pooled output size (`n_embd_out`) must both equal
+  `raw_embedding_dimension` from `build-info.json`. Otherwise loading fails with
+  `ModelLoad(Runtime)`.
 - `Q5_K_M` is the quant used by CI and by release tarballs; see
   [releases.md](./releases.md#why-q5_k_m) for why. Benchmarks also run `IQ4_NL` and `Q8_0`.
 - Reference hash: at Hugging Face revision `ac5d898c8d382b17167c33e5c8af644a3519b47d`
@@ -77,7 +78,7 @@ This is exactly what `.github/workflows/ci.yml` writes. `release-bundles.yml` an
 | `model_metadata.input_kind` | yes | `"retrieval"` or `"text"`; else `UnsupportedInputKind` | Validation only |
 | `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text |
 | `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text |
-| `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd` | Upper bound for `EngineConfig::output_dimension`; backend output length |
+| `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd` and `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
 | `model_metadata.output_embedding_dimension` | yes (integer) | — | **Not used.** The output size comes from `EngineConfig`. |
 | `model_metadata.max_length` | yes (integer) | — | Tokenizer limit (`InputTooLong`) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |

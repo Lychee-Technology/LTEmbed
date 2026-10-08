@@ -69,8 +69,9 @@ failure returns `LTEmbedError::ModelLoad(_)`:
 5. Load `tokenizer.json` with the Hugging Face `tokenizers` crate (`Runtime` on failure).
    The BPE word cache is turned off because `tokenizers` 0.23 leaks it when a tokenizer is
    dropped.
-6. Load the GGUF on CPU (`n_gpu_layers = 0`) and check that its `n_embd` equals
-   `raw_embedding_dimension` (`Runtime` on mismatch).
+6. Load the GGUF on CPU (`n_gpu_layers = 0`) and check that its `n_embd` and `n_embd_out`
+   both equal `raw_embedding_dimension` (`Runtime` on mismatch). `n_embd_out` is the length
+   of each pooled vector, which a GGUF may set apart from `n_embd`.
 7. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_LAST`,
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, `n_ctx = n_batch = n_ubatch = max_length`,
    `n_seq_max = 1`, `n_threads = n_threads_batch = n_threads`.
@@ -92,9 +93,8 @@ INFO/DEBUG lines and forwards WARN and above to stderr.
    - keep only real tokens (attention mask `1`) and drop right padding;
    - clear the KV memory;
    - run `llama_encode` on that single sequence;
-   - copy the pooled vector from `llama_get_embeddings_seq`. It holds
-     `llama_model_n_embd_out` floats, the size llama.cpp allocates for it; for this model
-     that equals `n_embd`, and step 4 rejects any other length with `OutputShape`.
+   - copy the pooled vector from `llama_get_embeddings_seq`: `raw_embedding_dimension`
+     floats, the buffer's `n_embd_out` length that load step 6 checked.
 
    Inputs are encoded **one at a time**. A batch call saves tokenizer and call overhead,
    not model compute; multi-sequence batching is not implemented.
@@ -130,10 +130,10 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` mismatch, context creation failure |
+| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, context creation failure |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The tokenizer rejects the input |
-| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code, `OutputShape` a pooled vector whose length is not `raw_embedding_dimension` |
+| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code |
 
 ## Platform constraint
 

@@ -86,6 +86,7 @@ temp directory and check load-time validation:
 | `test_embed_batch_consistency` | `model.gguf`, `tokenizer.json`, `build-info.json` | `embed_batch(..)[0] == embed(..)` |
 | `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json`, `build-info.json` | Unit norm |
 | `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
+| `test_gguf_width_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `raw_embedding_dimension` changed to 1024, loading fails with `ModelLoad(Runtime)` |
 
 The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
 the bundle's `output_embedding_dimension`.

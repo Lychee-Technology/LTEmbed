@@ -20,7 +20,7 @@ impl TokenizerOutput {
     /// that pools with LAST and ignores the mask would then pool the trailing **pad**
     /// token instead of the final content token — which flattened GGUF embeddings to
     /// ~0.31 cosine vs the FP32 reference and collapsed cross-lingual retrieval. Backends
-    /// that decode sequences independently must feed only these tokens.
+    /// that run sequences independently must feed only these tokens.
     pub(crate) fn real_input_ids(&self) -> Vec<u32> {
         self.input_ids
             .iter()

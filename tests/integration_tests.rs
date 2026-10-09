@@ -7,7 +7,8 @@ use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer, TokenizerOutput};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::env::VarError;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -289,13 +290,18 @@ fn token_id_mismatches(actual: &TokenizerOutput, expected: &TokenIds) -> Vec<Str
 }
 
 fn unique_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(unique_dir_name())
+}
+
+/// A directory name that no other call returns.
+fn unique_dir_name() -> String {
     static UNIQUE_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let counter = UNIQUE_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("ltembed-bundle-tests-{nanos}-{counter}"))
+    format!("ltembed-bundle-tests-{nanos}-{counter}")
 }
 
 fn write_build_info(dir: &Path, body: &str) {
@@ -324,6 +330,200 @@ fn valid_build_info_json() -> &'static str {
     "max_length": 8192
   }
 }"#
+}
+
+/// Symlinks `files` from the test bundle into `dir`.
+fn link_bundle_files(bundle_dir: &Path, dir: &Path, files: &[&str]) {
+    for file in files {
+        std::os::unix::fs::symlink(
+            fs::canonicalize(bundle_dir.join(file)).unwrap(),
+            dir.join(file),
+        )
+        .unwrap();
+    }
+}
+
+/// A unique directory for large files, removed on drop even when the test panics. It is under
+/// Cargo's `CARGO_TARGET_TMPDIR` (`target/tmp/`), not `std::env::temp_dir()` like
+/// `unique_temp_dir`, because `/tmp` is often a small tmpfs.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new() -> Self {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(unique_dir_name());
+        fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// GGUF metadata value types (`enum gguf_type` in llama.cpp's `gguf.h`).
+const GGUF_TYPE_UINT32: u32 = 4;
+const GGUF_TYPE_STRING: u32 = 8;
+const GGUF_TYPE_ARRAY: u32 = 9;
+/// Tensor data alignment of a GGUF without `general.alignment`.
+const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
+
+/// Size in bytes of a fixed-size GGUF value type; `None` for strings and arrays.
+fn gguf_fixed_size(value_type: u32) -> Option<u64> {
+    match value_type {
+        0 | 1 | 7 => Some(1), // uint8, int8, bool
+        2 | 3 => Some(2),     // uint16, int16
+        4..=6 => Some(4),     // uint32, int32, float32
+        10..=12 => Some(8),   // uint64, int64, float64
+        _ => None,
+    }
+}
+
+/// Reads GGUF fields, which are little-endian.
+struct GgufReader(BufReader<File>);
+
+impl GgufReader {
+    fn bytes<const N: usize>(&mut self) -> [u8; N] {
+        let mut buf = [0; N];
+        self.0.read_exact(&mut buf).unwrap();
+        buf
+    }
+
+    fn u32(&mut self) -> u32 {
+        u32::from_le_bytes(self.bytes())
+    }
+
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.bytes())
+    }
+
+    fn string(&mut self) -> String {
+        let mut buf = vec![0; usize::try_from(self.u64()).unwrap()];
+        self.0.read_exact(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn skip(&mut self, len: u64) {
+        self.0.seek_relative(i64::try_from(len).unwrap()).unwrap();
+    }
+
+    fn skip_value(&mut self, value_type: u32) {
+        if let Some(size) = gguf_fixed_size(value_type) {
+            return self.skip(size);
+        }
+        match value_type {
+            GGUF_TYPE_STRING => {
+                let len = self.u64();
+                self.skip(len);
+            }
+            GGUF_TYPE_ARRAY => {
+                let element_type = self.u32();
+                let len = self.u64();
+                match gguf_fixed_size(element_type) {
+                    Some(size) => self.skip(len * size),
+                    None => (0..len).for_each(|_| self.skip_value(element_type)),
+                }
+            }
+            _ => panic!("unknown GGUF value type {value_type}"),
+        }
+    }
+
+    fn position(&mut self) -> u64 {
+        self.0.stream_position().unwrap()
+    }
+}
+
+/// A GGUF v3 file: a 24-byte header (magic, version, tensor count, key-value count), the
+/// key-value pairs, the tensor infos, zero padding to `alignment`, then the tensor data. Holds
+/// where those sections end and the metadata needed to add a key.
+struct GgufFile {
+    path: PathBuf,
+    /// `general.architecture`, the prefix of the model's hyperparameter keys.
+    architecture: String,
+    keys: Vec<String>,
+    kv_end: u64,
+    tensor_infos_end: u64,
+    alignment: u64,
+}
+
+impl GgufFile {
+    fn read(path: &Path) -> Self {
+        let mut reader = GgufReader(BufReader::new(File::open(path).unwrap()));
+        assert_eq!(&reader.bytes(), b"GGUF", "{} is not a GGUF", path.display());
+        let version = reader.u32();
+        assert_eq!(version, 3, "{} is GGUF v{version}, not v3", path.display());
+        let n_tensors = reader.u64();
+        let n_kv = reader.u64();
+
+        let mut architecture = None;
+        let mut alignment = GGUF_DEFAULT_ALIGNMENT;
+        let mut keys = Vec::new();
+        for _ in 0..n_kv {
+            let key = reader.string();
+            let value_type = reader.u32();
+            match (key.as_str(), value_type) {
+                ("general.architecture", GGUF_TYPE_STRING) => {
+                    architecture = Some(reader.string());
+                }
+                ("general.alignment", GGUF_TYPE_UINT32) => alignment = reader.u32().into(),
+                _ => reader.skip_value(value_type),
+            }
+            keys.push(key);
+        }
+        let kv_end = reader.position();
+        for _ in 0..n_tensors {
+            reader.skip_value(GGUF_TYPE_STRING); // name
+            let n_dims = reader.u32();
+            reader.skip(8 * u64::from(n_dims) + 4 + 8); // dims, ggml type, data offset
+        }
+        Self {
+            path: path.to_path_buf(),
+            architecture: architecture
+                .unwrap_or_else(|| panic!("{} has no general.architecture", path.display())),
+            keys,
+            kv_end,
+            tensor_infos_end: reader.position(),
+            alignment,
+        }
+    }
+
+    /// Copies the file to `dst` with `key` appended to its metadata as a `uint32`. Tensor
+    /// offsets are relative to the start of the tensor data, so only the key-value count and
+    /// the padding before the data change.
+    fn copy_with_u32_key(&self, dst: &Path, key: &str, value: u32) {
+        assert!(
+            !self.keys.iter().any(|k| k == key),
+            "{} already has {key}",
+            self.path.display()
+        );
+        let mut src = File::open(&self.path).unwrap();
+        let mut header = vec![0; usize::try_from(self.tensor_infos_end).unwrap()];
+        src.read_exact(&mut header).unwrap();
+        let n_kv = u64::from_le_bytes(header[16..24].try_into().unwrap());
+        header[16..24].copy_from_slice(&(n_kv + 1).to_le_bytes());
+
+        let mut kv = Vec::new();
+        kv.extend_from_slice(&u64::try_from(key.len()).unwrap().to_le_bytes());
+        kv.extend_from_slice(key.as_bytes());
+        kv.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
+        kv.extend_from_slice(&value.to_le_bytes());
+        let kv_end = usize::try_from(self.kv_end).unwrap();
+        header.splice(kv_end..kv_end, kv);
+        let alignment = usize::try_from(self.alignment).unwrap();
+        header.resize(header.len().next_multiple_of(alignment), 0);
+
+        let mut out = BufWriter::new(File::create(dst).unwrap());
+        out.write_all(&header).unwrap();
+        let data_start = self.tensor_infos_end.next_multiple_of(self.alignment);
+        src.seek(SeekFrom::Start(data_start)).unwrap();
+        io::copy(&mut src, &mut out).unwrap();
+        out.flush().unwrap();
+    }
 }
 
 #[test]
@@ -633,13 +833,7 @@ fn test_gguf_width_mismatch_returns_model_load_error() {
     };
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    for file in ENGINE_BUNDLE_FILES {
-        std::os::unix::fs::symlink(
-            fs::canonicalize(bundle_dir.join(file)).unwrap(),
-            temp_dir.join(file),
-        )
-        .unwrap();
-    }
+    link_bundle_files(&bundle_dir, &temp_dir, ENGINE_BUNDLE_FILES);
     let build_info = fs::read_to_string(bundle_dir.join("build-info.json")).unwrap();
     let mut build_info: serde_json::Value = serde_json::from_str(&build_info).unwrap();
     build_info["model_metadata"]["raw_embedding_dimension"] = 1024.into();
@@ -655,6 +849,40 @@ fn test_gguf_width_mismatch_returns_model_load_error() {
     }
 
     fs::remove_dir_all(temp_dir).unwrap();
+}
+
+/// The test bundle with `<arch>.embedding_length_out = 512` added to a copy of its GGUF.
+/// llama.cpp then reports `n_embd` 768, which matches `raw_embedding_dimension`, but
+/// `n_embd_out` 512, so pooled vectors are narrower than the 768 floats `embed` reads. The
+/// load must fail on `n_embd_out`; the width test above never gets past `n_embd`.
+#[test]
+fn test_gguf_n_embd_out_mismatch_returns_model_load_error() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    // The GGUF copy is about 170 MB.
+    let temp_dir = TempDir::new();
+    link_bundle_files(
+        &bundle_dir,
+        temp_dir.path(),
+        &["tokenizer.json", "build-info.json"],
+    );
+    let gguf = GgufFile::read(&bundle_dir.join("model.gguf"));
+    let key = format!("{}.embedding_length_out", gguf.architecture);
+    gguf.copy_with_u32_key(&temp_dir.path().join("model.gguf"), &key, 512);
+
+    let result = EmbeddingEngine::from_gguf_bundle_dir(temp_dir.path(), EngineConfig::default());
+    match result {
+        Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+            assert!(msg.contains("n_embd_out 512"), "{msg}");
+        }
+        Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        // Do not embed: the pooled buffer would be 512 floats, shorter than `embed` reads.
+        Ok(_) => panic!(
+            "the bundle loaded with {key} = 512 in its GGUF: either load no longer checks \
+             n_embd_out, or llama.cpp no longer reads {key}"
+        ),
+    }
 }
 
 #[test]

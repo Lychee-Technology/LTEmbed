@@ -87,9 +87,18 @@ temp directory and check load-time validation:
 | `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json`, `build-info.json` | Unit norm |
 | `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
 | `test_gguf_width_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `raw_embedding_dimension` changed to 1024, loading fails with `ModelLoad(Runtime)` |
+| `test_gguf_n_embd_out_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `<arch>.embedding_length_out = 512` added to a copy of the GGUF (`n_embd` stays 768), loading fails with `ModelLoad(Runtime)` naming `n_embd_out 512` |
 
 The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
 the bundle's `output_embedding_dimension`.
+
+The bundle's GGUF has `n_embd = n_embd_out = 768`, so
+`test_gguf_width_mismatch_returns_model_load_error` fails on the `n_embd` comparison and
+never reaches the `n_embd_out` one. `test_gguf_n_embd_out_mismatch_returns_model_load_error`
+covers that comparison. It derives its GGUF from the bundle's at test time, so no crafted
+GGUF is committed. The copy, about 170 MB for the Q5_K_M bundle, goes to Cargo's
+integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
+than `/tmp`, and is removed afterwards, even when the test fails.
 
 ### Skipping vs. failing without a bundle
 

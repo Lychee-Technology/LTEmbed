@@ -135,6 +135,48 @@ class CheckDocReferencesTests(unittest.TestCase):
             + ["docs/a.md:12: link `#elsewhere`: docs/a.md has no heading with anchor #elsewhere"],
         )
 
+    def test_repeated_heading_takes_the_first_free_suffix(self):
+        # Headings and anchors from github-slugger's test/fixtures.json, which records what
+        # github.com renders: a suffixed anchor is taken like any other.
+        headings_and_anchors = [
+            ("echo", "echo"),
+            ("echo", "echo-1"),
+            ("echo 1", "echo-1-1"),
+            ("echo-1", "echo-1-2"),
+            ("echo", "echo-2"),
+            ("foxtrot-1", "foxtrot-1"),
+            ("foxtrot", "foxtrot"),
+            ("foxtrot", "foxtrot-2"),
+        ]
+        target = "\n\n".join(f"## {heading}" for heading, _ in headings_and_anchors)
+        anchors = [anchor for _, anchor in headings_and_anchors] + ["echo-3", "foxtrot-1-1"]
+        files = {
+            "a.md": "\n".join(f"[x](b.md#{anchor})" for anchor in anchors),
+            "b.md": target,
+        }
+        self.assertEqual(
+            self.problems(files),
+            [
+                f"a.md:{line}: link `b.md#{anchor}`: b.md has no heading with anchor #{anchor}"
+                for line, anchor in [(9, "echo-3"), (10, "foxtrot-1-1")]
+            ],
+        )
+
+    def test_link_with_no_path_is_the_linking_file(self):
+        files = {
+            "docs/a.md": (
+                "[self]() [self](<>) [top](#) [ref][self] [heading](#heading) [gone](#gone)\n"
+                "\n"
+                "[self]: <>\n"
+                "\n"
+                "## Heading\n"
+            )
+        }
+        self.assertEqual(
+            self.problems(files),
+            ["docs/a.md:1: link `#gone`: docs/a.md has no heading with anchor #gone"],
+        )
+
     def test_fragment_on_a_non_markdown_target_is_not_checked(self):
         files = {"README.md": "[line](src/lib.rs#L10)\n", "src/lib.rs": ""}
         self.assertEqual(self.problems(files), [])

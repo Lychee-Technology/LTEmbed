@@ -217,9 +217,11 @@ reference does not resolve:
 - **Links in every `*.md` file.** The target of each inline link, image and reference
   definition must be a tracked file or directory. A target that starts with `/` resolves
   from the repository root, as on GitHub; any other resolves from the linking file's
-  directory. A `#fragment` on a link to a Markdown file must match one of its headings,
-  slugged the way GitHub does it (`## What CI runs` is `#what-ci-runs`). Targets with a URL
-  scheme, such as `https:` or `mailto:`, are skipped and never fetched.
+  directory, and one with no path (`#anchor`, or an empty `()`) is the linking file itself.
+  A `#fragment` on a link to a Markdown file must match one of its headings, slugged the
+  way GitHub does it (`## What CI runs` is `#what-ci-runs`). Targets with a URL scheme, such
+  as `https:` or `mailto:`, are skipped and never fetched. HTML `<a href>` links are not
+  checked, and an HTML `<a id>` does not count as a heading.
 - **Paths in `AGENTS.md` files.** Each token in a code span or code fence that contains `/`
   or ends in a file extension must name a tracked file or directory. A token resolves from
   the repository root, or else from the `AGENTS.md` file's own directory. Each

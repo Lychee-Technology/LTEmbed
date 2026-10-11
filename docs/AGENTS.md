@@ -63,4 +63,4 @@ When moving, renaming, or removing documentation, find and repair every referenc
 
 Relative links resolve from the directory of the file that contains them, so check each one from its own location.
 
-`python3 scripts/check_doc_references.py` checks every relative link and `#anchor` in tracked Markdown files, and CI runs it in `Lint`. It does not check code comments or external URLs.
+`python3 scripts/check_doc_references.py` checks every relative link and `#anchor` in tracked Markdown files, and CI runs it in `Lint`. It does not check code comments, HTML `<a href>` links, or external URLs.

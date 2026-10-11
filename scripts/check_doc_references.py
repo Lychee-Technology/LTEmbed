@@ -6,9 +6,11 @@ Runs offline over the files Git tracks and exits 1 if any reference is broken.
 1. Links. The target of every inline link, image and reference definition in a tracked
    `*.md` file must be a tracked file or directory, unless it has a URL scheme (`https:`,
    `mailto:`). A target that starts with `/` resolves from the repository root, as on
-   GitHub; any other target resolves from the directory of the file that contains it. A
-   `#fragment` on a link to a Markdown file must match one of that file's headings, slugged
-   the way GitHub slugs them. Links with a URL scheme are skipped, never fetched.
+   GitHub; any other target resolves from the directory of the file that contains it, and
+   a target with no path (`#anchor`, or an empty `()`) is that file itself. A `#fragment`
+   on a link to a Markdown file must match one of that file's headings, slugged the way
+   GitHub slugs them. Links with a URL scheme are skipped, never fetched. HTML `<a href>`
+   links are not checked, and HTML `<a id>` anchors are not headings.
 2. AGENTS.md paths. Every path-like token in a code span or code fence of an `AGENTS.md`
    file must be a tracked file or directory, and every `file` § "Section" reference must
    match a heading of that file. A token is path-like if it contains `/` or ends in a file
@@ -234,14 +236,20 @@ def github_slug(heading: str) -> str:
 
 
 def heading_anchors(headings: Iterable[str]) -> set[str]:
-    """Anchors for headings in document order; GitHub suffixes repeats with -1, -2, ..."""
-    seen: dict[str, int] = {}
-    anchors = set()
+    """Anchors for headings in document order.
+
+    As on GitHub, a heading whose slug is taken gets the first free -1, -2, ... suffix, and
+    a suffixed anchor is taken like any other: `Foo`, `Foo`, `Foo-1` are #foo, #foo-1 and
+    #foo-1-1.
+    """
+    anchors: set[str] = set()
     for heading in headings:
-        slug = github_slug(heading)
-        count = seen.get(slug, 0)
-        anchors.add(f"{slug}-{count}" if count else slug)
-        seen[slug] = count + 1
+        slug = anchor = github_slug(heading)
+        count = 0
+        while anchor in anchors:
+            count += 1
+            anchor = f"{slug}-{count}"
+        anchors.add(anchor)
     return anchors
 
 
@@ -309,10 +317,9 @@ def resolve_link_path(source: str, path: str) -> str | None:
 def check_link(repo: Repo, source: str, target: str) -> str | None:
     if SCHEME_RE.match(target) or target.startswith("//"):
         return None  # An external URL: never fetched.
-    if not target:
-        return "empty link target"
     raw_path, _, fragment = target.partition("#")
     path = unquote(raw_path.split("?", 1)[0])
+    # No path, as in `#anchor` or an empty `()`, is the linking file itself.
     resolved = resolve_link_path(source, path) if path else source
     if resolved is None:
         return f"link `{target}` points outside the repository"

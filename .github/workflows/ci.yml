@@ -160,6 +160,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Offline: relative links and anchors in every tracked Markdown file, and the paths and
+      # `file` § "Section" references in AGENTS.md files. Needs only Git and the runner's
+      # python3, so it runs before the toolchain, cache and static llama.cpp steps.
+      - name: Check Markdown links and AGENTS.md paths
+        run: python3 scripts/check_doc_references.py
+
       - name: Install Rust 1.94.0 toolchain with components
         uses: dtolnay/rust-toolchain@1.94.0
         with:

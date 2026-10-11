@@ -72,7 +72,7 @@ Raise unrelated problems separately.
 
 ## Baseline Validation
 
-The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: formatting, Clippy, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
+The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: the Markdown link and `AGENTS.md` path check, formatting, Clippy, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
 
 Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The model-backed integration tests also need a GGUF bundle.
 
@@ -101,6 +101,8 @@ Before working in these areas, read their local instructions:
 The `AGENTS.md` files link to authoritative documents such as `docs/README.md`, `docs/development.md`, `docs/testing.md`, and `scripts/README.md` instead of copying their file or command lists. Keep it that way: add a link, not another inventory.
 
 When a change renames, moves, or removes a path, command, or constant that an `AGENTS.md` names, update that `AGENTS.md` in the same change. `git grep -n '<old name>'` finds the references.
+
+`python3 scripts/check_doc_references.py`, which CI runs in `Lint`, fails when an `AGENTS.md` names a repository path or a `file` § "Section" that does not exist. It does not find stale commands or constants, and it skips names that are not repository paths; `docs/testing.md` § "Documentation references" describes what it checks.
 
 ## Completion Report
 

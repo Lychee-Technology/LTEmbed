@@ -1,9 +1,9 @@
 # Scripts
 
-Python tooling for fixtures and benchmarks, plus the Git hook installer. How the pieces fit
-together is described in [docs/benchmarking.md](../docs/benchmarking.md) and
-[docs/testing.md](../docs/testing.md). The script tests in `tests/test_*.py` cover most of
-these files.
+Python tooling for fixtures, benchmarks and documentation checks, plus the Git hook
+installer. How the pieces fit together is described in
+[docs/benchmarking.md](../docs/benchmarking.md) and [docs/testing.md](../docs/testing.md).
+The script tests in `tests/test_*.py` cover most of these files.
 
 ## Fixtures
 
@@ -106,6 +106,22 @@ produces that shape: `benchmark_ltembed` lost its `correctness` mode in #149, an
 
 ONNX Runtime era. Compares a q4f16 ONNX model, run through `onnxruntime`, with the PyTorch
 reference. It does not apply to GGUF bundles.
+
+## Documentation
+
+### `check_doc_references.py`
+
+Fails if a relative link in a tracked Markdown file, or its `#anchor`, does not resolve, or
+if an `AGENTS.md` names a repository path or a `file` § "Section" that does not exist. It
+never fetches external URLs and needs only Git and the Python 3 standard library. CI runs it
+in the `Lint` job.
+
+```bash
+python3 scripts/check_doc_references.py
+```
+
+What it checks, and how to let an `AGENTS.md` mention a name that is not a repository path,
+is in [docs/testing.md](../docs/testing.md#documentation-references).
 
 ## Git hooks
 

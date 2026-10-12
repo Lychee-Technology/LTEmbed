@@ -56,7 +56,9 @@ pub enum ModelLoadError {
     #[error("{0}")]
     Config(String),
 
-    /// Backend model load (GGUF load, context creation) or tokenizer load failure.
+    /// Backend model load (GGUF load, context creation) or tokenizer load failure, or a GGUF
+    /// that does not match the rest of the bundle (its embedding width differs from
+    /// `build-info.json`, or its vocabulary size from `tokenizer.json`).
     #[error("{0}")]
     Runtime(String),
 }

@@ -90,6 +90,7 @@ temp directory and check load-time validation:
 | `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
 | `test_gguf_width_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `raw_embedding_dimension` changed to 1024, loading fails with `ModelLoad(Runtime)` |
 | `test_gguf_n_embd_out_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `<arch>.embedding_length_out = 512` added to a copy of the GGUF (`n_embd` stays 768), loading fails with `ModelLoad(Runtime)` naming `n_embd_out 512` |
+| `test_tokenizer_vocab_mismatch_returns_model_load_error` | `model.gguf`, `build-info.json` | With `assets/tokenizer.json` (30522 tokens) in place of the bundle's tokenizer, loading fails with `ModelLoad(Runtime)` naming both vocabulary sizes |
 
 The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
 the bundle's `output_embedding_dimension`.
@@ -101,6 +102,12 @@ covers that comparison. It derives its GGUF from the bundle's at test time, so n
 GGUF is committed. The copy, about 170 MB for the Q5_K_M bundle, goes to Cargo's
 integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
 than `/tmp`, and is removed afterwards, even when the test fails.
+
+`test_tokenizer_vocab_mismatch_returns_model_load_error` symlinks the bundle's `model.gguf`
+and `build-info.json` instead of copying them. It reads the expected GGUF vocabulary size
+from the length of `tokenizer.ggml.tokens` with the test's own GGUF reader, not through
+llama.cpp. The matching case needs no test of its own: every other engine-backed Tier 2 test
+loads the bundle, whose tokenizer and GGUF both have 128256 tokens.
 
 ### Skipping vs. failing without a bundle
 

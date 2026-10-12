@@ -424,12 +424,17 @@ impl GgufReader {
             GGUF_TYPE_ARRAY => {
                 let element_type = self.u32();
                 let len = self.u64();
-                match gguf_fixed_size(element_type) {
-                    Some(size) => self.skip(len * size),
-                    None => (0..len).for_each(|_| self.skip_value(element_type)),
-                }
+                self.skip_array(element_type, len);
             }
             _ => panic!("unknown GGUF value type {value_type}"),
+        }
+    }
+
+    /// Skips the `len` elements of an array whose element type and length were already read.
+    fn skip_array(&mut self, element_type: u32, len: u64) {
+        match gguf_fixed_size(element_type) {
+            Some(size) => self.skip(len * size),
+            None => (0..len).for_each(|_| self.skip_value(element_type)),
         }
     }
 
@@ -445,6 +450,8 @@ struct GgufFile {
     path: PathBuf,
     /// `general.architecture`, the prefix of the model's hyperparameter keys.
     architecture: String,
+    /// Length of `tokenizer.ggml.tokens`, the model's own vocabulary, if the file has one.
+    n_tokens: Option<u64>,
     keys: Vec<String>,
     kv_end: u64,
     tensor_infos_end: u64,
@@ -461,6 +468,7 @@ impl GgufFile {
         let n_kv = reader.u64();
 
         let mut architecture = None;
+        let mut n_tokens = None;
         let mut alignment = GGUF_DEFAULT_ALIGNMENT;
         let mut keys = Vec::new();
         for _ in 0..n_kv {
@@ -471,6 +479,12 @@ impl GgufFile {
                     architecture = Some(reader.string());
                 }
                 ("general.alignment", GGUF_TYPE_UINT32) => alignment = reader.u32().into(),
+                ("tokenizer.ggml.tokens", GGUF_TYPE_ARRAY) => {
+                    let element_type = reader.u32();
+                    let len = reader.u64();
+                    reader.skip_array(element_type, len);
+                    n_tokens = Some(len);
+                }
                 _ => reader.skip_value(value_type),
             }
             keys.push(key);
@@ -485,6 +499,7 @@ impl GgufFile {
             path: path.to_path_buf(),
             architecture: architecture
                 .unwrap_or_else(|| panic!("{} has no general.architecture", path.display())),
+            n_tokens,
             keys,
             kv_end,
             tensor_infos_end: reader.position(),
@@ -883,6 +898,41 @@ fn test_gguf_n_embd_out_mismatch_returns_model_load_error() {
              n_embd_out, or llama.cpp no longer reads {key}"
         ),
     }
+}
+
+/// The test bundle's GGUF and `build-info.json` with `assets/tokenizer.json`, a 30522-token
+/// WordPiece tokenizer from another model. It parses and its ids are all in the GGUF's range,
+/// so without the vocabulary-size check it loads and produces wrong embeddings.
+#[test]
+fn test_tokenizer_vocab_mismatch_returns_model_load_error() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let n_tokens = GgufFile::read(&bundle_dir.join("model.gguf"))
+        .n_tokens
+        .expect("the test bundle's GGUF has no tokenizer.ggml.tokens");
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    link_bundle_files(&bundle_dir, &temp_dir, &["model.gguf", "build-info.json"]);
+    write_tokenizer(&temp_dir);
+
+    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
+    match result {
+        Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+            assert!(
+                msg.contains("tokenizer.json vocabulary size 30522"),
+                "{msg}"
+            );
+            assert!(
+                msg.contains(&format!("GGUF vocabulary size {n_tokens}")),
+                "{msg}"
+            );
+        }
+        Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        Ok(_) => panic!("{TOKENIZER} loaded against the test bundle's GGUF"),
+    }
+
+    fs::remove_dir_all(temp_dir).unwrap();
 }
 
 #[test]

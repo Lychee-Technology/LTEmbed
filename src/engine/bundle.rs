@@ -111,6 +111,20 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<(), LTEmbedError>
     }))
 }
 
+/// Checks that `tokenizer.json` has as many tokens as the GGUF's own vocabulary. A tokenizer
+/// from another model usually differs in size, but one of the same size still passes: this
+/// is a sanity check, not proof that the tokenizer belongs to the model.
+pub(crate) fn check_vocab_sizes(tokenizer: usize, model: usize) -> Result<(), LTEmbedError> {
+    if tokenizer == model {
+        return Ok(());
+    }
+
+    Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+        "tokenizer.json vocabulary size {tokenizer} != GGUF vocabulary size {model}; \
+         the tokenizer does not belong to this model"
+    ))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +209,25 @@ mod tests {
         ));
 
         fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_check_vocab_sizes_accepts_equal_sizes() {
+        check_vocab_sizes(128256, 128256).unwrap();
+    }
+
+    /// `assets/tokenizer.json` (30522 WordPiece tokens) against this model's GGUF.
+    #[test]
+    fn test_check_vocab_sizes_rejects_mismatch_naming_both_sizes() {
+        match check_vocab_sizes(30522, 128256) {
+            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+                assert!(
+                    msg.contains("tokenizer.json vocabulary size 30522"),
+                    "{msg}"
+                );
+                assert!(msg.contains("GGUF vocabulary size 128256"), "{msg}");
+            }
+            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        }
     }
 }

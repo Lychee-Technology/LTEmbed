@@ -26,6 +26,9 @@ pub(crate) trait EmbeddingBackend: Send + Sync {
     /// Raw embedding width the backend emits before truncation (e.g. 768).
     fn raw_embedding_dimension(&self) -> usize;
 
+    /// Number of tokens in the model's own vocabulary, i.e. the token ids it accepts.
+    fn vocab_size(&self) -> usize;
+
     /// One raw, un-normalized pooled embedding (length = `raw_embedding_dimension()`) per
     /// tokenized input, in input order.
     fn embed(

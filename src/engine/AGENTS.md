@@ -85,13 +85,13 @@ gguf_bundle/
 
 Use `bundle.rs` and current CI/release bundle generation as the authoritative metadata contract. `docs/bundle-format.md` documents it and must stay in sync.
 
-Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata, a tokenizer or GGUF that fails to load, and a GGUF embedding width that differs from `raw_embedding_dimension`. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
+Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata, a tokenizer or GGUF that fails to load, a GGUF embedding width that differs from `raw_embedding_dimension`, and a tokenizer vocabulary size (added tokens included) that differs from the GGUF's. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
 
-Loading does **not** check that `tokenizer.json` belongs to the model. A valid but mismatched tokenizer loads without error and produces wrong embeddings; only the bundle-gated tests catch it, and only for the bundle they run against (`docs/testing.md`). So:
+The vocabulary-size comparison is the only check that `tokenizer.json` belongs to the model, and it is a sanity check, not an identity check. It rejects a tokenizer from a model with another vocabulary size, but a mismatched tokenizer of the same size loads without error and produces wrong embeddings; only the bundle-gated tests catch that, and only for the bundle they run against (`docs/testing.md`). So:
 
 - the tokenizer must come from the same Hugging Face repository and revision as the GGUF;
-- do not use `assets/tokenizer.json` as a runtime replacement because it parses. It is a stale 30k-vocab placeholder;
-- do not describe tokenizer/model matching as validated unless a load-time check is added.
+- do not use `assets/tokenizer.json` as a runtime replacement. It is a stale 30k-vocab placeholder, and loading rejects it;
+- do not describe the vocabulary-size check as validating tokenizer/model identity.
 
 ## llama.cpp FFI
 

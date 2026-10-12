@@ -68,6 +68,8 @@ pub(crate) struct LlamaBackend {
     /// Length of each pooled vector. `load` checked that the GGUF's `n_embd` and
     /// `n_embd_out` both equal it (see [`check_embedding_widths`]).
     raw_dim: usize,
+    /// Number of tokens in the GGUF's vocabulary (`tokenizer.ggml.tokens`).
+    n_vocab: usize,
     /// Context length (also the max single-sequence token count llama can pool at once).
     n_ctx: usize,
 }
@@ -157,6 +159,14 @@ impl LlamaBackend {
                 return Err(err);
             }
 
+            let n_tokens = ffi::llama_vocab_n_tokens(ffi::llama_model_get_vocab(model));
+            let Ok(n_vocab) = usize::try_from(n_tokens) else {
+                ffi::llama_model_free(model);
+                return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
+                    "GGUF vocabulary size {n_tokens} is negative"
+                ))));
+            };
+
             let n = n_ctx;
             let mut cparams = ffi::llama_context_default_params();
             cparams.embeddings = true;
@@ -183,6 +193,7 @@ impl LlamaBackend {
             Ok(Self {
                 inner: Mutex::new(ModelContext { model, ctx }),
                 raw_dim: raw_embedding_dimension,
+                n_vocab,
                 n_ctx: context_length,
             })
         }
@@ -250,6 +261,10 @@ impl LlamaBackend {
 impl EmbeddingBackend for LlamaBackend {
     fn raw_embedding_dimension(&self) -> usize {
         self.raw_dim
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.n_vocab
     }
 
     fn embed(

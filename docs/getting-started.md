@@ -118,7 +118,7 @@ All methods return `ltembed::error::LTEmbedError`. The ones you are most likely 
 | `ModelLoad(MissingFile { .. })` | The bundle directory lacks one of the three files |
 | `ModelLoad(UnsupportedModelFormat { .. })` | `build-info.json` is from an ONNX-era bundle |
 | `ModelLoad(Config(_))` | `output_dimension` is 0 or above 768, or `n_threads` is 0 |
-| `ModelLoad(Runtime(_))` | The GGUF or tokenizer failed to load, or the GGUF does not match `build-info.json` |
+| `ModelLoad(Runtime(_))` | The GGUF or tokenizer failed to load, the GGUF does not match `build-info.json`, or `tokenizer.json` has a different vocabulary size than the GGUF |
 | `InputTooLong { tokens, max }` | An input is longer than 8192 tokens. Nothing is truncated, so split long text first. |
 
 The full list is in [architecture.md](./architecture.md#errors).

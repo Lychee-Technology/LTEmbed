@@ -35,16 +35,20 @@ converts models.
 ## `tokenizer.json`
 
 - The model's own Hugging Face tokenizer (`tokenizer.json` in the same Hugging Face repo): a
-  BPE tokenizer with a vocabulary of about 128k entries and right padding with pad id
-  `128004`. It is about 17 MB.
+  BPE tokenizer with 128256 tokens (128000 BPE tokens and 256 added special tokens) and
+  right padding with pad id `128004`. It is about 17 MB.
 - At the pinned revision its sha256 is
   `98d4a1d32152d6cedf85b5e88f3b205106dca1fe72aaab34e0ac13c238421069`, the value recorded in
   `tests/fixtures/token_ids.json`.
-- **Do not use `assets/tokenizer.json`.** That tracked file is an old 30k-vocab BERT
-  WordPiece tokenizer. Unit tests use it only for tokenizer shape and length checks. With
-  it, embeddings are meaningless (cosine ≈ 0 against the reference).
-- The engine does **not** check that the tokenizer matches the GGUF. A wrong tokenizer
-  loads without error and produces wrong vectors.
+- Its vocabulary size, added tokens included, must equal the number of tokens in the GGUF's
+  own vocabulary (`tokenizer.ggml.tokens`, also 128256). Otherwise loading fails with
+  `ModelLoad(Runtime)`, and the message names both sizes.
+- That size check is the only check that the tokenizer belongs to the GGUF, and it proves
+  nothing beyond the size: a wrong tokenizer with the same number of tokens loads without
+  error and produces wrong vectors.
+- **Do not use `assets/tokenizer.json`.** That tracked file is an old 30522-token BERT
+  WordPiece tokenizer, which unit tests use only for tokenizer shape and length checks.
+  The size check rejects it.
 
 ## `build-info.json`
 

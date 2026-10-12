@@ -30,7 +30,7 @@ const MODEL_FILE: &str = "model.gguf";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
-/// A loaded embedding model. Backed by an [`EmbeddingBackend`] (currently llama.cpp/GGUF);
+/// A loaded embedding model. Backed by an internal backend (currently llama.cpp/GGUF);
 /// owns the shared prefix → tokenize → backend → truncate/normalize pipeline.
 pub struct EmbeddingEngine {
     backend: Box<dyn EmbeddingBackend>,

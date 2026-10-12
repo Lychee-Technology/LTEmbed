@@ -20,6 +20,7 @@ other hosts, run them in the container from
 | Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` for two modules | Yes, without `torch` |
 | Format | `cargo fmt --check` | Nothing (no build script) | Yes |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | — | Yes |
+| Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` | — | Yes |
 | Markdown links and `AGENTS.md` paths | `python3 scripts/check_doc_references.py` | Git and Python 3 only (no build) | Yes |
 
 `tokenizer_reload_tests` is its own test binary because it installs a counting global
@@ -55,7 +56,8 @@ and `tests/test_compare_q4f16_onnx_vs_pytorch.py` skip.
 
 **`Lint`**: `python3 scripts/check_doc_references.py` with the runner's own `python3`
 (see [Documentation references](#documentation-references)), then fetch static llama,
-`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
+`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`.
 
 CI does not run plain `cargo test`, doc tests, the example's unit test, or any benchmark.
 Benchmarks run only by hand; see [benchmarking.md](./benchmarking.md).

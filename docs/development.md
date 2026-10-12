@@ -201,6 +201,7 @@ and `AGENTS.md` paths and needs only Git and Python 3
 python3 scripts/check_doc_references.py
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --lib
 cargo test --test tokenizer_reload_tests
 cargo test --test benchmarking_support_tests --bin benchmark_ltembed

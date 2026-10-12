@@ -192,3 +192,11 @@ jobs:
 
       - name: Clippy (warnings as errors)
         run: cargo clippy --all-targets -- -D warnings
+
+      # Fails on any rustdoc warning, e.g. a broken intra-doc link. Only public items are
+      # documented (no --document-private-items), so a public doc comment that links to a
+      # crate-private item fails too.
+      - name: Rustdoc (warnings as errors)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps

@@ -578,8 +578,8 @@ After the GEMM layout change, I re-recorded `single/long` with a debuginfo-enabl
 
 Artifacts:
 
-- trace: [`/tmp/issue43-single-long.trace`](/tmp/issue43-single-long.trace)
-- exported XML: [`/tmp/issue43-single-long-time-profile.xml`](/tmp/issue43-single-long-time-profile.xml)
+- trace: `/tmp/issue43-single-long.trace`
+- exported XML: `/tmp/issue43-single-long-time-profile.xml`
 
 ### What the previously "unsplit" `Bert::forward` samples actually are
 
@@ -643,7 +643,7 @@ xychart-beta
 
 ## Code Change Tied To This Profiling Pass
 
-The optimization landed in [`src/models/bert.rs`](/Users/ruoshi/code/github/LTEmbed/.worktrees/issue-30-scalar-hotspots/src/models/bert.rs):
+The optimization landed in `src/models/bert.rs`:
 
 - added `masked_softmax`
 - removed the separate column-wise padding-mask write loop
@@ -654,9 +654,9 @@ This reduces passes over the attention score rows and is the code change associa
 
 ## Follow-up: targeted GEMM micro-benchmarks
 
-`xctrace` remained useful for broad family attribution, but after the fill-pruning pass it no longer separated the dominant `Bert::forward` samples cleanly enough to guide the next GEMM experiment. To get more stable evidence, I added a targeted Criterion micro-benchmark group in [`benches/inference.rs`](/Users/ruoshi/code/github/LTEmbed/.worktrees/issue-44-gemm/benches/inference.rs) that runs the main GEMM shapes directly, using the real tokenizer-derived sequence lengths for the benchmark scenarios.
+`xctrace` remained useful for broad family attribution, but after the fill-pruning pass it no longer separated the dominant `Bert::forward` samples cleanly enough to guide the next GEMM experiment. To get more stable evidence, I added a targeted Criterion micro-benchmark group in `benches/inference.rs` that runs the main GEMM shapes directly, using the real tokenizer-derived sequence lengths for the benchmark scenarios.
 
-The new helper path in [`src/benchmarking.rs`](/Users/ruoshi/code/github/LTEmbed/.worktrees/issue-44-gemm/src/benchmarking.rs) identifies the micro-benchmark anchor scenarios as:
+The new helper path in `src/benchmarking.rs` identifies the micro-benchmark anchor scenarios as:
 
 - `single/long`
 - `batch/medium/8`
@@ -709,11 +709,11 @@ To validate the GEMM hypothesis on the target deployment class, I recorded Linux
 
 Artifacts:
 
-- report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report.txt)
-- symbol report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-symbols.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-symbols.txt)
-- children report: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-children.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-children.txt)
-- annotate: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt)
-- annotate: [`/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt)
+- report: `/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report.txt`
+- symbol report: `/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-symbols.txt`
+- children report: `/Users/ruoshi/Downloads/20260317T162910Z-single_long/perf-report-children.txt`
+- annotate: `/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`
+- annotate: `/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt`
 
 ### Top-level hotspot summary
 
@@ -733,14 +733,14 @@ The Linux annotate output gives a more concrete answer than the earlier macOS `x
 - inside `kernel_target_neon`, the hottest instructions are vector loads, not the fused multiply-adds
 - inside `gemm_loop`, there is visible time in the panel-copy / packing loop before the kernel call
 
-Representative local hotspots from [`01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt):
+Representative local hotspots from `01-matrixmultiply_sgemm_kernel_kernel_target_neon.txt`:
 
 - `ldp q23, q24, [x11], #32`: `50.95%`
 - `ldp q22, q29, [x10], #32`: `6.02%`
 - `subs x0, x0, #0x1`: `13.36%`
 - selected `fmla` instructions such as `fmla v16.4s, v29.4s, v23.s[2]`: `8.22%`
 
-Representative local hotspots from [`02-matrixmultiply_gemm_gemm_loop.txt`](/Users/ruoshi/Downloads/20260317T162910Z-single_long/annotate/02-matrixmultiply_gemm_gemm_loop.txt):
+Representative local hotspots from `02-matrixmultiply_gemm_gemm_loop.txt`:
 
 - `ldp q1, q0, [x14]`: panel load in the packing path
 - `stp q1, q0, [x12], #32`: panel store in the packing path

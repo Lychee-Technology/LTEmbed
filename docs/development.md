@@ -174,9 +174,13 @@ docker run --rm --platform linux/arm64 \
 
 ## Checks before pushing
 
-The CI `Test` and `Lint` jobs, in order (details in [testing.md](./testing.md#what-ci-runs)):
+The commands of the CI `Lint`, `Test` and `Python script tests` jobs, in that order (details
+in [testing.md](./testing.md#what-ci-runs)). `check_doc_references.py` checks Markdown links
+and `AGENTS.md` paths and needs only Git and Python 3
+([testing.md](./testing.md#documentation-references)).
 
 ```bash
+python3 scripts/check_doc_references.py
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --lib

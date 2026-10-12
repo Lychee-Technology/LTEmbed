@@ -62,3 +62,5 @@ Do not leave superseded implementation plans beside current getting-started mate
 When moving, renaming, or removing documentation, find and repair every reference to the old path: links in the root `README.md`, `docs/README.md`, other docs, `scripts/README.md`, `AGENTS.md` files, and code comments. `git grep -n '<old file name>'` finds them.
 
 Relative links resolve from the directory of the file that contains them, so check each one from its own location.
+
+`python3 scripts/check_doc_references.py` checks every relative link and `#anchor` in tracked Markdown files, and CI runs it in `Lint`. It does not check code comments, HTML `<a href>` links, or external URLs.

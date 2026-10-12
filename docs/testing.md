@@ -20,6 +20,7 @@ other hosts, run them in the container from
 | Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` for two modules | Yes, without `torch` |
 | Format | `cargo fmt --check` | Nothing (no build script) | Yes |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | — | Yes |
+| Markdown links and `AGENTS.md` paths | `python3 scripts/check_doc_references.py` | Git and Python 3 only (no build) | Yes |
 
 `tokenizer_reload_tests` is its own test binary because it installs a counting global
 allocator. It checks that loading and dropping `HFTokenizer` repeatedly does not keep
@@ -52,8 +53,9 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 `python3 -m pytest tests/ -q`. `torch` is not installed, so `tests/test_bench_pytorch.py`
 and `tests/test_compare_q4f16_onnx_vs_pytorch.py` skip.
 
-**`Lint`**: fetch static llama, `cargo fmt --check`, then
-`cargo clippy --all-targets -- -D warnings`.
+**`Lint`**: `python3 scripts/check_doc_references.py` with the runner's own `python3`
+(see [Documentation references](#documentation-references)), then fetch static llama,
+`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
 
 CI does not run plain `cargo test`, doc tests, the example's unit test, or any benchmark.
 Benchmarks run only by hand; see [benchmarking.md](./benchmarking.md).
@@ -202,7 +204,38 @@ run. No model weights are needed.
 
 `tests/test_*.py` cover the scripts in `scripts/`: the benchmark orchestrator, report
 renderer, metadata writer, retrieval-case builder, token-id generator, embedding comparison,
-the PyTorch runner and the ONNX-era `compare_q4f16_onnx_vs_pytorch.py`. They do not build
-LTEmbed or need a bundle. The orchestrator tests check the `cargo run` command line without
-running it.
+documentation reference check, the PyTorch runner and the ONNX-era
+`compare_q4f16_onnx_vs_pytorch.py`. They do not build LTEmbed or need a bundle. The
+orchestrator tests check the `cargo run` command line without running it.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
+
+## Documentation references
+
+`scripts/check_doc_references.py` runs offline over the files Git tracks and fails if a
+reference does not resolve:
+
+- **Links in every `*.md` file.** The target of each inline link, image and reference
+  definition must be a tracked file or directory. A target that starts with `/` resolves
+  from the repository root, as on GitHub; any other resolves from the linking file's
+  directory, and one with no path (`#anchor`, or an empty `()`) is the linking file itself.
+  A `#fragment` on a link to a Markdown file must match one of its headings, slugged the
+  way GitHub does it (`## What CI runs` is `#what-ci-runs`). Targets with a URL scheme, such
+  as `https:` or `mailto:`, are skipped and never fetched. Link syntax in a code span or a
+  fenced or indented code block is code, not a link. HTML `<a href>` links are not checked,
+  and an HTML `<a id>` does not count as a heading.
+- **Paths in `AGENTS.md` files.** Each token in a code span or code block that contains `/`
+  or ends in a file extension must name a tracked file or directory. A token resolves from
+  the repository root, or else from the `AGENTS.md` file's own directory. Each
+  `file` § "Section" reference must match a heading of that file. A § "Section" refers to
+  the last Markdown file named before it in the same paragraph, or to the `AGENTS.md`
+  itself if there is none. One that directly follows a code span naming no Markdown file,
+  as in the notation `file` § "Section" itself, is not checked.
+
+The path check covers only `AGENTS.md` files, so the historical documents under
+`docs/history/`, which may name files that no longer exist, get only the link check.
+Placeholders such as `docs/history/<category>/` are skipped. Names that are not repository
+paths, such as the bundle files `model.gguf` and `tokenizer.json`, are listed in
+`NOT_REPO_PATHS` in the script. Add a name there when an `AGENTS.md` has to mention one.
+
+It prints `file:line: problem` for each broken reference and exits 1. It needs Git and
+Python 3.10 or newer, and nothing else: no `pip install`, no build, no network.

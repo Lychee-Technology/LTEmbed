@@ -9,9 +9,10 @@ Runs offline over the files Git tracks and exits 1 if any reference is broken.
    GitHub; any other target resolves from the directory of the file that contains it, and
    a target with no path (`#anchor`, or an empty `()`) is that file itself. A `#fragment`
    on a link to a Markdown file must match one of that file's headings, slugged the way
-   GitHub slugs them. Links with a URL scheme are skipped, never fetched. HTML `<a href>`
-   links are not checked, and HTML `<a id>` anchors are not headings.
-2. AGENTS.md paths. Every path-like token in a code span or code fence of an `AGENTS.md`
+   GitHub slugs them. Links with a URL scheme are skipped, never fetched. Link syntax in a
+   code span or code block, fenced or indented, is code, not a link. HTML `<a href>` links
+   are not checked, and HTML `<a id>` anchors are not headings.
+2. AGENTS.md paths. Every path-like token in a code span or code block of an `AGENTS.md`
    file must be a tracked file or directory, and every `file` § "Section" reference must
    match a heading of that file. A token is path-like if it contains `/` or ends in a file
    extension. Tokens in NOT_REPO_PATHS are runtime or historical names, not repository
@@ -65,8 +66,10 @@ FENCE_CLOSE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*(`{3,}|~{3,})[ \t]*$")
 ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 THEMATIC_BREAK_RE = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+# A list item marker, matched after the line's indentation, and the spaces after it.
+LIST_ITEM_RE = re.compile(r"([-*+]|\d{1,9}[.)])(?: +|$)")
 # A first paragraph line that cannot be the text of a setext heading: a list item, block
-# quote, table row, HTML block or indented code.
+# quote, table row, HTML block, or a line indented into a list item.
 NOT_SETEXT_TEXT_RE = re.compile(r"^(?: {4}|\t| {0,3}(?:[-*+>|<]|\d+[.)])(?:[ \t]|$))")
 CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[[^\]]+\]:[ \t]*(<[^>\n]*>|\S+)", re.MULTILINE)
@@ -82,11 +85,11 @@ PLACEHOLDER_CHARS = frozenset("<>$…")
 
 @dataclass(frozen=True)
 class Block:
-    """A fenced code block, a heading line, or a run of other non-blank lines."""
+    """A fenced code block, an indented code line, a heading, or a run of other non-blank lines."""
 
     line: int  # 1-based number of the first line
     text: str
-    fenced: bool = False
+    code: bool = False
 
 
 @dataclass(frozen=True)
@@ -164,6 +167,9 @@ def parse_markdown(text: str) -> Document:
     fence: tuple[str, int] | None = None
     fence_lines: list[str] = []
     fence_line = 0
+    # Content columns of the open list items, innermost last. Indentation up to the
+    # innermost one puts a line inside that item rather than making it code.
+    items: list[int] = []
 
     def flush_paragraph() -> None:
         if paragraph:
@@ -174,10 +180,29 @@ def parse_markdown(text: str) -> Document:
         if fence is not None:
             close = FENCE_CLOSE_RE.match(line)
             if close and close.group(1)[0] == fence[0] and len(close.group(1)) >= fence[1]:
-                blocks.append(Block(fence_line, "\n".join(fence_lines), fenced=True))
+                blocks.append(Block(fence_line, "\n".join(fence_lines), code=True))
                 fence = None
             else:
                 fence_lines.append(line)
+            continue
+        if not line.strip():
+            flush_paragraph()
+            continue
+        expanded = line.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        item = LIST_ITEM_RE.match(expanded, indent)
+        if item or not paragraph:
+            # A line that does not continue a paragraph closes the list items it is not
+            # indented into.
+            while items and indent < items[-1]:
+                items.pop()
+        if indent - (items[-1] if items else 0) >= 4:
+            # Four columns past the innermost item's content: a paragraph's continuation,
+            # or else indented code. Neither is markup, not even a fence.
+            if paragraph:
+                paragraph.append(line)
+            else:
+                blocks.append(Block(number, line, code=True))
             continue
         opening = FENCE_OPEN_RE.match(line)
         if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
@@ -185,9 +210,6 @@ def parse_markdown(text: str) -> Document:
             fence = (opening.group(1)[0], len(opening.group(1)))
             fence_lines = []
             fence_line = number + 1
-            continue
-        if not line.strip():
-            flush_paragraph()
             continue
         heading = ATX_HEADING_RE.match(line)
         if heading:
@@ -202,12 +224,17 @@ def parse_markdown(text: str) -> Document:
                 headings.append(plain_text(" ".join(part.strip() for part in paragraph)))
             flush_paragraph()
             continue
+        if item:
+            # The item's content starts after the 1 to 4 spaces that follow the marker. With
+            # more, or none, it starts one column after the marker.
+            gap = item.end() - item.end(1)
+            items.append(item.end(1) + (gap if gap <= 4 and item.end() < len(expanded) else 1))
         if not paragraph:
             paragraph_line = number
         paragraph.append(line)
     flush_paragraph()
     if fence is not None:  # An unclosed fence runs to the end of the document.
-        blocks.append(Block(fence_line, "\n".join(fence_lines), fenced=True))
+        blocks.append(Block(fence_line, "\n".join(fence_lines), code=True))
     return Document(tuple(blocks), tuple(headings))
 
 
@@ -336,7 +363,7 @@ def check_link(repo: Repo, source: str, target: str) -> str | None:
 def check_links(repo: Repo, path: str, document: Document) -> list[Problem]:
     problems = []
     for block in document.blocks:
-        if block.fenced:
+        if block.code:
             continue
         text = mask_code_spans(block.text)
         for offset, target in link_targets(text):
@@ -395,7 +422,7 @@ def check_path_token(repo: Repo, source: str, token: str) -> tuple[str | None, s
 def check_agents_references(repo: Repo, path: str, document: Document) -> list[Problem]:
     problems = []
     for block in document.blocks:
-        if block.fenced:
+        if block.code:
             for offset, line in enumerate(block.text.split("\n")):
                 for token in path_tokens(line):
                     message, _ = check_path_token(repo, path, token)

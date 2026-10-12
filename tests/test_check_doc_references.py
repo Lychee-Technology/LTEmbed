@@ -199,6 +199,61 @@ class CheckDocReferencesTests(unittest.TestCase):
         }
         self.assertEqual(self.problems(files), [])
 
+    def test_indented_code_is_code_only_outside_paragraphs_and_list_items(self):
+        files = {
+            "README.md": "\n".join(
+                [
+                    "    [x](code.md)",
+                    "\t[x](tab-code.md)",
+                    "    ```",
+                    "",
+                    "A paragraph continues on indented lines,",
+                    "    [x](continuation.md)",
+                    "    ```",
+                    "[x](after-indented-backticks.md)",
+                    "",
+                    "- Item content indented 2 columns.",
+                    "",
+                    "    [x](item-paragraph.md)",
+                    "",
+                    "      [x](item-code.md)",
+                    "",
+                    "1. Item content indented 3 columns,",
+                    "   - nested item content indented 5.",
+                    "",
+                    "         [x](nested-code.md)",
+                    "",
+                    "       [x](nested-paragraph.md)",
+                    "",
+                    "    [x](outer-paragraph.md)",
+                    "",
+                    "-   Item content indented 4 columns,",
+                    "continued on a lazy line.",
+                    "",
+                    "       [x](wide-item-paragraph.md)",
+                    "",
+                    "[x](top-paragraph.md)",
+                    "",
+                    "    [x](top-code.md)",
+                ]
+            )
+        }
+        self.assertEqual(
+            self.problems(files),
+            [
+                f"README.md:{line}: link `{name}`: {name} does not exist"
+                for line, name in [
+                    (6, "continuation.md"),
+                    (8, "after-indented-backticks.md"),
+                    (12, "item-paragraph.md"),
+                    (21, "nested-paragraph.md"),
+                    (23, "outer-paragraph.md"),
+                    (28, "wide-item-paragraph.md"),
+                    (30, "top-paragraph.md"),
+                ]
+            ],
+        )
+
     def test_reference_definitions_are_checked(self):
         files = {
             "README.md": "[a][ok] and [b][bad]\n\n[ok]: ./a.md\n[bad]: <./missing.md>\n",
@@ -261,7 +316,7 @@ class CheckDocReferencesTests(unittest.TestCase):
             ],
         )
 
-    def test_agents_code_fences_are_checked_and_non_paths_are_skipped(self):
+    def test_agents_code_blocks_are_checked_and_non_paths_are_skipped(self):
         files = {
             "scripts/generate_fixtures.py": "",
             "tests/AGENTS.md": "\n".join(
@@ -273,6 +328,9 @@ class CheckDocReferencesTests(unittest.TestCase):
                     "├── model.gguf",
                     "```",
                     "",
+                    "    python3 scripts/generate_fixtures.py",
+                    "    python3 scripts/also_gone.py",
+                    "",
                     "Not paths: `EmbeddingInput::query(...)`, `LTEMBED_TEST_BUNDLE_DIR=1`,",
                     "`--all-targets`, `1.94.0`, `docs/history/<category>/`, `$PWD/gguf_bundle`,",
                     "`https://example.invalid/a/b.md`, `tokenizer.json`, `linux/arm64`.",
@@ -281,7 +339,11 @@ class CheckDocReferencesTests(unittest.TestCase):
         }
         self.assertEqual(
             self.problems(files),
-            ["tests/AGENTS.md:3: path `scripts/gone.py`: scripts/gone.py does not exist"],
+            [
+                "tests/AGENTS.md:3: path `scripts/gone.py`: scripts/gone.py does not exist",
+                "tests/AGENTS.md:9: path `scripts/also_gone.py`: "
+                "scripts/also_gone.py does not exist",
+            ],
         )
 
     def test_agents_section_references_must_match_headings(self):

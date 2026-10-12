@@ -220,9 +220,10 @@ reference does not resolve:
   directory, and one with no path (`#anchor`, or an empty `()`) is the linking file itself.
   A `#fragment` on a link to a Markdown file must match one of its headings, slugged the
   way GitHub does it (`## What CI runs` is `#what-ci-runs`). Targets with a URL scheme, such
-  as `https:` or `mailto:`, are skipped and never fetched. HTML `<a href>` links are not
-  checked, and an HTML `<a id>` does not count as a heading.
-- **Paths in `AGENTS.md` files.** Each token in a code span or code fence that contains `/`
+  as `https:` or `mailto:`, are skipped and never fetched. Link syntax in a code span or a
+  fenced or indented code block is code, not a link. HTML `<a href>` links are not checked,
+  and an HTML `<a id>` does not count as a heading.
+- **Paths in `AGENTS.md` files.** Each token in a code span or code block that contains `/`
   or ends in a file extension must name a tracked file or directory. A token resolves from
   the repository root, or else from the `AGENTS.md` file's own directory. Each
   `file` § "Section" reference must match a heading of that file. A § "Section" refers to

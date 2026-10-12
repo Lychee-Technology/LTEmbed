@@ -75,6 +75,10 @@ failure returns `LTEmbedError::ModelLoad(_)`:
 7. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_LAST`,
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, `n_ctx = n_batch = n_ubatch = max_length`,
    `n_seq_max = 1`, `n_threads = n_threads_batch = n_threads`.
+8. Check that the tokenizer's vocabulary size, added tokens included, equals the GGUF's
+   `llama_vocab_n_tokens` (`Runtime` on mismatch). This rejects a tokenizer from a model
+   with another vocabulary size, such as `assets/tokenizer.json`. A wrong tokenizer of the
+   same size still loads; see [bundle-format.md](./bundle-format.md#tokenizerjson).
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr.
@@ -130,7 +134,7 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, context creation failure |
+| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, context creation failure, tokenizer and GGUF vocabulary sizes differ |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The tokenizer rejects the input |
 | `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code |

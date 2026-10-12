@@ -100,6 +100,12 @@ impl HFTokenizer {
         Ok(Self { inner })
     }
 
+    /// Number of distinct tokens, added tokens included. This model's tokenizer has 128000
+    /// BPE tokens plus 256 added special tokens, and its GGUF counts all 128256.
+    pub(crate) fn vocab_size(&self) -> usize {
+        self.inner.get_vocab_size(true)
+    }
+
     pub fn encode_batch(
         &self,
         texts: &[String],
@@ -146,7 +152,8 @@ impl Tokenizer for HFTokenizer {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tokenizers::Encoding;
+    use tokenizers::models::bpe::{Vocab, BPE};
+    use tokenizers::{AddedToken, Encoding};
 
     const TOKENIZER_PATH: &str = "assets/tokenizer.json";
 
@@ -180,6 +187,25 @@ mod tests {
     fn test_real_input_ids_empty_when_all_padding() {
         let out = output(vec![128004, 128004], vec![0, 0]);
         assert!(out.real_input_ids().is_empty());
+    }
+
+    /// An added token outside the model vocabulary counts; one already in it does not.
+    #[test]
+    fn test_vocab_size_counts_each_added_token_once() {
+        let vocab: Vocab = [("a", 0), ("b", 1), ("ab", 2)]
+            .into_iter()
+            .map(|(token, id)| (token.to_string(), id))
+            .collect();
+        let merges = vec![("a".to_string(), "b".to_string())];
+        let bpe = BPE::builder()
+            .vocab_and_merges(vocab, merges)
+            .build()
+            .unwrap();
+        let mut inner = tokenizers::Tokenizer::new(bpe);
+        inner
+            .add_special_tokens([AddedToken::from("<pad>", true), AddedToken::from("a", true)])
+            .unwrap();
+        assert_eq!(HFTokenizer { inner }.vocab_size(), 4);
     }
 
     #[test]

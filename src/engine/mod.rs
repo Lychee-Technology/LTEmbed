@@ -16,7 +16,7 @@ pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
 
 use backend::EmbeddingBackend;
-use bundle::{require_file, ModelSpec};
+use bundle::{check_vocab_sizes, require_file, ModelSpec};
 use inference::{postprocess_embedding, prefixed_text};
 use llama::LlamaBackend;
 
@@ -106,6 +106,7 @@ impl EmbeddingEngine {
             spec.max_length,
             n_threads,
         )?;
+        check_vocab_sizes(tokenizer.vocab_size(), backend.vocab_size())?;
 
         Ok(Self {
             backend: Box::new(backend),

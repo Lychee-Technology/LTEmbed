@@ -32,7 +32,7 @@ EmbeddingEngine                      src/engine/mod.rs
   No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
   one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
   architecture and checks the contract version, variant and commit; `.githooks/pre-push`
-  checks the contract version and target of its local copy. See
+  checks the contract version and target of the copy it builds against. See
   [development.md](./development.md#static-llamacpp-artifacts) before bumping it.
 
 ## Model

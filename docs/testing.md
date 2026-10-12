@@ -216,6 +216,13 @@ documentation reference check, the PyTorch runner and the ONNX-era
 orchestrator tests check the `cargo run` command line without running it.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
 
+`tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
+`.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub
+`uname`, `cargo` and `docker` commands and a stub CPU check, so on any machine it checks
+which hosts run clippy natively and which use the container, without compiling anything.
+The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs `bash`
+and `git`.
+
 ## Documentation references
 
 `scripts/check_doc_references.py` runs offline over the files Git tracks and fails if a

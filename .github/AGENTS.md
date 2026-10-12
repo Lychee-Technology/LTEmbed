@@ -45,7 +45,7 @@ When modifying a workflow:
 
 - consider cache behavior;
 - keep ARM64 and x86-64-v3 requirements explicit;
-- do not treat an `x86_64` runner label as x86-64-v3: an x86_64 job must keep the CPU check in `.github/scripts/fetch-static-llama.sh`, which fails the job instead of letting the tests run on an unsupported CPU;
+- do not treat an `x86_64` runner label as x86-64-v3: an x86_64 job must keep the CPU check that `.github/scripts/fetch-static-llama.sh` runs, which fails the job instead of letting the tests run on an unsupported CPU. The check is defined once, in `.github/scripts/x86-64-v3.sh`, which `.githooks/pre-push` also sources; change it there rather than copying it;
 - preserve reproducibility;
 - avoid silently skipping model-backed validation;
 - verify shell commands with `set -euo pipefail` semantics where applicable.

@@ -6,41 +6,72 @@ cd "$repo_root"
 
 clippy_cmd=(cargo clippy --all-targets -- -D warnings)
 
-# Native cargo only works on aarch64 Linux with the static llama.cpp release
-# present (build.rs requires STATIC_LLAMA_DIR). On any other host, run the same
-# check in a linux/arm64 container against .llama-artifacts/extracted/.
-if [[ "$(uname -sm)" == "Linux aarch64" && -n "${STATIC_LLAMA_DIR:-}" ]]; then
-    echo "pre-push: running ${clippy_cmd[*]}"
-    "${clippy_cmd[@]}"
-else
-    artifacts="$repo_root/.llama-artifacts/extracted"
-    # Everything build.rs consumes from the release (CONTRACT.md "Release layout"),
-    # plus build-info.json for the contract-version check below. SHA verification is
-    # the download step's responsibility (fetch-static-llama.sh / manual download);
-    # the hook trusts a verified download and only validates layout + contract here.
-    required=(lib/libllama.a lib/libggml.a lib/libggml-cpu.a lib/libggml-base.a bindings.rs build-info.json)
+# check_release DIR NAME VARIANT TRIPLE
+#
+# Exit unless DIR (called NAME in messages) holds everything build.rs consumes from the
+# release (CONTRACT.md "Release layout") and a build-info.json for the VARIANT this hook
+# builds against. SHA verification is the download step's responsibility
+# (fetch-static-llama.sh / manual download); the hook trusts a verified download and only
+# validates layout + contract + target here.
+check_release() {
+    local dir="$1" name="$2" variant="$3" triple="$4" f contract actual_triple
+    local required=(lib/libllama.a lib/libggml.a lib/libggml-cpu.a lib/libggml-base.a bindings.rs build-info.json)
     for f in "${required[@]}"; do
-        if [[ ! -f "$artifacts/$f" ]]; then
-            echo "pre-push: $artifacts/$f not found — download and SHA-verify the" >&2
-            echo "static-llama-cpp release into .llama-artifacts/extracted/ (see docs/development.md)" >&2
+        if [[ ! -f "$dir/$f" ]]; then
+            echo "pre-push: $dir/$f not found — download and SHA-verify the $variant variant" >&2
+            echo "of the static-llama-cpp release into $name (see docs/development.md)" >&2
             exit 1
         fi
     done
     # Same checks as .github/scripts/fetch-static-llama.sh: fail closed on a release built
-    # against a different artifact contract, or on the x86_64 variant, which the linux/arm64
-    # container cannot link.
-    contract="$(grep -o '"artifact_contract_version": *"[0-9]*"' "$artifacts/build-info.json" | grep -o '[0-9]*' || true)"
+    # against a different artifact contract, or on the other architecture's variant, which
+    # this build cannot link.
+    contract="$(grep -o '"artifact_contract_version": *"[0-9]*"' "$dir/build-info.json" | grep -o '[0-9]*' || true)"
     if [[ "$contract" != "4" ]]; then
-        echo "pre-push: unexpected artifact_contract_version '${contract:-<missing>}' in $artifacts/build-info.json" >&2
+        echo "pre-push: unexpected artifact_contract_version '${contract:-<missing>}' in $dir/build-info.json" >&2
         echo "(expected 4) — re-download the pinned release (see docs/development.md)" >&2
         exit 1
     fi
-    triple="$(grep -o '"target_triple": *"[^"]*"' "$artifacts/build-info.json" | cut -d'"' -f4 || true)"
-    if [[ "$triple" != "aarch64-unknown-linux-gnu" ]]; then
-        echo "pre-push: unexpected target_triple '${triple:-<missing>}' in $artifacts/build-info.json" >&2
-        echo "(expected aarch64-unknown-linux-gnu) — .llama-artifacts/extracted/ must hold the aarch64-graviton2 variant (see docs/development.md)" >&2
+    actual_triple="$(grep -o '"target_triple": *"[^"]*"' "$dir/build-info.json" | cut -d'"' -f4 || true)"
+    if [[ "$actual_triple" != "$triple" ]]; then
+        echo "pre-push: unexpected target_triple '${actual_triple:-<missing>}' in $dir/build-info.json" >&2
+        echo "(expected $triple) — $name must hold the $variant variant (see docs/development.md)" >&2
         exit 1
     fi
+}
+
+# Native cargo needs STATIC_LLAMA_DIR (build.rs requires it) and a host that can run one of
+# the release's variants: aarch64 Linux, or x86_64 Linux whose CPU passes the same x86-64-v3
+# check as CI. On any other host, run the same check in a linux/arm64 container against
+# .llama-artifacts/extracted/.
+native_variant=
+native_triple=
+if [[ -n "${STATIC_LLAMA_DIR:-}" ]]; then
+    case "$(uname -sm)" in
+        "Linux aarch64")
+            native_variant=aarch64-graviton2
+            native_triple=aarch64-unknown-linux-gnu
+            ;;
+        "Linux x86_64")
+            # shellcheck source=.github/scripts/x86-64-v3.sh
+            source "$repo_root/.github/scripts/x86-64-v3.sh"
+            if cpu_check="$(x86_64_v3_check)"; then
+                native_variant=x86_64-v3
+                native_triple=x86_64-unknown-linux-gnu
+            else
+                echo "pre-push: not running clippy natively: $cpu_check"
+            fi
+            ;;
+    esac
+fi
+
+if [[ -n "$native_triple" ]]; then
+    check_release "$STATIC_LLAMA_DIR" STATIC_LLAMA_DIR "$native_variant" "$native_triple"
+    echo "pre-push: running ${clippy_cmd[*]}"
+    "${clippy_cmd[@]}"
+else
+    artifacts="$repo_root/.llama-artifacts/extracted"
+    check_release "$artifacts" .llama-artifacts/extracted/ aarch64-graviton2 aarch64-unknown-linux-gnu
     if ! docker info >/dev/null 2>&1; then
         echo "pre-push: docker daemon not reachable — install/start Docker to run clippy on this host (see docs/development.md)" >&2
         exit 1

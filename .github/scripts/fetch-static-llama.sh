@@ -21,23 +21,15 @@ readonly EXPECTED_CONTRACT=4
 : "${STATIC_LLAMA_LLAMA_CPP_COMMIT:?set STATIC_LLAMA_LLAMA_CPP_COMMIT to the llama.cpp commit the pinned release compiles}"
 command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
 
-# Fail closed unless glibc and the kernel both report every x86-64-v3 feature. glibc lists
-# x86-64-v3 as "supported" only if CPUID reports the features and XGETBV shows the OS
-# enabled AVX state; /proc/cpuinfo is checked as well, as in the builder's own gate.
+# x86_64_v3_check, shared with .githooks/pre-push.
+# shellcheck source=.github/scripts/x86-64-v3.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/x86-64-v3.sh"
+
+# Fail closed unless the CPU passes the x86-64-v3 check.
 require_x86_64_v3() {
-  local ldso=/lib64/ld-linux-x86-64.so.2 hwcaps flags missing=() f
-  hwcaps="$("$ldso" --help 2>/dev/null || true)"
-  if ! grep -Eq '^[[:space:]]*x86-64-v3 \(supported' <<<"$hwcaps"; then
-    echo "::error::$ldso does not report x86-64-v3 as supported; the x86_64-v3 static llama.cpp archives cannot run on this CPU"
-    exit 1
-  fi
-  flags=" $(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2) "
-  # x86-64-v2 + v3 feature set. Linux reports SSE3 as `pni` and LZCNT as `abm`.
-  for f in cx16 lahf_lm popcnt pni sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; do
-    [[ "$flags" == *" $f "* ]] || missing+=("$f")
-  done
-  if [ "${#missing[@]}" -ne 0 ]; then
-    echo "::error::/proc/cpuinfo lacks x86-64-v3 features: ${missing[*]}"
+  local reason
+  if ! reason="$(x86_64_v3_check)"; then
+    echo "::error::$reason; the x86_64-v3 static llama.cpp archives cannot run on this CPU"
     exit 1
   fi
   echo "x86-64-v3 capability: PASS ($(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//'))"

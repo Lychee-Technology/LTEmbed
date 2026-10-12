@@ -26,7 +26,7 @@ host.
 It panics if `lib/libllama.a` or `bindings.rs` is missing there. It links `lib/libggml.a`,
 `lib/libggml-cpu.a` and `lib/libggml-base.a` without checking them first, so a partial
 extraction fails at link time instead. The full release is validated by the `SHA256SUMS`
-check in the download steps below and, on hosts where it uses the container, by the
+check in the download steps below, and the copy it builds against is checked by the
 `pre-push` hook (see [Git hooks](#git-hooks)).
 
 The release is pinned by these variables in `.github/workflows/ci.yml`.
@@ -54,11 +54,12 @@ There is no runtime ISA dispatch: a CPU below the variant's baseline faults with
 x86-64 CPUs below v3 are not supported. To check an x86_64 host, run
 `/lib64/ld-linux-x86-64.so.2 --help`; it must list `x86-64-v3 (supported, searched)`.
 
-To download and verify the release into `.llama-artifacts/`, the location the `pre-push`
-hook expects, follow the same steps as `.github/scripts/fetch-static-llama.sh`. Pick the
-variant for the machine that will run cargo: `aarch64-graviton2` on aarch64 Linux and inside
-the `linux/arm64` container, `x86_64-v3` on an x86-64-v3 Linux host. The `pre-push` hook's
-container path needs the `aarch64-graviton2` variant in `.llama-artifacts/extracted/`.
+To download and verify the release into `.llama-artifacts/`, follow the same steps as
+`.github/scripts/fetch-static-llama.sh`. Pick the variant for the machine that will run
+cargo: `aarch64-graviton2` on aarch64 Linux and inside the `linux/arm64` container,
+`x86_64-v3` on an x86-64-v3 Linux host. The `pre-push` hook builds against
+`STATIC_LLAMA_DIR` when it runs natively; its container path needs the `aarch64-graviton2`
+variant in `.llama-artifacts/extracted/`.
 
 ```bash
 STATIC_LLAMA_REPO=Lychee-Technology/static-llama-cpp-rs-builder
@@ -101,10 +102,12 @@ both before they were committed.
 
 The rest of the pin is not in the workflows. `fetch-static-llama.sh` maps `uname -m` to the
 asset name, `target_profile` and `target_triple`, and on x86_64 refuses to continue unless
-the CPU passes the x86-64-v3 check. It and `.githooks/pre-push` reject any artifact contract
-other than `4`. When bumping the release, update the tag, the llama.cpp commit and both
-SHA-256 pins in `ci.yml`, and the same variables in `benchmark-arm64.yml`. Update the script
-and the hook if the new release changes an asset name, a variant or the contract version.
+the CPU passes the x86-64-v3 check in `.github/scripts/x86-64-v3.sh`, which
+`.githooks/pre-push` also uses. The script and the hook reject any artifact contract other
+than `4`, and any `target_triple` other than that of the variant they expect. When bumping
+the release, update the tag, the llama.cpp commit and both SHA-256 pins in `ci.yml`, and
+the same variables in `benchmark-arm64.yml`. Update the script and the hook if the new
+release changes an asset name, a variant or the contract version.
 
 ## Native builds
 
@@ -127,8 +130,9 @@ fails at link time (`rust-lld: error: … is incompatible with elf64-x86-64` on 
 
 On macOS, or on an x86_64 host whose CPU is below x86-64-v3, run cargo inside a
 `linux/arm64` `rust:1.94.0` container with the `aarch64-graviton2` variant. The `pre-push`
-hook uses this container on every host other than aarch64 Linux, x86-64-v3 hosts included
-(see [Git hooks](#git-hooks)). From the repository root:
+hook uses this container whenever it cannot run clippy natively: on those hosts, and on any
+host where `STATIC_LLAMA_DIR` is unset or empty (see [Git hooks](#git-hooks)). From the
+repository root:
 
 ```bash
 docker run --rm --platform linux/arm64 \
@@ -163,14 +167,28 @@ docker run --rm --platform linux/arm64 \
 - `pre-commit` runs `cargo fmt --all --check` when staged files include `*.rs`,
   `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` or `rustfmt.toml`.
 - `pre-push` runs `cargo clippy --all-targets -- -D warnings`:
-  - natively, if the host is Linux aarch64 and `STATIC_LLAMA_DIR` is set;
-  - otherwise in the container above, using `.llama-artifacts/extracted/`. It fails fast if
-    that directory lacks any of `lib/libllama.a`, `lib/libggml.a`, `lib/libggml-cpu.a`,
-    `lib/libggml-base.a`, `bindings.rs` or `build-info.json`, if the contract version is not
-    `4`, if `target_triple` is not `aarch64-unknown-linux-gnu` (the container cannot link
-    the `x86_64-v3` variant), or if `docker info` fails.
+  - natively, against `STATIC_LLAMA_DIR`, if that variable is set and the host is Linux
+    aarch64 or Linux x86_64 whose CPU passes the same x86-64-v3 check as CI
+    (`.github/scripts/x86-64-v3.sh`). Neither Docker nor `.llama-artifacts/extracted/` is
+    needed. `STATIC_LLAMA_DIR` must hold the host's variant, with `target_triple`
+    `aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-gnu`; a wrong variant fails the
+    push instead of falling back to the container;
+  - otherwise in the container above, against `.llama-artifacts/extracted/`, which must
+    hold the `aarch64-graviton2` variant (`target_triple` `aarch64-unknown-linux-gnu`): on
+    macOS, on an x86_64 CPU below v3 (the hook prints which part of the check failed), and
+    wherever `STATIC_LLAMA_DIR` is unset or empty. To use the container on a host that
+    would run natively, push with `STATIC_LLAMA_DIR= git push`.
 
-  The hook does not verify SHA-256 sums; it trusts that the download step above did.
+  Either way, the hook first fails fast if that release directory lacks any of
+  `lib/libllama.a`, `lib/libggml.a`, `lib/libggml-cpu.a`, `lib/libggml-base.a`,
+  `bindings.rs` or `build-info.json`, if its contract version is not `4`, or if its
+  `target_triple` is not the one above; in the container case, also if `docker info` fails.
+  It does not verify SHA-256 sums; it trusts that the download step above did.
+
+  CI's `Lint` job runs clippy on aarch64, and a native run on x86_64 lints the x86_64
+  target instead. The crate has no `cfg(target_arch)` code, but a lint can still differ
+  between the targets where a type does, such as `c_char` (`i8` on x86_64, `u8` on
+  aarch64).
 
 ## Checks before pushing
 
@@ -220,6 +238,7 @@ The example prints the embedding count, the dimension (`512`) and the first five
 | `scripts/` | Python tooling ([scripts/README.md](../scripts/README.md)) |
 | `assets/` | `config.json` and an old BERT `tokenizer.json`, used only by tokenizer unit tests. Not a bundle. |
 | `.github/scripts/fetch-static-llama.sh` | CI download and verify of the static release |
+| `.github/scripts/x86-64-v3.sh` | The x86-64-v3 CPU check, sourced by `fetch-static-llama.sh` and `pre-push` |
 | `.githooks/` | `pre-commit`, `pre-push` |
 
 ## Branches

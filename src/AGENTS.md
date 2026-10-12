@@ -19,7 +19,7 @@ Prefer:
 
 Avoid unnecessary allocation in inference-sensitive paths.
 
-Run `rustfmt` and keep Clippy clean with `-D warnings`.
+Run `rustfmt` and keep Clippy and rustdoc clean with `-D warnings`.
 
 ## Public API
 

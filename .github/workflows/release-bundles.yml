@@ -103,8 +103,11 @@ jobs:
           git archive --format=tar --prefix="${ROOT_NAME}/" HEAD | tar -xf - -C artifacts/package
           cp -r artifacts/gguf_bundle "artifacts/package/${ROOT_NAME}/gguf_bundle"
           tar -czf "artifacts/package/${OUTPUT_NAME}" -C artifacts/package "${ROOT_NAME}"
-          # Fail loudly if the GGUF bundle didn't make it into the archive.
-          tar -tzf "artifacts/package/${OUTPUT_NAME}" | grep -q "${ROOT_NAME}/gguf_bundle/model.gguf"
+          # Fail loudly if the GGUF bundle didn't make it into the archive. List into a file
+          # instead of piping into `grep -q`: grep exits on the first match, which SIGPIPEs tar
+          # and fails the step under `set -o pipefail` exactly when model.gguf IS present.
+          tar -tzf "artifacts/package/${OUTPUT_NAME}" > artifacts/package/archive-contents.txt
+          grep -F -q "${ROOT_NAME}/gguf_bundle/model.gguf" artifacts/package/archive-contents.txt
 
           {
             echo "gguf_repo=${GGUF_REPO}"

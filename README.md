@@ -29,6 +29,20 @@ The engine loads a directory with three files:
 The release workflow packages a ready-made `gguf_bundle/`, or you can assemble one with
 `curl`. See [docs/bundle-format.md](./docs/bundle-format.md).
 
+## Licensing
+
+LTEmbed's original source code is dual-licensed under either the
+[MIT license](./LICENSE-MIT) or the [Apache License 2.0](./LICENSE-APACHE), at your
+option (`MIT OR Apache-2.0`). Third-party models, tokenizers, assets and dependencies
+are not relicensed by this grant; their applicable upstream terms remain in effect.
+
+The Jina model is **CC BY-NC 4.0 (NonCommercial only)**; commercial use requires
+separate permission from [sales@jina.ai](mailto:sales@jina.ai). See the
+[model attribution, provenance and redistribution checklist](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md).
+These companion files do not clear redistribution, resolve upstream tokenizer
+rights, or grant additional rights to third-party materials.
+They are not yet integrated into release packaging.
+
 ## Usage
 
 ```rust

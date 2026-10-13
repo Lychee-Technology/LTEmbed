@@ -178,8 +178,8 @@ budget is a packaging target; this repository does not deploy to Lambda (see
 ## Recorded results
 
 No benchmark output is committed to the repository except the tables below. In
-particular, there are **no committed Graviton or other aarch64 timings** and no committed
-output from the `benchmark-arm64` workflow. The previous model's results, from the
+particular, there are **no committed Graviton timings** and no committed output from the
+`benchmark-arm64` workflow; the only aarch64 timings are from a Raspberry Pi 5, below. The previous model's results, from the
 llama.cpp migration spike of July 2026, are in
 [history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md#recorded-results-llamacpp-migration-spike-july-2026).
 
@@ -275,3 +275,58 @@ and that set's retrieval metrics, where each query must find both sentences of i
   without it `UD-Q5_K_XL` (200.3 MiB) fits too. The report's smallest-bundle rule still
   picks `UD-Q4_K_XL`, because its mean-cosine gate does not see the tail above; the release
   ships `UD-Q5_K_XL` anyway ([releases.md](./releases.md#why-ud-q5_k_xl)).
+
+### EmbeddingGemma 2 on a Raspberry Pi 5 (aarch64), October 2026
+
+Measured natively with the same probe, inputs and `benchmark_ltembed` flags as the x86
+tables above, at 4, 2 and 1 threads:
+
+- Raspberry Pi 5 Model B (4 × Cortex-A76, 2.4 GHz), 16 GB RAM, Ubuntu 26.04 (kernel 7.0,
+  4 KiB pages); every run had 0 major page faults, so swap played no part;
+- static llama.cpp `v0.1.159-2`, `aarch64-graviton2` variant: the same Graviton2-targeted
+  kernels CI's ARM job runs, since the release has no runtime ISA dispatch; flash attention
+  on;
+- the release bundle (`UD-Q5_K_XL`), `--output-dimension 512 --l2-normalize true`, 3
+  warm-up and 20 timed iterations (`single/long`: 1 and 3). Values are medians in ms.
+  `single/long` is one process per thread count; its spread between processes was not
+  measured here;
+- temperature, sampled every 2 s: the firmware's soft temperature limit was active for
+  about 10 s, at 81 °C, at the end of the 8192-token first call at 4 threads. Otherwise the
+  ARM clock read 2400 MHz and no throttling or capping flag was set.
+
+These are one Raspberry Pi's numbers. They do not predict Graviton or Lambda latency.
+
+**Warm latency of `UD-Q5_K_XL` by thread count**:
+
+| Threads | `single/zh` | `single/en` | `single/medium` | `batch/medium/8` | `single/long` |
+|---|---|---|---|---|---|
+| 1 | 145.4 | 160.9 | 878.5 | 6749 | 99985 |
+| 2 | 79.5 | 86.5 | 464.9 | 3640 | 53025 |
+| 4 | 60.8 | 63.3 | 357.6 | 2687 | 38030 |
+
+- At 4 threads the Pi takes 2.5 times as long as the x86 host at 6 threads on `single/zh`,
+  4.3 times on `single/medium` and 6.5 times on `single/long`.
+- At 768 dimensions, `single/medium` took 386.7 ms and `batch/medium/8` 2765 ms, 3–8% more
+  than at 512. They ran last, after the 1-thread runs, in a warm phase that reached
+  80.7 °C; on x86 the width makes no difference.
+- The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 145.2 to
+  145.8 ms at 1 thread and 59.5 to 60.4 ms at 4 threads with `max_length` 128, 512, 2048 and
+  8192.
+- Loading the engine takes 1.32–1.39 s (1.82 s for the session's first load). A cold start
+  of `single/zh` (load and one embedding in a fresh process, 4 threads) takes 1.28–1.29 s.
+
+**Memory and first call**: peak resident memory (`/usr/bin/time -v`) of one process that
+loads the release bundle (`max_length` 8192) and embeds one input, and the time of that
+first call:
+
+| Input tokens | Peak RSS | First call, 4 threads | First call, 1 thread |
+|---|---|---|---|
+| 14 | 0.41 GiB | 0.08 s | 0.17 s |
+| 1024 | 1.59 GiB | 5.6 s | 15.2 s |
+| 2039 | 2.60 GiB | 15.0 s | — |
+| 4074 | 4.84 GiB | 38.8 s | 99.5 s |
+| 8192 | 9.48 GiB (10.2 GB) | 120 s | 302 s |
+
+Peak RSS is 0.09–0.12 GiB above the x86 host's at every length, and the thread count does
+not change it. With `max_length` 2048, the 2039-token input peaks at the same 2.60 GiB and
+the 1024-token one at 1.51 GiB.

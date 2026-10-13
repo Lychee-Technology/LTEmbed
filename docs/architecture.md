@@ -171,7 +171,9 @@ That is about 0.32 GiB plus 1.13 MiB per token of the longest input embedded so 
 Loading takes 0.48–0.53 s (warm page cache). Later calls of the same length are faster
 than the first, which also touches the newly reserved buffers:
 [benchmarking.md](./benchmarking.md#recorded-results) has warm latencies, and how much
-long-input times vary between processes. Three consequences:
+long-input times vary between processes. It also has the same table for a Raspberry Pi 5
+(aarch64), where peak RSS is 0.09–0.12 GiB higher at every length and the 8192-token first
+call takes 120 s at 4 threads. Three consequences:
 
 - **The buffer only grows.** llama.cpp keeps the output buffer at the largest size any
   input needed, so after one 8k input an engine holds about 9.4 GiB until it is dropped.

@@ -29,7 +29,6 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
         bundle = tmp / "bundle"
         bundle.mkdir()
         (bundle / "model.gguf").write_bytes(b"g" * 1000)
-        (bundle / "tokenizer.json").write_bytes(b"t" * 300)
         (bundle / "build-info.json").write_bytes(b"b" * 50)
         static_dir = tmp / "static"
         static_dir.mkdir()
@@ -94,7 +93,7 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
             tmp = Path(tmpdir)
             metadata = self._write(tmp, self._make_env(tmp))
         self.assertEqual(metadata["model_size_bytes"], 1000)
-        self.assertEqual(metadata["bundle_size_bytes"], 1000 + 300 + 50)
+        self.assertEqual(metadata["bundle_size_bytes"], 1000 + 50)
 
     def test_model_sha256_matches_content(self):
         import hashlib

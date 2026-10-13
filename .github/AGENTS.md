@@ -33,7 +33,7 @@ The CI Test job sets:
 LTEMBED_REQUIRE_TEST_BUNDLE=1
 ```
 
-so bundle-gated integration tests, and the tokenizer parity test (`cargo test --lib tokenizer_parity -- --ignored`), fail instead of silently skipping if `LTEMBED_TEST_BUNDLE_DIR` or required files are missing.
+so bundle-gated integration tests, and the tokenizer parity tests (`cargo test --lib tokenizer_parity -- --ignored`), fail instead of silently skipping if `LTEMBED_TEST_BUNDLE_DIR`, `LTEMBED_TEST_REFERENCE_TOKENIZER` or required files are missing.
 
 Preserve that fail-closed behavior when changing bundle assembly or test invocation.
 

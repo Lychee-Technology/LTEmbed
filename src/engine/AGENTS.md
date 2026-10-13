@@ -13,7 +13,7 @@ EmbeddingInput
     ↓
 query/document prefix
     ↓
-tokenization
+tokenization (the GGUF's own vocabulary, through the backend)
     ↓
 backend inference (llama_encode, one sequence at a time)
     ↓
@@ -37,13 +37,12 @@ Preserve separation between shared retrieval semantics and backend-specific infe
 The shared engine owns:
 
 - retrieval-prefix behavior;
-- tokenization;
-- maximum-length enforcement;
+- maximum-length enforcement, on the backend's token ids, without truncation;
 - post-processing;
 - output truncation;
 - optional normalization.
 
-A backend should return the raw pooled representation expected by the shared engine.
+A backend tokenizes with its model file's own vocabulary (`EmbeddingBackend::tokenize`), because the vocabulary lives in the GGUF, and returns the raw pooled representation expected by the shared engine.
 
 Do not move shared semantics into `LlamaBackend` unless the architecture intentionally changes.
 
@@ -81,19 +80,18 @@ A runtime bundle contains at least:
 ```text
 gguf_bundle/
 ├── model.gguf
-├── tokenizer.json
 └── build-info.json
 ```
 
 Use `bundle.rs` and `scripts/assemble_gguf_bundle.py`, which every workflow uses to build its bundle, as the authoritative metadata contract. `docs/bundle-format.md` documents it and must stay in sync.
 
-Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata (including a `max_length` outside `1..=8192`), a tokenizer or GGUF that fails to load, a GGUF pooled width (`n_embd_out`) that differs from `raw_embedding_dimension`, a GGUF that does not declare mean pooling, a tokenizer vocabulary size (added tokens included) that differs from the GGUF's, and a tokenizer that tokenizes `TOKENIZER_CHECK_TEXT` differently from the GGUF's vocabulary. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
+Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata (including a `max_length` outside `1..=8192`), a GGUF that fails to load, a GGUF pooled width (`n_embd_out`) that differs from `raw_embedding_dimension`, a GGUF that does not declare mean pooling, and a GGUF whose tokenization of `SPECIAL_TOKENS_CHECK_TEXT` does not start with its BOS and end with its EOS. A `tokenizer.json` in the directory is not read. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
 
-The two tokenizer checks are sanity checks, not an identity check. They reject a tokenizer from a model with another vocabulary size, or one that lost its special tokens, but a tokenizer that agrees with the GGUF on the check text and differs elsewhere loads without error and produces wrong embeddings; only the bundle-gated tests catch that, and only for the bundle and inputs they run (`docs/testing.md`). So:
+The BOS/EOS check is a sanity check, not an identity check. It rejects a GGUF whose tokenization lost the special tokens the model wraps every input in, but a GGUF whose vocabulary splits text differently from the model's own tokenizer loads without error and produces wrong embeddings; only the bundle-gated tests catch that, and only for the GGUF and inputs they run (`docs/testing.md`). So:
 
-- the tokenizer must be the one pinned in `scripts/assemble_gguf_bundle.py`: `unsloth/embeddinggemma-2` at its pinned revision, Unsloth's safetensors copy of the model (the GGUF repository has no `tokenizer.json`). Its agreement with the GGUF's vocabulary is shown by the load-time check, by the llama.cpp reference test's token ids, and by the tokenizer parity test (`src/engine/tokenizer_parity.rs`, `docs/testing.md` § "Tokenizer parity") on a fixed corpus of about 25,000 texts, not by provenance;
-- do not use `assets/tokenizer.json` as a runtime replacement. It is a stale 30k-vocab placeholder, and loading rejects it;
-- do not describe either check as validating tokenizer/model identity.
+- the GGUF must be one pinned in `scripts/assemble_gguf_bundle.py`. Its vocabulary's agreement with the model's own tokenizer is shown by the tokenizer parity tests (`src/engine/tokenizer_parity.rs`, `docs/testing.md` § "Tokenizer parity"): against the pinned `tokenizer.json` of `unsloth/embeddinggemma-2` on a fixed corpus of about 25,000 texts, and against the token-id and llama.cpp reference fixtures. It is not shown by provenance;
+- do not add a `tokenizer.json` or a second tokenizer to the runtime path;
+- do not describe the check as validating tokenizer/model identity.
 
 ## llama.cpp FFI
 

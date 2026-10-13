@@ -10,13 +10,14 @@ to build its bundle.
 ```
 gguf_bundle/
 ├── model.gguf        required
-├── tokenizer.json    required
 ├── build-info.json   required
 ├── SHA256SUMS        written by assemble_gguf_bundle.py; not read by the runtime
 └── provenance.json   written by assemble_gguf_bundle.py; not read by the runtime
 ```
 
-The directory name is up to you. `examples/api_usage.rs` and the docs use `gguf_bundle/`.
+There is no `tokenizer.json`: the engine tokenizes with the GGUF's own vocabulary (see
+[Tokenization](#tokenization)). A `tokenizer.json` left in the directory, for example by an
+older bundle, is not read. The directory name is up to you. `examples/api_usage.rs` and the docs use `gguf_bundle/`.
 No tool in this repository converts models: `scripts/assemble_gguf_bundle.py` downloads
 published files from pinned Hugging Face revisions and checks their hashes.
 
@@ -51,40 +52,43 @@ loader checks, failing with `ModelLoad(Runtime)`:
   values of the projected vector;
 - the GGUF declares `<architecture>.pooling_type` as mean. A GGUF that declares another
   pooling, or none, is rejected: the backend always pools with mean;
+- the GGUF's tokenization adds BOS and EOS (see [Tokenization](#tokenization));
 - the llama.cpp context reports mean pooling once created.
 
 The engine needs llama.cpp support for `gemma-embedding2`. The pinned static release
 (`v0.1.159-2`, llama.cpp `b11577`) has it; the previously pinned `v0.1.159-1` (llama.cpp
 `d8123504`) does not know the architecture.
 
-## `tokenizer.json`
+## Tokenization
 
-- The model's own Hugging Face tokenizer, from
+The engine tokenizes every input with the GGUF's own vocabulary (`tokenizer.ggml.*`, model
+`gemma4`) through llama.cpp's `llama_tokenize`, as upstream llama.cpp's embedding tool does:
+special tokens are added and special-token text in the input is matched. The vocabulary has
+262144 tokens; tokenization adds `<bos>` (id 2) before and `<eos>` (id 1) after every input
+and never pads or truncates. The library does not depend on the `tokenizers` crate, and
+neither the bundle nor the release archive contains a `tokenizer.json`.
+
+- The loader makes one tokenization check, failing with `ModelLoad(Runtime)`: a short fixed
+  text (`SPECIAL_TOKENS_CHECK_TEXT` in `src/engine/llama/mod.rs`) must tokenize to ids that
+  start with the vocabulary's BOS and end with its EOS. The model's own pipeline wraps every
+  input in both and mean pooling averages over them, so a GGUF whose
+  `tokenizer.ggml.add_eos_token` (or `add_bos_token`) is false would embed every input
+  differently. The message names the missing token. (For this `gemma4` tokenizer llama.cpp
+  overrides `add_bos_token` to true, so only a missing EOS can occur with these GGUFs.)
+- The check does not show that the vocabulary splits text the way the model's
+  SentenceTransformers pipeline does. That is shown by tests, for the pinned GGUF only: the
+  model's `tokenizer.json` from
   [`unsloth/embeddinggemma-2`](https://huggingface.co/unsloth/embeddinggemma-2) at revision
-  `c8f89cc7ecb4ba5122cd15fdd487422b2b487daf`, Unsloth's safetensors copy of the model; the
-  GGUF repository has no `tokenizer.json`, and both name `google/embeddinggemma-2` as their
-  base model. That the two agree is shown by the load-time check below and by the token ids
-  the llama.cpp reference test compares, not by provenance. It is about 32 MB, with
-  sha256 `4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4`, the value
-  `tests/fixtures/token_ids.json` records.
-- A byte-fallback BPE tokenizer with 262144 tokens; its 24 added special tokens are among
-  them. It adds `<bos>` (id 2) before and `<eos>` (id 1) after every input, and configures
-  no padding and no truncation.
-- The loader makes two checks, both failing with `ModelLoad(Runtime)`:
-  1. its vocabulary size, added tokens included, equals the number of tokens in the GGUF's
-     own vocabulary (`tokenizer.ggml.tokens`, also 262144). The message names both sizes.
-  2. it tokenizes a fixed check text (`TOKENIZER_CHECK_TEXT` in `src/engine/bundle.rs`: a
-     document prompt, Latin and CJK text, digits, punctuation, an emoji and a tab) to the
-     same token ids, `<bos>` and `<eos>` included, as the GGUF's own vocabulary. The message
-     names the first token that differs.
-- Together these reject a tokenizer from another model, or one that lost its special
-  tokens. They prove agreement on that one text, not on every input: a tokenizer that
-  matched the GGUF on the check text but split other text differently would still load and
-  produce wrong vectors. The token-id tests in [testing.md](./testing.md) compare the
-  pinned tokenizer with the GGUF on more inputs.
-- **Do not use `assets/tokenizer.json`.** That tracked file is an old 30522-token BERT
-  WordPiece tokenizer, which unit tests use only for tokenizer shape and length checks.
-  The size check rejects it.
+  `c8f89cc7ecb4ba5122cd15fdd487422b2b487daf` (Unsloth's safetensors copy of the model; the
+  GGUF repository has no `tokenizer.json`), about 32 MB with sha256
+  `4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4`, gives the same token
+  ids as the GGUF's vocabulary on a fixed corpus of about 25,000 texts, and the GGUF's
+  vocabulary matches the token-id and llama.cpp reference fixtures
+  ([testing.md](./testing.md#tokenizer-parity)). A GGUF of another model, or one converted
+  with a different vocabulary, loads if it passes the checks above and produces wrong
+  vectors.
+- `scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes that pinned
+  `tokenizer.json` to `PATH`, outside the bundle, for those tests.
 
 ## `build-info.json`
 
@@ -120,7 +124,7 @@ another quant only `quant` changes.
 | `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text |
 | `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
 | `model_metadata.output_embedding_dimension` | yes (integer) | — | **Not used.** The output size comes from `EngineConfig`. |
-| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Tokenizer limit (`InputTooLong`) and llama.cpp context size |
+| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |
 
 If the file is missing, the engine returns `ModelLoad(MissingFile)`. If it cannot be read or
@@ -138,7 +142,7 @@ training (see [testing.md](./testing.md#how-sensitive-the-gates-are)).
 
 `scripts/assemble_gguf_bundle.py` writes both after every other check has passed:
 
-- `SHA256SUMS`: the sha256 of `model.gguf`, `tokenizer.json` and `build-info.json`.
+- `SHA256SUMS`: the sha256 of `model.gguf` and `build-info.json`.
 - `provenance.json`: for each file, the Hugging Face repository, revision, file name, URL
   and sha256, plus the upstream model (`google/embeddinggemma-2`), its license
   (`apache-2.0`), the quant, the LTEmbed commit that assembled the bundle and, in GitHub
@@ -155,18 +159,22 @@ cd gguf_bundle && sha256sum -c SHA256SUMS
 ```bash
 python3 scripts/assemble_gguf_bundle.py gguf_bundle                 # UD-Q4_K_XL
 python3 scripts/assemble_gguf_bundle.py gguf_bundle-q8 --quant Q8_0
+# Also the tests' reference tokenizer.json, outside the bundle:
+python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json
 # Copies already on disk are checked against the same pins instead of downloaded:
-python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH --tokenizer PATH
+python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH \
+  --reference-tokenizer reference-tokenizer.json --tokenizer PATH
 ```
 
 The script needs only Python 3. It downloads from `resolve/<revision>` URLs, never from a
 branch, rejects a file whose sha256 differs from its pin, and requires the destination to be
 absent or empty. It assembles in a temporary directory and moves the files into place only
-after every check passed, so a failed run leaves no partial bundle. CI, the release workflow
-and the ARM64 benchmark all call it, so they use the same files.
+after every check passed, so a failed run leaves no partial bundle. The reference tokenizer
+replaces an existing file at `PATH` only once it matches its pin. CI, the release workflow and
+the ARM64 benchmark all call the script, so they use the same files.
 
-`gguf_bundle/` is not in `.gitignore`, but `*.gguf` is, so the model cannot be committed by
-accident. The other files can be, so keep the bundle out of commits.
+`/gguf_bundle/`, `/reference-tokenizer.json` and `*.gguf` are in `.gitignore`. A bundle under
+another name is not ignored except for its GGUF, so keep it out of commits.
 
 ## Bundles for the previous model
 

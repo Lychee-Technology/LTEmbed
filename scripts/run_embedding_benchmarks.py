@@ -864,7 +864,7 @@ def parse_args() -> argparse.Namespace:
         "--bundle-dir",
         type=Path,
         default=ROOT / "gguf_bundle",
-        help="Local LTEmbed GGUF bundle directory containing model.gguf, tokenizer.json, and build-info.json.",
+        help="Local LTEmbed GGUF bundle directory containing model.gguf and build-info.json.",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--model-source", default=DEFAULT_MODEL_SOURCE)

@@ -80,10 +80,6 @@ jobs:
       - name: Run library unit tests
         run: cargo test --lib
 
-      # Its own test binary (it installs a counting global allocator), so --lib skips it.
-      - name: Run tokenizer reload memory test
-        run: cargo test --test tokenizer_reload_tests
-
       # Benchmark support tests and the benchmark binary's unit tests are not covered by
       # --lib or --test integration_tests; run them explicitly so scenario/corpus changes
       # are gated.
@@ -93,26 +89,31 @@ jobs:
       - name: Verify Rust API example compiles
         run: cargo check --example api_usage
 
-      # Assemble a real GGUF bundle so the bundle-gated integration tests actually run: golden
-      # and llama.cpp reference parity, batch/normalization/dimension through llama.cpp
-      # inference, token-id parity against the bundle's tokenizer.json. A CI pass must not hide
-      # a broken engine (e.g. the batch-padding pooling bug), so if LTEMBED_TEST_BUNDLE_DIR does
-      # not reach the integration step, LTEMBED_REQUIRE_TEST_BUNDLE (job env above) makes them
-      # fail, not skip. The script holds the pinned Hugging Face revisions and sha256 of the
-      # GGUF and tokenizer.json (the release workflow uses the same pins) and fails on any
-      # mismatch.
+      # Assemble a real GGUF bundle so the bundle-gated tests actually run: golden and
+      # llama.cpp reference parity, batch/normalization/dimension through llama.cpp inference,
+      # and the GGUF vocabulary's token ids. A CI pass must not hide a broken engine (e.g. the
+      # batch-padding pooling bug), so if LTEMBED_TEST_BUNDLE_DIR or
+      # LTEMBED_TEST_REFERENCE_TOKENIZER does not reach the test steps,
+      # LTEMBED_REQUIRE_TEST_BUNDLE (job env above) makes them fail, not skip. The script holds
+      # the pinned Hugging Face revisions and sha256 of the GGUF and of the reference
+      # tokenizer.json (the release workflow uses the same pins) and fails on any mismatch. The
+      # bundle has no tokenizer.json, as a release bundle has none; the reference is written
+      # beside it for the tokenizer tests only.
       - name: Assemble GGUF bundle for model-backed tests
         run: |
           set -euo pipefail
           BUNDLE="${{ github.workspace }}/ci_gguf_bundle"
-          python3 scripts/assemble_gguf_bundle.py "$BUNDLE"
+          REFERENCE="${{ github.workspace }}/ci_reference_tokenizer.json"
+          python3 scripts/assemble_gguf_bundle.py "$BUNDLE" --reference-tokenizer "$REFERENCE"
           echo "LTEMBED_TEST_BUNDLE_DIR=$BUNDLE" >> "$GITHUB_ENV"
+          echo "LTEMBED_TEST_REFERENCE_TOKENIZER=$REFERENCE" >> "$GITHUB_ENV"
 
-      # The bundle's tokenizer.json, which inference tokenizes with, against the GGUF's own
-      # vocabulary, which upstream llama.cpp tokenizes with: identical token ids on ~76k
-      # encodings of a fixed corpus (src/engine/tokenizer_parity.rs). The test is #[ignore]d
-      # in the plain `cargo test --lib` above because it needs the bundle.
-      - name: Run tokenizer parity test (tokenizer.json vs the GGUF vocabulary)
+      # The GGUF's own vocabulary, which the engine tokenizes with, against the model's pinned
+      # tokenizer.json (identical token ids on ~76k encodings of a fixed corpus) and against
+      # the token ids of the Python tokenizers and llama.cpp reference fixtures
+      # (src/engine/tokenizer_parity.rs). The tests are #[ignore]d in the plain
+      # `cargo test --lib` above because they need the GGUF.
+      - name: Run tokenizer parity tests (the GGUF vocabulary vs tokenizer.json and fixtures)
         run: cargo test --lib tokenizer_parity -- --ignored
 
       - name: Run integration tests (llama.cpp GGUF inference)

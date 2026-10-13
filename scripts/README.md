@@ -9,17 +9,21 @@ The script tests in `tests/test_*.py` cover most of these files.
 
 ### `assemble_gguf_bundle.py`
 
-Assembles a GGUF bundle (`model.gguf`, `tokenizer.json`, `build-info.json`, plus
-`SHA256SUMS` and `provenance.json`) for EmbeddingGemma 2. It is the single place that pins
-the bundle's sources: `GGUF_REPO` / `GGUF_REVISION` and one sha256 per quant in
-`GGUF_FILES`, `TOKENIZER_REPO` / `TOKENIZER_REVISION` / `TOKENIZER_SHA256`, and the
-`build-info.json` it writes. CI, the release workflow and the ARM64 benchmark all call it.
-Python 3 standard library only.
+Assembles a GGUF bundle (`model.gguf`, `build-info.json`, plus `SHA256SUMS` and
+`provenance.json`) for EmbeddingGemma 2. It is the single place that pins the bundle's
+sources: `GGUF_REPO` / `GGUF_REVISION` and one sha256 per quant in `GGUF_FILES`, and the
+`build-info.json` it writes. It also pins `TOKENIZER_REPO` / `TOKENIZER_REVISION` /
+`TOKENIZER_SHA256`, the model's `tokenizer.json` that the tokenizer parity tests compare the
+GGUF's vocabulary with; the bundle does not contain it, and `--reference-tokenizer PATH`
+writes it to `PATH` outside the bundle. CI, the release workflow and the ARM64 benchmark all
+call it. Python 3 standard library only.
 
 ```bash
 python3 scripts/assemble_gguf_bundle.py gguf_bundle                  # UD-Q4_K_XL
 python3 scripts/assemble_gguf_bundle.py gguf_bundle-q8 --quant Q8_0
-python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH --tokenizer PATH  # local copies
+python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH      # local copy of the GGUF
+python3 scripts/assemble_gguf_bundle.py gguf_bundle \
+  --reference-tokenizer reference-tokenizer.json [--tokenizer PATH]  # plus the test reference
 ```
 
 It downloads from `resolve/<revision>` only, rejects any file whose sha256 differs from its
@@ -44,13 +48,14 @@ regenerate it from GGUF or LTEmbed output. Requires `sentence-transformers`, `tr
 
 ### `generate_token_ids.py`
 
-Regenerates `tests/fixtures/token_ids.json`, the token-id parity fixture for `HFTokenizer`
-(`pip install tokenizers==<version>` with the Rust `tokenizers` version from `Cargo.lock`,
-which the script checks; no model weights). It downloads `tokenizer.json` at the pinned
-`REVISION`, which must equal `TOKENIZER_REVISION` in `assemble_gguf_bundle.py`, and records
-the single encodings, after checking that a batch encoding pads nothing, plus the file's
-sha256. Rerun it after changing its inputs, bumping the revision, or bumping `tokenizers` in
-`Cargo.lock`.
+Regenerates `tests/fixtures/token_ids.json`: the model's `tokenizer.json` encoded by Python
+`tokenizers`, the ids that `test_gguf_vocabulary_matches_reference_token_ids` compares the
+GGUF's vocabulary with (`pip install tokenizers==<version>` with the version of the Rust
+`tokenizers` dev-dependency in `Cargo.lock`, which the script checks; no model weights). It
+downloads `tokenizer.json` at the pinned `REVISION`, which must equal `TOKENIZER_REVISION` in
+`assemble_gguf_bundle.py`, and records the single encodings, after checking that a batch
+encoding pads nothing, plus the file's sha256. Rerun it after changing its inputs, bumping
+the revision, or bumping `tokenizers` in `Cargo.lock`.
 
 ### `generate_llama_cpp_reference.py`
 
@@ -78,7 +83,7 @@ Top-level orchestrator for the LTEmbed and PyTorch runners. It launches
 
 Important assumptions:
 
-- `--bundle-dir` points at a GGUF bundle directory containing `model.gguf`, `tokenizer.json`, and `build-info.json`
+- `--bundle-dir` points at a GGUF bundle directory containing `model.gguf` and `build-info.json`
 - `--model-dir` points at a local Hugging Face snapshot of `unsloth/embeddinggemma-2` for the PyTorch runner (the files SentenceTransformers needs, at the pinned revision). The default, `assets/`, is not such a snapshot.
 - `--cold-iters` runs the cold-start pass N times per scenario (fresh process each time) and aggregates the latency distribution Python-side
 - `--golden-parity` re-embeds the texts from the immutable `tests/fixtures/test_fixtures.json` golden and reports per-item cosine similarity against the golden truncated to `--output-dimension` (`mode=golden_parity` CSV rows). It is skipped unless `--output-dimension` is one of the fixture's widths (768, 512, 256, 128). The golden file is never written

@@ -1,7 +1,11 @@
-//! Token-id parity between the bundle's two tokenizers: `tokenizer.json`, through the
-//! `tokenizers` crate (what the engine tokenizes inference inputs with), and the GGUF's own
-//! vocabulary, through `llama_tokenize` (what upstream llama.cpp tokenizes with, and what the
-//! load-time check compares against on one text).
+//! Token-id parity between the GGUF's own vocabulary, through `llama_tokenize` (the engine's
+//! only tokenizer), and independent references for it:
+//!
+//! - the model's pinned `tokenizer.json`, through the `tokenizers` crate (a dev-dependency:
+//!   neither the library nor a bundle has a tokenizer.json), on a large fixed corpus;
+//! - `tests/fixtures/token_ids.json`, written by Python `tokenizers` from that tokenizer.json;
+//! - the token ids in `tests/fixtures/llama_cpp_reference.json`, recorded by upstream
+//!   llama.cpp's `llama-embedding` for the golden inputs.
 //!
 //! The corpus is fixed and deterministic: every sentence of `tests/CN_EN_Data.csv`, every
 //! input of the golden, token-id, benchmark and retrieval-eval files, the hand-picked cases
@@ -14,11 +18,13 @@
 //! version and static llama.cpp release, not on every possible input
 //! (`docs/testing.md` § "Tokenizer parity").
 //!
-//! The test needs the GGUF, so it is `#[ignore]`d to keep `cargo test --lib` model-free. Run
-//! it with a bundle:
+//! The tests need the GGUF, so they are `#[ignore]`d to keep `cargo test --lib` model-free.
+//! Run them with a bundle and the reference tokenizer.json, which
+//! `scripts/assemble_gguf_bundle.py --reference-tokenizer` downloads at its pinned revision:
 //!
 //! ```text
 //! LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+//!   LTEMBED_TEST_REFERENCE_TOKENIZER="$PWD/reference-tokenizer.json" \
 //!   cargo test --lib tokenizer_parity -- --ignored
 //! ```
 //!
@@ -31,20 +37,24 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
+use super::backend::EmbeddingBackend;
 use super::bundle::ModelSpec;
 use super::inference::prefixed_text;
 use super::llama::LlamaBackend;
 use super::{EmbeddingInput, RAW_EMBEDDING_DIMENSION};
-use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
 
 /// Same variables and semantics as the bundle-gated tests in `tests/integration_tests.rs`.
 const TEST_BUNDLE_ENV: &str = "LTEMBED_TEST_BUNDLE_DIR";
 const REQUIRE_TEST_BUNDLE_ENV: &str = "LTEMBED_REQUIRE_TEST_BUNDLE";
+/// Path of the model's pinned `tokenizer.json`, the parity reference. Not part of the bundle.
+const REFERENCE_TOKENIZER_ENV: &str = "LTEMBED_TEST_REFERENCE_TOKENIZER";
 
 const CN_EN_SENTENCES: &str = "tests/CN_EN_Data.csv";
 const GOLDEN_FIXTURE: &str = "tests/fixtures/test_fixtures.json";
 const TOKEN_IDS_FIXTURE: &str = "tests/fixtures/token_ids.json";
+const LLAMA_CPP_REFERENCE: &str = "tests/fixtures/llama_cpp_reference.json";
 const BENCHMARK_CORPUS: &str = "scripts/benchmark_corpus.json";
 const RETRIEVAL_EVAL_CASES: &str = "scripts/retrieval_eval_cases.json";
 
@@ -117,37 +127,65 @@ const EDGE_CASES: &[&str] = &[
     "title: none | text: a document prefix inside the text",
 ];
 
-/// The test bundle directory if it holds `model.gguf` and `tokenizer.json`. Otherwise the
-/// test returns early, unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic. Mirrors
-/// `test_bundle` in `tests/integration_tests.rs`.
-fn test_bundle() -> Option<PathBuf> {
-    let required = match std::env::var(REQUIRE_TEST_BUNDLE_ENV).as_deref() {
+fn test_bundle_required() -> bool {
+    match std::env::var(REQUIRE_TEST_BUNDLE_ENV).as_deref() {
         Err(VarError::NotPresent) | Ok("" | "0") => false,
         Ok("1") => true,
         Ok(value) => panic!("{REQUIRE_TEST_BUNDLE_ENV} must be 0 or 1, got {value:?}"),
         Err(e) => panic!("{REQUIRE_TEST_BUNDLE_ENV}: {e}"),
-    };
-    let reason = match std::env::var_os(TEST_BUNDLE_ENV).map(PathBuf::from) {
-        None => format!("{TEST_BUNDLE_ENV} is not set"),
-        Some(dir) => {
-            let missing: Vec<&str> = ["model.gguf", "tokenizer.json"]
-                .into_iter()
-                .filter(|file| !dir.join(file).exists())
-                .collect();
-            if missing.is_empty() {
-                return Some(dir);
+    }
+}
+
+/// The file at `$env`, joined with `file` if given. If it is missing the test returns early,
+/// unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic. Mirrors `test_bundle` in
+/// `tests/integration_tests.rs`.
+fn test_file(env: &str, file: Option<&str>) -> Option<PathBuf> {
+    let reason = match std::env::var_os(env).map(PathBuf::from) {
+        None => format!("{env} is not set"),
+        Some(path) => {
+            let path = file.map_or(path.clone(), |file| path.join(file));
+            if path.is_file() {
+                return Some(path);
             }
-            format!("{} has no {}", dir.display(), missing.join(" or "))
+            format!("{} does not exist", path.display())
         }
     };
-    if required {
+    if test_bundle_required() {
         panic!(
-            "{REQUIRE_TEST_BUNDLE_ENV}=1 requires the test bundle, but {reason} \
-             (see docs/testing.md)"
+            "{REQUIRE_TEST_BUNDLE_ENV}=1 requires the test bundle and reference tokenizer, but \
+             {reason} (see docs/testing.md)"
         );
     }
     eprintln!("Skipping: {reason}");
     None
+}
+
+/// The test bundle's GGUF, loaded for tokenizing only: the small context keeps the load cheap.
+fn test_gguf() -> Option<LlamaBackend> {
+    let gguf = test_file(TEST_BUNDLE_ENV, Some("model.gguf"))?;
+    Some(LlamaBackend::load(&gguf, RAW_EMBEDDING_DIMENSION, 512, 1).unwrap())
+}
+
+/// The reference `tokenizer.json`, which must be the one `tests/fixtures/token_ids.json`
+/// was generated from: `TOKENIZER_SHA256` in `scripts/assemble_gguf_bundle.py`.
+fn reference_tokenizer() -> Option<tokenizers::Tokenizer> {
+    let path = test_file(REFERENCE_TOKENIZER_ENV, None)?;
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let sha256: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let source = &read_json(TOKEN_IDS_FIXTURE)["tokenizer"];
+    assert_eq!(
+        Some(sha256.as_str()),
+        source["sha256"].as_str(),
+        "{} is not the tokenizer.json of {} at revision {}, which {TOKEN_IDS_FIXTURE} records \
+         and scripts/assemble_gguf_bundle.py pins",
+        path.display(),
+        source["repo"],
+        source["revision"],
+    );
+    Some(tokenizers::Tokenizer::from_bytes(&bytes).unwrap())
 }
 
 /// xorshift64*: enough to spread the random texts deterministically, without a dependency.
@@ -299,6 +337,30 @@ fn text_fields(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// The input of each case of the token-id fixture, with `repeat` specs expanded.
+fn token_id_texts(fixture: &Value) -> Vec<String> {
+    fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| {
+            let input = &case["input"];
+            if let Some(text) = input["text"].as_str() {
+                return text.to_string();
+            }
+            let repeat = &input["repeat"];
+            let field = |key: &str| repeat[key].as_str().unwrap();
+            let count = repeat["count"].as_u64().unwrap() as usize;
+            format!(
+                "{}{}{}",
+                field("prefix"),
+                field("unit").repeat(count),
+                field("suffix")
+            )
+        })
+        .collect()
+}
+
 /// The corpus as `(source, texts)` pairs, each source non-empty.
 fn corpus() -> Vec<(&'static str, Vec<String>)> {
     let csv = fs::read_to_string(CN_EN_SENTENCES).unwrap();
@@ -319,26 +381,7 @@ fn corpus() -> Vec<(&'static str, Vec<String>)> {
     let mut golden = Vec::new();
     text_fields(&read_json(GOLDEN_FIXTURE)["fixtures"], &mut golden);
 
-    let token_id_cases: Vec<String> = read_json(TOKEN_IDS_FIXTURE)["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|case| {
-            let input = &case["input"];
-            if let Some(text) = input["text"].as_str() {
-                return text.to_string();
-            }
-            let repeat = &input["repeat"];
-            let field = |key: &str| repeat[key].as_str().unwrap();
-            let count = repeat["count"].as_u64().unwrap() as usize;
-            format!(
-                "{}{}{}",
-                field("prefix"),
-                field("unit").repeat(count),
-                field("suffix")
-            )
-        })
-        .collect();
+    let token_id_cases = token_id_texts(&read_json(TOKEN_IDS_FIXTURE));
 
     let mut benchmark = Vec::new();
     text_fields(&read_json(BENCHMARK_CORPUS), &mut benchmark);
@@ -373,19 +416,9 @@ fn corpus() -> Vec<(&'static str, Vec<String>)> {
 #[test]
 #[ignore = "needs a GGUF bundle; run with `cargo test --lib tokenizer_parity -- --ignored`"]
 fn test_tokenizer_json_matches_gguf_vocabulary() {
-    let Some(bundle_dir) = test_bundle() else {
+    let (Some(gguf), Some(hf)) = (test_gguf(), reference_tokenizer()) else {
         return;
     };
-    let tokenizer_json = bundle_dir.join("tokenizer.json");
-    let hf = HFTokenizer::from_file(&tokenizer_json.to_string_lossy()).unwrap();
-    // Tokenizing reads only the vocabulary; the small context keeps the load cheap.
-    let gguf = LlamaBackend::load(
-        &bundle_dir.join("model.gguf"),
-        RAW_EMBEDDING_DIMENSION,
-        512,
-        1,
-    )
-    .unwrap();
     let spec = ModelSpec::defaults();
 
     let sources = corpus();
@@ -403,7 +436,8 @@ fn test_tokenizer_json_matches_gguf_vocabulary() {
                 ),
             ];
             for (form, input) in forms {
-                let expected = hf.encode(&input, usize::MAX).unwrap().input_ids;
+                // `true`: add the template's special tokens, as the model's pipeline does.
+                let expected = hf.encode(input.as_str(), true).unwrap().get_ids().to_vec();
                 let actual = gguf.tokenize(&input).unwrap();
                 encodings += 1;
                 tokens += expected.len();
@@ -440,6 +474,89 @@ fn test_tokenizer_json_matches_gguf_vocabulary() {
     );
 }
 
+/// The token-id fixture (Python `tokenizers` on the pinned tokenizer.json) and the token ids
+/// upstream llama.cpp recorded for the golden inputs, against the GGUF's vocabulary. Needs no
+/// tokenizer.json.
+#[test]
+#[ignore = "needs a GGUF bundle; run with `cargo test --lib tokenizer_parity -- --ignored`"]
+fn test_gguf_vocabulary_matches_reference_token_ids() {
+    let Some(gguf) = test_gguf() else {
+        return;
+    };
+    let spec = ModelSpec::defaults();
+    let mut checked = 0usize;
+    let mut mismatches = Vec::new();
+    let mut check = |source: &str, name: &str, input: &str, expected: Vec<u32>| {
+        let actual = gguf.tokenize(input).unwrap();
+        checked += 1;
+        if actual != expected {
+            mismatches.push(describe_mismatch(
+                source, checked, name, input, &expected, &actual,
+            ));
+        }
+    };
+
+    let fixture = read_json(TOKEN_IDS_FIXTURE);
+    let cases = fixture["cases"].as_array().unwrap();
+    for (case, text) in cases.iter().zip(token_id_texts(&fixture)) {
+        let expected = ids(&case["single"]["input_ids"]);
+        check(
+            TOKEN_IDS_FIXTURE,
+            case["name"].as_str().unwrap(),
+            &text,
+            expected,
+        );
+    }
+
+    let golden = read_json(GOLDEN_FIXTURE);
+    let golden = golden["fixtures"].as_array().unwrap();
+    let reference = read_json(LLAMA_CPP_REFERENCE);
+    let reference = reference["inputs"].as_array().unwrap();
+    assert_eq!(
+        golden.len(),
+        reference.len(),
+        "{LLAMA_CPP_REFERENCE} vs {GOLDEN_FIXTURE}"
+    );
+    for (fixture, input) in golden.iter().zip(reference) {
+        let name = fixture["name"].as_str().unwrap();
+        assert_eq!(input["name"].as_str(), Some(name), "{LLAMA_CPP_REFERENCE}");
+        let text = fixture["text"].as_str().unwrap();
+        let prompted = match fixture["kind"].as_str() {
+            Some("query") => prefixed_text(EmbeddingInput::query(text), &spec),
+            Some("document") => prefixed_text(EmbeddingInput::document(text), &spec),
+            other => panic!("{GOLDEN_FIXTURE} {name}: kind {other:?}"),
+        };
+        check(
+            LLAMA_CPP_REFERENCE,
+            name,
+            &prompted,
+            ids(&input["token_ids"]),
+        );
+    }
+
+    eprintln!(
+        "reference token ids: {checked} inputs ({} from {TOKEN_IDS_FIXTURE}, {} from \
+         {LLAMA_CPP_REFERENCE}), {} mismatches",
+        cases.len(),
+        reference.len(),
+        mismatches.len()
+    );
+    assert!(
+        mismatches.is_empty(),
+        "the GGUF vocabulary differs from the reference token ids:\n{}",
+        mismatches.join("\n")
+    );
+}
+
+fn ids(value: &Value) -> Vec<u32> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| u32::try_from(id.as_u64().unwrap()).unwrap())
+        .collect()
+}
+
 fn describe_mismatch(
     source: &str,
     index: usize,
@@ -456,8 +573,8 @@ fn describe_mismatch(
     let window = |ids: &[u32]| ids[at.saturating_sub(2)..(at + 4).min(ids.len())].to_vec();
     let excerpt: String = input.chars().take(120).collect();
     format!(
-        "{source} #{index} ({form}): first difference at token {at}: tokenizer.json {:?}, \
-         GGUF {:?} ({} vs {} tokens); text {excerpt:?}",
+        "{source} #{index} ({form}): first difference at token {at}: reference {:?}, GGUF {:?} \
+         ({} vs {} tokens); text {excerpt:?}",
         window(expected),
         window(actual),
         expected.len(),

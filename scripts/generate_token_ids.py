@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate the token-id parity fixture for `HFTokenizer`.
+Generate the token-id fixture: the model's tokenizer.json, encoded by Python `tokenizers`.
 
 Encodes a small set of inputs with the Python `tokenizers` library, once singly and once as a
-single batch. It uses the model's tokenizer.json at the same revision that the CI bundle
-downloads. `test_token_ids_match_python_tokenizers` in tests/integration_tests.rs encodes the
-same inputs with `HFTokenizer` and requires identical input ids, attention masks and type ids.
+single batch. It uses the model's tokenizer.json at the revision pinned in
+scripts/assemble_gguf_bundle.py (the bundle itself has no tokenizer.json).
+`test_gguf_vocabulary_matches_reference_token_ids` in src/engine/tokenizer_parity.rs tokenizes
+the same inputs with the GGUF's own vocabulary, which the engine tokenizes with, and requires
+identical input ids. The tokenizer parity test there checks that its reference tokenizer.json
+has the sha256 this fixture records.
 
 EmbeddingGemma 2's tokenizer.json configures no padding, so each batch row must equal the
 input's single encoding, and the fixture stores only the single encodings ("padding": null).
@@ -13,9 +16,10 @@ A right-padding tokenizer would also store each batch row, without its padding.
 
 Requirements:
     pip install tokenizers==<version>, where <version> is the Rust `tokenizers` crate version in
-    Cargo.lock. Python and Rust `tokenizers` releases share version numbers, so the fixture then
-    compares HFTokenizer with the Python binding of the same release. The script exits with the
-    pip command to run if the installed version differs.
+    Cargo.lock (a dev-dependency: the tokenizer parity test's reference). Python and Rust
+    `tokenizers` releases share version numbers, so the fixture and the parity test then use
+    the same release. The script exits with the pip command to run if the installed version
+    differs.
 
 Usage:
     python3 scripts/generate_token_ids.py
@@ -25,9 +29,9 @@ Output:
 
 Regenerate the fixture after changing INPUTS or bumping REVISION. Keep REPO and REVISION
 equal to TOKENIZER_REPO and TOKENIZER_REVISION in scripts/assemble_gguf_bundle.py, which
-builds the CI and release bundles, and update its TOKENIZER_SHA256 to the hash this script
-records. If a bundle's tokenizer.json has a different hash, the Rust test fails and says to
-rerun this script.
+writes the tests' reference tokenizer.json, and update its TOKENIZER_SHA256 to the hash this
+script records. If the reference tokenizer.json has a different hash, the tokenizer parity
+test fails.
 """
 
 import hashlib
@@ -43,7 +47,7 @@ REPO = "unsloth/embeddinggemma-2"
 REVISION = "c8f89cc7ecb4ba5122cd15fdd487422b2b487daf"
 OUTPUT_PATH = Path("tests/fixtures/token_ids.json")
 CARGO_LOCK_PATH = Path("Cargo.lock")
-MAX_LENGTH = 8192  # ltembed::engine::MAX_LENGTH: HFTokenizer rejects longer inputs
+MAX_LENGTH = 8192  # ltembed::engine::MAX_LENGTH: the engine rejects longer inputs
 
 QUERY = "task: search result | query: "
 DOCUMENT = "title: none | text: "
@@ -139,8 +143,9 @@ def strip_right_padding(fields: dict, pad_id: int, pad_type_id: int) -> dict:
     """Drop a batch row's trailing padding and record its length as "padding".
 
     Rows of a batch that contains a long input are padded to its length, so storing them in
-    full could make the fixture megabytes long. The Rust test appends the padding back before
-    comparing. Raises unless the dropped tail is made up entirely of padding tokens.
+    full could make the fixture megabytes long; a test of batch rows would append the padding
+    back before comparing. Raises unless the dropped tail is made up entirely of padding
+    tokens.
     """
     ids, mask, type_ids = fields["input_ids"], fields["attention_mask"], fields["type_ids"]
     real = len(mask)

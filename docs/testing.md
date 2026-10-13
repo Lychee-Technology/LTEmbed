@@ -10,12 +10,11 @@ other hosts, run them in the container from
 
 | Suite | Command | Needs beyond the build | Run by CI |
 |---|---|---|---|
-| Library unit tests (`src/**`) | `cargo test --lib` | `assets/tokenizer.json` (tracked) for tokenizer shape tests | Yes |
-| Tokenizer reload memory test | `cargo test --test tokenizer_reload_tests` | — (writes its own BPE tokenizer to a temp file) | Yes |
+| Library unit tests (`src/**`) | `cargo test --lib` | — | Yes |
 | Benchmark support and binary unit tests | `cargo test --test benchmarking_support_tests --bin benchmark_ltembed` | — | Yes |
 | Example compiles | `cargo check --example api_usage` | — | Yes |
 | Example unit test | `cargo test --example api_usage` | — | **No** |
-| Tokenizer parity (`src/engine/tokenizer_parity.rs`) | `cargo test --lib tokenizer_parity -- --ignored` | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` | Yes (required) |
+| Tokenizer parity (`src/engine/tokenizer_parity.rs`) | `cargo test --lib tokenizer_parity -- --ignored` | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` and the reference `tokenizer.json` in `LTEMBED_TEST_REFERENCE_TOKENIZER` | Yes (required) |
 | Integration tests, Tier 1 | `cargo test --test integration_tests` | — | Yes |
 | Integration tests, Tier 2 | same | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` | Yes (required) |
 | Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` (and `sentence-transformers` for one) for two modules | Yes, without `torch` |
@@ -23,10 +22,6 @@ other hosts, run them in the container from
 | Clippy | `cargo clippy --all-targets -- -D warnings` | — | Yes |
 | Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` | — | Yes |
 | Markdown links and `AGENTS.md` paths | `python3 scripts/check_doc_references.py` | Git and Python 3 only (no build) | Yes |
-
-`tokenizer_reload_tests` is its own test binary because it installs a counting global
-allocator. It checks that loading and dropping `HFTokenizer` repeatedly does not keep
-growing memory, which guards the BPE-cache workaround in `src/traits/tokenizer.rs`.
 
 ## What CI runs
 
@@ -43,17 +38,17 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    not. The `x86_64` runner label alone does not guarantee that.
 2. `mkdir -p assets`
 3. `cargo test --lib`
-4. `cargo test --test tokenizer_reload_tests`
-5. `cargo test --test benchmarking_support_tests --bin benchmark_ltembed`
-6. `cargo check --example api_usage`
-7. `python3 scripts/assemble_gguf_bundle.py ci_gguf_bundle`: the UD-Q4_K_XL GGUF and its
-   tokenizer at the pinned Hugging Face revisions, checked against their pinned sha256
-   (see [bundle-format.md](./bundle-format.md#assembling-a-bundle)); then export
-   `LTEMBED_TEST_BUNDLE_DIR`.
-8. `cargo test --lib tokenizer_parity -- --ignored`: the
-   [tokenizer parity test](#tokenizer-parity), which
+4. `cargo test --test benchmarking_support_tests --bin benchmark_ltembed`
+5. `cargo check --example api_usage`
+6. `python3 scripts/assemble_gguf_bundle.py ci_gguf_bundle --reference-tokenizer
+   ci_reference_tokenizer.json`: the UD-Q4_K_XL GGUF at its pinned Hugging Face revision,
+   and the model's `tokenizer.json` at its own, outside the bundle, each checked against its
+   pinned sha256 (see [bundle-format.md](./bundle-format.md#assembling-a-bundle)); then
+   export `LTEMBED_TEST_BUNDLE_DIR` and `LTEMBED_TEST_REFERENCE_TOKENIZER`.
+7. `cargo test --lib tokenizer_parity -- --ignored`: the
+   [tokenizer parity tests](#tokenizer-parity), which
    plain `cargo test --lib` (step 3) skips as ignored.
-9. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
+8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
    8192-token input, which takes about 10 GB of memory
    ([architecture.md](./architecture.md#long-inputs-and-memory)); GitHub's standard Linux
    runners have 16 GB.
@@ -77,13 +72,11 @@ Benchmarks run only by hand; see [benchmarking.md](./benchmarking.md).
 **Tier 1** never needs model weights. Most of these tests build throwaway bundles in a
 temp directory and check load-time validation:
 
-- missing `model.gguf`, `tokenizer.json` or `build-info.json` → `ModelLoad(MissingFile)`
+- missing `model.gguf` or `build-info.json` → `ModelLoad(MissingFile)`
 - malformed `build-info.json` → `ModelLoad(Metadata)`
 - unsupported `input_kind` → `ModelLoad(UnsupportedInputKind)`, and the previous model's
   `"pooling": "last_token"` → `ModelLoad(UnsupportedPooling)`
 - `output_dimension` larger than raw → `ModelLoad(Config)`
-- input over 8192 tokens → `InputTooLong { max: 8192 }`. This uses `assets/tokenizer.json`
-  and skips if that file is missing.
 - the skip and require logic itself (`bundle_or_skip`)
 - the committed fixtures agree with the engine and with each other, so a fixture left stale
   by a model, prompt or width change fails every run, not only runs with a bundle:
@@ -99,40 +92,40 @@ temp directory and check load-time validation:
 The `build-info.json` range check for `max_length` (`1..=8192`) is covered by unit tests in
 `src/engine/bundle.rs`.
 
-**Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`:
+**Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
+`model.gguf` and `build-info.json`:
 
-| Test | Bundle files read | Checks |
-|---|---|---|
-| `test_golden_parity_at_every_trained_dimension` | all three | The 21 short golden inputs at widths 768, 512, 256 and 128: width, finite values, unit norm, cosine ≥ 0.985 per input and ≥ 0.993 on average against the golden truncated to that width, and each query ranks its relevant document first |
-| `test_llama_cpp_reference_parity` | all three | All 25 golden inputs, up to 8192 tokens: the GGUF's sha256 is the one the reference was generated from; `tokenizer.json` gives the token ids the GGUF's own vocabulary gave upstream llama.cpp; the raw 768-wide vector has cosine ≥ 0.99999 and a norm within 1e-4 of the reference for this variant; and each input passes the per-input golden gate at 768 and 512 |
-| `test_token_ids_match_python_tokenizers` | `tokenizer.json` only | `HFTokenizer` ids, masks and type ids equal the Python fixture exactly |
-| `test_embed_batch_matches_single_embeds_and_repeats_exactly` | all three | `embed_batch` returns one vector per input, in order, bit-identical to embedding each alone, and repeating the call returns bit-identical vectors |
-| `test_query_and_document_prompts_differ` | all three | The same text as a query and as a document gives different vectors |
-| `test_default_config_output_is_normalized_and_512_wide` | all three | `EngineConfig::default()` output has 512 values and unit norm |
-| `test_bundle_max_length_is_enforced_without_truncation` | all three | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: 65, max: 64 }` |
-| `test_gguf_width_mismatch_returns_model_load_error` | all three | With `raw_embedding_dimension` 1024, loading fails with `ModelLoad(Runtime)` |
-| `test_hidden_width_as_raw_dimension_returns_model_load_error` | all three | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
-| `test_gguf_without_mean_pooling_returns_model_load_error` | all three | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
-| `test_tokenizer_vocab_mismatch_returns_model_load_error` | `model.gguf`, `build-info.json` | With `assets/tokenizer.json` (30522 tokens), loading fails, naming both vocabulary sizes |
-| `test_tokenizer_without_eos_returns_model_load_error` | all three | The bundle's tokenizer with `<eos>` removed from its template (same vocabulary size) fails the load-time tokenization check |
+| Test | Checks |
+|---|---|
+| `test_golden_parity_at_every_trained_dimension` | The 21 short golden inputs at widths 768, 512, 256 and 128: width, finite values, unit norm, cosine ≥ 0.985 per input and ≥ 0.993 on average against the golden truncated to that width, and each query ranks its relevant document first |
+| `test_llama_cpp_reference_parity` | All 25 golden inputs, up to 8192 tokens: the GGUF's sha256 is the one the reference was generated from; the raw 768-wide vector has cosine ≥ 0.99999 and a norm within 1e-4 of the reference for this variant; and each input passes the per-input golden gate at 768 and 512. The token ids the reference recorded are checked by the [tokenizer parity tests](#tokenizer-parity). |
+| `test_embed_batch_matches_single_embeds_and_repeats_exactly` | `embed_batch` returns one vector per input, in order, bit-identical to embedding each alone, and repeating the call returns bit-identical vectors |
+| `test_query_and_document_prompts_differ` | The same text as a query and as a document gives different vectors |
+| `test_default_config_output_is_normalized_and_512_wide` | `EngineConfig::default()` output has 512 values and unit norm |
+| `test_bundle_without_tokenizer_json_loads_and_ignores_one` | A directory of only `model.gguf` and `build-info.json` loads and gives the same vector as the test bundle, and still does with an unparseable `tokenizer.json` beside them |
+| `test_long_input_returns_input_too_long_error` | An input of more than 8192 tokens returns `InputTooLong { max: 8192 }` with its full token count |
+| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: 65, max: 64 }`. The two texts are found with an engine whose `max_length` is 1, whose `InputTooLong` names each text's token count. |
+| `test_gguf_width_mismatch_returns_model_load_error` | With `raw_embedding_dimension` 1024, loading fails with `ModelLoad(Runtime)` |
+| `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
+| `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
+| `test_gguf_without_eos_returns_model_load_error` | A copy of the GGUF with `tokenizer.ggml.add_eos_token` set to false fails the load-time tokenization check, naming the missing EOS. A copy without `add_bos_token` would still load: llama.cpp forces it on for this tokenizer, so the BOS half of the check has unit tests only. |
 
-The GGUF copy in `test_gguf_without_mean_pooling_returns_model_load_error`, about 176 MB,
-goes to Cargo's integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by
-default) rather than `/tmp`, and is removed afterwards, even when the test fails. No crafted
+The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error` and
+`test_gguf_without_eos_returns_model_load_error`, about 176 MB each, go to Cargo's
+integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
+than `/tmp`, and are removed afterwards, even when the test fails. No crafted
 GGUF is committed. The tests that swap one bundle file symlink the others instead of
 copying them.
 
 ### Skipping vs. failing without a bundle
 
 By default a Tier 2 test **skips**: it returns early, passes, and prints `Skipping: …`. That
-happens when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks `model.gguf` or
-`tokenizer.json`. The token-id test checks only `tokenizer.json`, so a directory holding
-just that file is enough to run it. Local runs without a bundle therefore pass.
+happens when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks `model.gguf`.
+Local runs without a bundle therefore pass.
 
-`build-info.json` is not part of that check. If the directory has `model.gguf` and
-`tokenizer.json` but no `build-info.json`, the engine-backed tests do not skip. Each one
-fails when it builds the engine, with `ModelLoad(MissingFile)`, whether or not
-`LTEMBED_REQUIRE_TEST_BUNDLE` is set.
+`build-info.json` is not part of that check. If the directory has `model.gguf` but no
+`build-info.json`, the tests do not skip. Each one fails when it builds the engine, with
+`ModelLoad(MissingFile)`, whether or not `LTEMBED_REQUIRE_TEST_BUNDLE` is set.
 
 `LTEMBED_REQUIRE_TEST_BUNDLE=1` turns each skip into a failure that names the missing
 variable or file. `0`, empty or unset keeps the skip. Any other value fails, so a typo such
@@ -236,7 +229,7 @@ correct embedding, over the 21 short inputs:
 | Last-token pooling | 0.880 | per-input gate |
 | First-token pooling | 0.871 | per-input gate |
 | Prompt applied twice | 0.9985 (median 0.991) | mean gate; llama.cpp reference |
-| `<eos>` missing | 0.9856 (median 0.973) | mean gate; load-time tokenizer check |
+| `<eos>` missing | 0.9856 (median 0.973) | mean gate; load-time tokenization check |
 
 Every mistake also fails the llama.cpp reference test, which uses the correct prompt and
 the GGUF's own tokenizer.
@@ -247,9 +240,9 @@ The golden can only show LTEmbed is within quantization error of the F32 model. 
 fixture shows LTEmbed computes what llama.cpp itself computes on the same GGUF: upstream
 llama.cpp's `llama-embedding` example (`examples/embedding/embedding.cpp`), built from the
 commit the pinned static release compiles and linked against that release's own archives,
-run on the release GGUF for every golden input. It runs the same kernels as LTEmbed but
-none of LTEmbed's code: it tokenizes with the GGUF's vocabulary, not `tokenizer.json`, and
-builds its own batch. The settings are LTEmbed's: mean pooling, non-causal attention, flash
+run on the release GGUF for every golden input. It runs the same tokenizer and kernels as
+LTEmbed but none of LTEmbed's code: it tokenizes the prompted text and builds its batch
+itself. The settings are LTEmbed's: mean pooling, non-causal attention, flash
 attention on, `n_ctx = n_batch = n_ubatch = 8192`, no normalization.
 
 The kernels differ between the variants (their vectors agree to a mean cosine of 0.99963,
@@ -294,12 +287,14 @@ aarch64 run takes hours: the 4074- and 8192-token inputs dominate.
 ## Token-id fixture: `tests/fixtures/token_ids.json`
 
 `scripts/generate_token_ids.py` encodes a fixed set of inputs with the Python `tokenizers`
-library, singly and as one batch. It uses the `tokenizer.json` at the revision
-`scripts/assemble_gguf_bundle.py` pins. The fixture records:
+library, singly and as one batch. It uses the model's `tokenizer.json` at the revision
+`scripts/assemble_gguf_bundle.py` pins; the bundle itself has no `tokenizer.json`. The
+fixture records:
 
 - `tokenizer`: repo, `revision` (`c8f89cc7…`) and the file's `sha256`
 - `tokenizers_version` (`0.23.2`): the script refuses to run unless the installed Python
-  `tokenizers` equals the Rust `tokenizers` version in `Cargo.lock`
+  `tokenizers` equals the Rust `tokenizers` version in `Cargo.lock`, the dev-dependency the
+  [tokenizer parity test](#tokenizer-parity) reads its reference with
 - `padding`: `null`. EmbeddingGemma 2's tokenizer pads nothing, so the script requires each
   batch row to equal the single encoding and stores only that.
 - `cases`: 15 inputs, as literal `text` or as a `repeat` spec (long inputs are never stored
@@ -307,8 +302,10 @@ library, singly and as one batch. It uses the `tokenizer.json` at the revision
   empty string, added-token text in several forms, a run of 100,000 spaces (3230 tokens),
   and 6009 tokens of repeated mixed Chinese and English.
 
-If the bundle's `tokenizer.json` hash differs from the recorded one, the test fails with
-instructions to regenerate, instead of a bare id mismatch.
+`test_gguf_vocabulary_matches_reference_token_ids` in `src/engine/tokenizer_parity.rs`
+requires the GGUF's vocabulary, which the engine tokenizes with, to give each case's ids
+exactly. The parity test requires its reference `tokenizer.json` to have the recorded
+`sha256`, and fails with the expected repo and revision if it does not.
 
 **Regenerate it** after changing the script's `INPUTS`, bumping `REVISION`, or bumping
 `tokenizers` in `Cargo.lock`:
@@ -328,13 +325,24 @@ and its `TOKENIZER_SHA256` must equal the hash the fixture records.
 
 ## Tokenizer parity
 
-`src/engine/tokenizer_parity.rs` checks that the bundle's two tokenizers give identical
-token ids. One is `tokenizer.json`, run by the `tokenizers` crate, which the engine
-tokenizes inference inputs with. The other is the GGUF's own vocabulary
-(`tokenizer.ggml.*`), run by `llama_tokenize`, which is what upstream llama.cpp tokenizes
-with. The load-time check compares the two on one text (`TOKENIZER_CHECK_TEXT`) and the
-[llama.cpp reference test](#llamacpp-reference-testsfixturesllama_cpp_referencejson) on the
-25 golden inputs; this test compares them on a fixed corpus of 25,401 texts:
+The engine tokenizes every input with the GGUF's own vocabulary (`tokenizer.ggml.*`)
+through `llama_tokenize`, as upstream llama.cpp does
+([bundle-format.md](./bundle-format.md#tokenization)). The load-time check only shows that
+this adds BOS and EOS. `src/engine/tokenizer_parity.rs` checks the token ids themselves
+against references that do not come from llama.cpp or LTEmbed:
+
+- `test_tokenizer_json_matches_gguf_vocabulary`: the model's pinned `tokenizer.json`, run
+  by the `tokenizers` crate, must give the same ids as the GGUF's vocabulary on a fixed
+  corpus of 25,401 texts. `tokenizers` is a dev-dependency for this test only; the library
+  does not use it.
+- `test_gguf_vocabulary_matches_reference_token_ids`: the GGUF's vocabulary must give the
+  ids of the 15 [token-id fixture](#token-id-fixture-testsfixturestoken_idsjson) cases,
+  written by Python `tokenizers`, and the ids upstream `llama-embedding` recorded for the 25
+  prompted golden inputs in the
+  [llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson). That is
+  40 inputs, up to 8192 tokens.
+
+The corpus of the first test:
 
 | Source | Texts |
 |---|---|
@@ -366,16 +374,20 @@ prefix, through the engine's own `prefixed_text`. That makes 76,203 encodings, a
 million tokens. Any difference fails the test, which lists the first 20 with the position of
 their first differing token. There is no tolerance.
 
-On the pinned bundle all 76,203 encodings are identical. On x86-64-v3 this was measured
-locally, and the test takes about 18 s in a debug build. CI runs it on both variants.
+On the pinned GGUF all 76,203 encodings and all 40 reference inputs are identical. On
+x86-64-v3 this was measured locally, and both tests take about 19 s together in a debug
+build. CI runs them on both variants.
 
-**What a pass shows.** The two tokenizers agree on this corpus, for the pinned
-`tokenizer.json`, GGUF, `tokenizers` version and static llama.cpp release. It is not a
-proof for every input. Neither is checked against the tokenizer the model was trained with;
-for `tokenizer.json` against Python `tokenizers`, see the token-id fixture.
+**What a pass shows.** The GGUF's vocabulary agrees with the model's `tokenizer.json` on
+this corpus, and with the recorded ids, for the pinned GGUF, `tokenizer.json`, `tokenizers`
+version and static llama.cpp release. It is not a proof for every input. Neither side is
+checked against the tokenizer the model was trained with.
 
-**How sensitive it is.** Run with the real GGUF and a deliberately altered copy of
-`tokenizer.json`:
+**How sensitive it is.** With the engine's `llama_tokenize` call changed to not match
+special-token text (`parse_special = false`), the corpus test finds 20,148 differing
+encodings and the reference-id test 3 differing inputs. Comparing the real GGUF with a
+deliberately altered copy of `tokenizer.json` (measured before the reference's sha256 was
+checked, which now rejects such a copy):
 
 | Change to `tokenizer.json` | Encodings that differ |
 |---|---|
@@ -388,17 +400,22 @@ Removing one merge changes nothing because the BPE reaches the same tokens throu
 merges. Python `tokenizers` also gives unchanged ids for all 5268 Chinese and English
 sentences after removing any one of nine merges tried.
 
-**Running it.** The test needs the GGUF, so it is `#[ignore]`d and plain `cargo test --lib`
-stays model-free:
+**Running them.** The tests need the GGUF, so they are `#[ignore]`d and plain
+`cargo test --lib` stays model-free. The reference `tokenizer.json` is written outside the
+bundle by `scripts/assemble_gguf_bundle.py --reference-tokenizer`
+([bundle-format.md](./bundle-format.md#assembling-a-bundle)):
 
 ```bash
 LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+  LTEMBED_TEST_REFERENCE_TOKENIZER="$PWD/reference-tokenizer.json" \
   cargo test --lib tokenizer_parity -- --ignored
 ```
 
-- **Skip or fail**: it follows the same rules as the Tier 2 integration tests
-  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). It needs `model.gguf` and
-  `tokenizer.json` and does not read `build-info.json`.
+- **Skip or fail**: they follow the same rules as the Tier 2 integration tests
+  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). Both need `model.gguf` in
+  `LTEMBED_TEST_BUNDLE_DIR`, and the corpus test also the file
+  `LTEMBED_TEST_REFERENCE_TOKENIZER` names; with `LTEMBED_REQUIRE_TEST_BUNDLE=1` a missing
+  variable or file fails instead of skipping. Neither reads `build-info.json`.
 - **Corpus check**: the model-free unit test `test_corpus_reads_every_source`, part of
   `cargo test --lib`, checks that every source loads and that the `repeat` specs are
   expanded.
@@ -406,9 +423,9 @@ LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
   print `check_double_bos_eos` warnings, about 560 per run. Both tokenizers add a second BOS
   or EOS there.
 
-There is no fixture to regenerate: the test computes both sides on every run. If it fails
-after a bump of `tokenizers`, the tokenizer revision or the static llama.cpp release, that is
-a finding. It means the engine no longer tokenizes the way llama.cpp reads the GGUF.
+The corpus test has no fixture to regenerate: it computes both sides on every run. If either
+test fails after a bump of the static llama.cpp release, the GGUF or the tokenizer revision,
+that is a finding: the engine no longer tokenizes the way the model's own tokenizer does.
 
 ## Python tests
 

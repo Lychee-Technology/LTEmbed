@@ -3,26 +3,33 @@
 Assemble an EmbeddingGemma 2 GGUF bundle from pinned Hugging Face revisions.
 
 This file is the single home of the bundle's source pins: the GGUF repository, revision,
-file name and sha256 of every quant LTEmbed accepts, and the repository, revision and sha256
-of the tokenizer.json. CI (`.github/workflows/ci.yml`), the release workflow
-(`release-bundles.yml`) and the ARM64 benchmark workflow (`benchmark-arm64.yml`) all build
-their bundles with it, so the files a release ships are the files CI tested.
+file name and sha256 of every quant LTEmbed accepts. It also pins the repository, revision
+and sha256 of the model's tokenizer.json, which the bundle does not contain: the engine
+tokenizes with the GGUF's own vocabulary, and the tokenizer tests compare that vocabulary
+with this tokenizer.json (src/engine/tokenizer_parity.rs). CI (`.github/workflows/ci.yml`),
+the release workflow (`release-bundles.yml`) and the ARM64 benchmark workflow
+(`benchmark-arm64.yml`) all build their bundles with it, so the files a release ships are the
+files CI tested.
 
 Every download names a commit, never a branch, and is checked against its pinned sha256
 before anything else uses it. The bundle directory ends up holding exactly:
 
     model.gguf       the quant's GGUF (text model only; no mmproj projector)
-    tokenizer.json   unsloth/embeddinggemma-2's tokenizer
     build-info.json  the metadata LTEmbed's loader checks (docs/bundle-format.md)
-    SHA256SUMS       sha256 of the three files above
+    SHA256SUMS       sha256 of the two files above
     provenance.json  where each file came from, and the LTEmbed commit that assembled it
+
+`--reference-tokenizer PATH` also writes the pinned tokenizer.json to PATH, outside the
+bundle, for the tokenizer tests.
 
 Standard library only, so it runs on a bare CI runner.
 
 Usage:
     python3 scripts/assemble_gguf_bundle.py DEST                    # default quant
     python3 scripts/assemble_gguf_bundle.py DEST --quant Q8_0
-    python3 scripts/assemble_gguf_bundle.py DEST --gguf PATH --tokenizer PATH   # local copies
+    python3 scripts/assemble_gguf_bundle.py DEST --gguf PATH        # local copy of the GGUF
+    python3 scripts/assemble_gguf_bundle.py DEST --reference-tokenizer REF.json \
+        [--tokenizer PATH]                                          # plus the test reference
 
 DEST must not exist or must be empty. Local copies are checked against the same pins.
 """
@@ -61,6 +68,8 @@ GGUF_FILES = {
 }
 DEFAULT_QUANT = "UD-Q4_K_XL"
 
+# Unsloth's safetensors copy of the model: the GGUF repository has no tokenizer.json. Its
+# revision is also the golden fixture's model revision (scripts/generate_fixtures.py).
 TOKENIZER_REPO = "unsloth/embeddinggemma-2"
 TOKENIZER_REVISION = "c8f89cc7ecb4ba5122cd15fdd487422b2b487daf"
 TOKENIZER_SHA256 = "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4"
@@ -77,7 +86,7 @@ DOCUMENT_PREFIX = "title: none | text: "
 RAW_EMBEDDING_DIMENSION = 768
 MAX_LENGTH = 8192
 
-BUNDLE_FILES = ["model.gguf", "tokenizer.json", "build-info.json"]
+BUNDLE_FILES = ["model.gguf", "build-info.json"]
 OUTPUT_FILES = sorted(BUNDLE_FILES + ["SHA256SUMS", "provenance.json"])
 CHUNK = 1 << 20
 
@@ -183,13 +192,6 @@ def provenance(quant: str, hashes: dict[str, str]) -> dict:
                 "url": resolve_url(GGUF_REPO, GGUF_REVISION, gguf_file),
                 "sha256": hashes["model.gguf"],
             },
-            "tokenizer.json": {
-                "repo": TOKENIZER_REPO,
-                "revision": TOKENIZER_REVISION,
-                "file": "tokenizer.json",
-                "url": resolve_url(TOKENIZER_REPO, TOKENIZER_REVISION, "tokenizer.json"),
-                "sha256": hashes["tokenizer.json"],
-            },
             "build-info.json": {
                 "generated": True,
                 "sha256": hashes["build-info.json"],
@@ -202,7 +204,6 @@ def assemble(
     destination: Path,
     quant: str = DEFAULT_QUANT,
     gguf: Path | None = None,
-    tokenizer: Path | None = None,
 ) -> dict[str, str]:
     """Build the bundle in `destination` and return the sha256 of each bundle file.
 
@@ -220,8 +221,6 @@ def assemble(
         work = Path(scratch)
         place(gguf, resolve_url(GGUF_REPO, GGUF_REVISION, gguf_file), work / "model.gguf",
               gguf_sha256)
-        place(tokenizer, resolve_url(TOKENIZER_REPO, TOKENIZER_REVISION, "tokenizer.json"),
-              work / "tokenizer.json", TOKENIZER_SHA256)
         (work / "build-info.json").write_text(
             json.dumps(build_info(quant), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
@@ -242,24 +241,55 @@ def assemble(
     return hashes
 
 
+def fetch_reference_tokenizer(destination: Path, source: Path | None = None) -> None:
+    """Write the pinned tokenizer.json to `destination`, replacing any file there only once
+    the new one matches TOKENIZER_SHA256.
+
+    It is not a bundle file: it is the reference the tokenizer tests compare the GGUF's own
+    vocabulary with (src/engine/tokenizer_parity.rs).
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".reference-") as scratch:
+        part = Path(scratch) / "tokenizer.json"
+        place(source, resolve_url(TOKENIZER_REPO, TOKENIZER_REVISION, "tokenizer.json"), part,
+              TOKENIZER_SHA256)
+        part.replace(destination)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
     parser.add_argument("destination", type=Path, help="bundle directory (absent or empty)")
     parser.add_argument("--quant", default=DEFAULT_QUANT, choices=sorted(GGUF_FILES))
     parser.add_argument("--gguf", type=Path, help="local copy of the quant's GGUF")
-    parser.add_argument("--tokenizer", type=Path, help="local copy of tokenizer.json")
+    parser.add_argument("--reference-tokenizer", type=Path, metavar="PATH",
+                        help="also write the pinned tokenizer.json, the tokenizer tests' "
+                             "reference, to PATH (outside the bundle)")
+    parser.add_argument("--tokenizer", type=Path,
+                        help="local copy of that tokenizer.json (needs --reference-tokenizer)")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        hashes = assemble(args.destination, args.quant, args.gguf, args.tokenizer)
+        if args.tokenizer is not None and args.reference_tokenizer is None:
+            raise ValueError("--tokenizer is a local copy of the reference tokenizer.json; "
+                             "it needs --reference-tokenizer")
+        reference = args.reference_tokenizer
+        if reference is not None and reference.resolve().is_relative_to(
+                args.destination.resolve()):
+            raise ValueError(f"the reference tokenizer {reference} must be outside the bundle "
+                             f"{args.destination}: a bundle has no tokenizer.json")
+        hashes = assemble(args.destination, args.quant, args.gguf)
+        if reference is not None:
+            fetch_reference_tokenizer(reference, args.tokenizer)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     for name in BUNDLE_FILES:
         print(f"{hashes[name]}  {args.destination / name}")
+    if reference is not None:
+        print(f"{TOKENIZER_SHA256}  {reference}")
     return 0
 
 

@@ -11,8 +11,8 @@ reference and the F32 golden is the quantization error.
 
 The tool is `llama-embedding` (examples/embedding/embedding.cpp) from llama.cpp at the commit
 the static release was built from, linked against that release's own static archives
-(libllama.a, libggml*.a). It therefore runs the same kernels as LTEmbed but none of LTEmbed's
-code: it tokenizes with the GGUF's vocabulary, not tokenizer.json, and builds its own batch.
+(libllama.a, libggml*.a). It therefore runs the same tokenizer (the GGUF's vocabulary) and
+kernels as LTEmbed but none of LTEmbed's code: it tokenizes and builds its batch itself.
 Kernels differ between the x86_64-v3 and aarch64-graviton2 variants, so the fixture holds one
 set of vectors per variant. scripts/build_llama_cpp_reference_tool.sh builds the tool;
 docs/testing.md § "llama.cpp reference" shows how, for each variant.

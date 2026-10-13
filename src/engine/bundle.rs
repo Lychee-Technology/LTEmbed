@@ -128,52 +128,6 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<(), LTEmbedError>
     }))
 }
 
-/// Checks that `tokenizer.json` has as many tokens as the GGUF's own vocabulary. A tokenizer
-/// from another model usually differs in size, but one of the same size still passes: this
-/// is a sanity check, not proof that the tokenizer belongs to the model.
-pub(crate) fn check_vocab_sizes(tokenizer: usize, model: usize) -> Result<(), LTEmbedError> {
-    if tokenizer == model {
-        return Ok(());
-    }
-
-    Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-        "tokenizer.json vocabulary size {tokenizer} != GGUF vocabulary size {model}; \
-         the tokenizer does not belong to this model"
-    ))))
-}
-
-/// Text that `tokenizer.json` and the GGUF's own vocabulary must tokenize to the same ids,
-/// BOS and EOS included. It mixes a retrieval prompt, Latin and CJK script, digits,
-/// punctuation, an emoji and a tab, so that a tokenizer from another model, even one with
-/// the same vocabulary size, almost always splits it differently.
-pub(crate) const TOKENIZER_CHECK_TEXT: &str =
-    "title: none | text: LTEmbed checks its tokenizer — 机器学习, 3.14159 🦀\tdone";
-
-/// Checks that `tokenizer.json` and the GGUF's own vocabulary tokenize
-/// [`TOKENIZER_CHECK_TEXT`] identically. Like [`check_vocab_sizes`], it shows that the two
-/// agree on this text, not that they agree on every input.
-pub(crate) fn check_tokenizer_agrees(tokenizer: &[u32], model: &[u32]) -> Result<(), LTEmbedError> {
-    if tokenizer == model {
-        return Ok(());
-    }
-
-    let difference = match tokenizer.iter().zip(model).position(|(t, m)| t != m) {
-        Some(i) => format!(
-            "token {i} is {} in tokenizer.json, {} in the GGUF",
-            tokenizer[i], model[i]
-        ),
-        None => format!(
-            "tokenizer.json gives {} tokens, the GGUF {}",
-            tokenizer.len(),
-            model.len()
-        ),
-    };
-    Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-        "tokenizer.json and the GGUF's own vocabulary tokenize the load-time check text \
-         differently ({difference}); the tokenizer does not belong to this model"
-    ))))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,61 +266,5 @@ mod tests {
             err,
             LTEmbedError::ModelLoad(ModelLoadError::UnsupportedModelFormat { .. })
         ));
-    }
-
-    #[test]
-    fn test_check_vocab_sizes_accepts_equal_sizes() {
-        check_vocab_sizes(262144, 262144).unwrap();
-    }
-
-    /// `assets/tokenizer.json` (30522 WordPiece tokens) against this model's GGUF.
-    #[test]
-    fn test_check_vocab_sizes_rejects_mismatch_naming_both_sizes() {
-        match check_vocab_sizes(30522, 262144) {
-            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
-                assert!(
-                    msg.contains("tokenizer.json vocabulary size 30522"),
-                    "{msg}"
-                );
-                assert!(msg.contains("GGUF vocabulary size 262144"), "{msg}");
-            }
-            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_check_tokenizer_agrees_accepts_identical_ids() {
-        check_tokenizer_agrees(&[2, 3250, 236787, 1], &[2, 3250, 236787, 1]).unwrap();
-    }
-
-    fn runtime_message(result: Result<(), LTEmbedError>) -> String {
-        match result {
-            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => msg,
-            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
-        }
-    }
-
-    /// A tokenizer of the same vocabulary size that splits the text differently.
-    #[test]
-    fn test_check_tokenizer_agrees_names_first_differing_token() {
-        let msg = runtime_message(check_tokenizer_agrees(
-            &[2, 3250, 9, 1],
-            &[2, 3250, 236787, 1],
-        ));
-        assert!(
-            msg.contains("token 2 is 9 in tokenizer.json, 236787 in the GGUF"),
-            "{msg}"
-        );
-        assert!(msg.contains("does not belong to this model"), "{msg}");
-    }
-
-    /// A tokenizer.json that adds no EOS, where the GGUF does.
-    #[test]
-    fn test_check_tokenizer_agrees_rejects_missing_special_token() {
-        let msg = runtime_message(check_tokenizer_agrees(&[2, 3250], &[2, 3250, 1]));
-        assert!(
-            msg.contains("tokenizer.json gives 2 tokens, the GGUF 3"),
-            "{msg}"
-        );
     }
 }

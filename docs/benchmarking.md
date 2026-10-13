@@ -106,7 +106,7 @@ Without `--reference-path`, the orchestrator runs the PyTorch reference itself
 `torchvision`, `pillow` and `numpy` (the versions are in the script's docstring), plus a
 local snapshot of `unsloth/embeddinggemma-2` at the revision
 `scripts/assemble_gguf_bundle.py` pins, passed as `--model-dir`. The default `--model-dir`
-is `assets/`, which does not contain the model, so pass it explicitly:
+is `assets/`, which the repository does not contain, so pass it explicitly:
 
 ```bash
 cargo build --release --bin benchmark_ltembed
@@ -166,8 +166,9 @@ All artifacts are kept for 3 days. Copy any result you want to keep.
   workflow's dynamic PyTorch reference when golden parity is missing. This is stricter
   than the orchestrator's `0.98` pass thresholds, and looser than the test suite's 0.993
   mean gate.
-- **Size budget**: `model.gguf` + `tokenizer.json` + `build-info.json` ≤ 230 MiB, which is
-  the 250 MiB unzipped AWS Lambda package limit minus a 20 MiB allowance for a binary.
+- **Size budget**: every file in the bundle directory (`model.gguf`, `build-info.json`,
+  `SHA256SUMS`, `provenance.json`: `metadata.json`'s `bundle_size_bytes`) ≤ 230 MiB, which
+  is the 250 MiB unzipped AWS Lambda package limit minus a 20 MiB allowance for a binary.
 
 If any requested quant has no results, the report is marked **INCOMPLETE** and makes no
 recommendation. If no quant passes the quality gate, it makes none either. The size
@@ -219,7 +220,9 @@ compare; they do not predict Graviton or Lambda latency.
 - The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 51.4,
   51.5, 51.7 and 51.9 ms at 1 thread with `max_length` 8192, 2048, 512 and 128.
 - Loading the engine takes 1.3–1.4 s. A cold start of `single/zh` (load and one embedding
-  in a fresh process, 6 threads) takes about 1.2 s.
+  in a fresh process, 6 threads) takes about 1.2 s. Both were measured while the engine
+  still parsed `tokenizer.json` (0.65 s); without it, loading takes about 0.42 s (6
+  threads, warm page cache).
 - Memory and first-call latency for inputs of up to 8192 tokens, and the effect of flash
   attention, are in [architecture.md](./architecture.md#long-inputs-and-memory).
 
@@ -250,4 +253,6 @@ and that set's retrieval metrics, where each query must find both sentences of i
   counts the fraction found.
 - The orchestrator and `render_benchmark_report.py` reproduce these runs: with the
   `UD-Q4_K_XL`, `UD-Q5_K_XL` and `Q8_0` results, the report recommends `UD-Q4_K_XL` as the
-  only quant within the 230 MiB budget.
+  only quant within the 230 MiB budget. Those bundles still held the 32 MB `tokenizer.json`;
+  without it `UD-Q5_K_XL` (200.3 MiB) fits too, and the report's smallest-bundle rule
+  still picks `UD-Q4_K_XL` ([releases.md](./releases.md#why-ud-q4_k_xl)).

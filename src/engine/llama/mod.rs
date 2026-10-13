@@ -3,8 +3,9 @@
 //! Loads a GGUF model through the prebuilt static llama.cpp archives (raw FFI in [`ffi`]),
 //! runs it as a non-causal embedding model with mean pooling, and returns the raw,
 //! un-normalized pooled vector per input. For EmbeddingGemma 2 that is the 768-wide output of
-//! the model's 512→768 projection, not its 512-wide hidden state. Prefixing, tokenization and
-//! truncation/normalization are handled by the shared engine layer.
+//! the model's 512→768 projection, not its 512-wide hidden state. It also tokenizes, with the
+//! GGUF's own vocabulary: the engine has no other tokenizer. Prefixing, the input length
+//! limit and truncation/normalization are handled by the shared engine layer.
 
 mod ffi;
 
@@ -15,7 +16,6 @@ use std::sync::{Mutex, Once};
 use std::time::Instant;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
-use crate::traits::tokenizer::TokenizerOutput;
 
 use super::backend::{BackendRunProfile, EmbeddingBackend};
 
@@ -69,8 +69,6 @@ pub(crate) struct LlamaBackend {
     /// Length of each pooled vector. `load` checked that the GGUF's `n_embd_out` equals it
     /// (see [`check_embedding_widths`]).
     raw_dim: usize,
-    /// Number of tokens in the GGUF's vocabulary (`tokenizer.ggml.tokens`).
-    n_vocab: usize,
     /// Context length (also the max single-sequence token count llama can pool at once).
     n_ctx: usize,
 }
@@ -170,6 +168,100 @@ unsafe fn check_gguf_pooling(model: *const ffi::llama_model) -> Result<(), LTEmb
     check_declared_pooling(&key, declared.as_deref())
 }
 
+/// Tokenizes the whole of `text` with `vocab`, adding the special tokens the GGUF declares
+/// (BOS/EOS) and matching special-token text, as llama.cpp's own tools do.
+///
+/// Safety: `vocab` belongs to a live model.
+unsafe fn tokenize_with_vocab(
+    vocab: *const ffi::llama_vocab,
+    text: &str,
+) -> Result<Vec<u32>, String> {
+    let too_long = || format!("a text of {} bytes is too long to tokenize", text.len());
+    let text_len = i32::try_from(text.len()).map_err(|_| too_long())?;
+    // Byte fallback yields at most one token per byte; BOS and EOS add two more.
+    let capacity = text.len() + 2;
+    let n_tokens_max = i32::try_from(capacity).map_err(|_| too_long())?;
+    let mut tokens: Vec<ffi::llama_token> = vec![0; capacity];
+    // `tokens` holds `n_tokens_max` elements, the most llama.cpp writes.
+    let n = ffi::llama_tokenize(
+        vocab,
+        text.as_ptr().cast::<c_char>(),
+        text_len,
+        tokens.as_mut_ptr(),
+        n_tokens_max,
+        true,
+        true,
+    );
+    let n = usize::try_from(n).map_err(|_| {
+        format!(
+            "llama_tokenize failed (rc={n}) for a text of {} bytes",
+            text.len()
+        )
+    })?;
+    tokens.truncate(n);
+    tokens
+        .into_iter()
+        .map(|token| {
+            u32::try_from(token).map_err(|_| format!("llama_tokenize returned token id {token}"))
+        })
+        .collect()
+}
+
+/// Text the load-time check tokenizes with the GGUF's vocabulary (see
+/// [`check_special_tokens`]).
+const SPECIAL_TOKENS_CHECK_TEXT: &str = "LTEmbed load check";
+
+/// Checks that the GGUF's tokenization of [`SPECIAL_TOKENS_CHECK_TEXT`], `ids`, starts with the
+/// vocabulary's BOS token and ends with its EOS token.
+///
+/// The model's SentenceTransformers pipeline wraps every input in BOS and EOS, and mean
+/// pooling averages over them. A GGUF whose tokenizer metadata does not add both
+/// (`tokenizer.ggml.add_bos_token`, `tokenizer.ggml.add_eos_token`) would embed every input
+/// differently, so it is rejected. `bos` and `eos` are the vocabulary's ids, negative
+/// (`LLAMA_TOKEN_NULL`) when it has none.
+fn check_special_tokens(
+    ids: &[u32],
+    bos: ffi::llama_token,
+    eos: ffi::llama_token,
+) -> Result<(), LTEmbedError> {
+    let runtime = |msg: String| LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg));
+    let token = |name: &str, id: ffi::llama_token| {
+        u32::try_from(id).map_err(|_| runtime(format!("the GGUF's vocabulary has no {name} token")))
+    };
+    let (bos, eos) = (token("BOS", bos)?, token("EOS", eos)?);
+    let adds_bos = ids.first() == Some(&bos);
+    let adds_eos = ids.len() >= 2 && ids.last() == Some(&eos);
+    let missing = match (adds_bos, adds_eos) {
+        (true, true) => return Ok(()),
+        (false, true) => "BOS",
+        (true, false) => "EOS",
+        (false, false) => "BOS or EOS",
+    };
+    let ends = match (ids.first(), ids.last()) {
+        (Some(first), Some(last)) => format!("{} tokens, from {first} to {last}", ids.len()),
+        _ => "no tokens".to_string(),
+    };
+    Err(runtime(format!(
+        "the GGUF's tokenization adds no {missing}: {SPECIAL_TOKENS_CHECK_TEXT:?} gives {ends}, \
+         but BOS is {bos} and EOS {eos}. The model wraps every input in BOS and EOS, so this \
+         GGUF would embed differently"
+    )))
+}
+
+/// Tokenizes [`SPECIAL_TOKENS_CHECK_TEXT`] and checks the result with
+/// [`check_special_tokens`].
+///
+/// Safety: `vocab` belongs to a live model.
+unsafe fn check_gguf_special_tokens(vocab: *const ffi::llama_vocab) -> Result<(), LTEmbedError> {
+    let ids = tokenize_with_vocab(vocab, SPECIAL_TOKENS_CHECK_TEXT)
+        .map_err(|msg| LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg)))?;
+    check_special_tokens(
+        &ids,
+        ffi::llama_vocab_bos(vocab),
+        ffi::llama_vocab_eos(vocab),
+    )
+}
+
 impl LlamaBackend {
     /// Load a GGUF model as a CPU embedding backend.
     ///
@@ -230,18 +322,11 @@ impl LlamaBackend {
                 raw_embedding_dimension,
             )
             .and_then(|()| check_gguf_pooling(model))
+            .and_then(|()| check_gguf_special_tokens(ffi::llama_model_get_vocab(model)))
             {
                 ffi::llama_model_free(model);
                 return Err(err);
             }
-
-            let n_tokens = ffi::llama_vocab_n_tokens(ffi::llama_model_get_vocab(model));
-            let Ok(n_vocab) = usize::try_from(n_tokens) else {
-                ffi::llama_model_free(model);
-                return Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(format!(
-                    "GGUF vocabulary size {n_tokens} is negative"
-                ))));
-            };
 
             let n = n_ctx;
             let mut cparams = ffi::llama_context_default_params();
@@ -290,60 +375,9 @@ impl LlamaBackend {
             Ok(Self {
                 inner: Mutex::new(ModelContext { model, ctx }),
                 raw_dim: raw_embedding_dimension,
-                n_vocab,
                 n_ctx: context_length,
             })
         }
-    }
-
-    /// Tokenizes `text` with the GGUF's own vocabulary (`tokenizer.ggml.*`), adding the
-    /// special tokens the GGUF declares (BOS/EOS) and matching special-token text, as
-    /// llama.cpp's own tools do. The engine compares the result with `tokenizer.json` at load
-    /// time; inference never uses it.
-    pub(crate) fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError> {
-        let runtime = |msg: String| LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg));
-        let text_len = i32::try_from(text.len())
-            .map_err(|_| runtime(format!("text of {} bytes is too long", text.len())))?;
-        // Byte fallback yields at most one token per byte; BOS and EOS add two more.
-        let capacity = text.len() + 2;
-        let n_tokens_max = i32::try_from(capacity)
-            .map_err(|_| runtime(format!("text of {} bytes is too long", text.len())))?;
-        let mut tokens: Vec<ffi::llama_token> = vec![0; capacity];
-
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| runtime("llama.cpp backend mutex is poisoned".into()))?;
-        // Safety: the mutex guard gives exclusive access to the model; `text` outlives the
-        // call and `tokens` holds `n_tokens_max` elements, the most llama.cpp writes.
-        let n = unsafe {
-            let vocab = ffi::llama_model_get_vocab(guard.model);
-            ffi::llama_tokenize(
-                vocab,
-                text.as_ptr().cast::<c_char>(),
-                text_len,
-                tokens.as_mut_ptr(),
-                n_tokens_max,
-                true,
-                true,
-            )
-        };
-        drop(guard);
-
-        let n = usize::try_from(n).map_err(|_| {
-            runtime(format!(
-                "llama_tokenize failed (rc={n}) for a text of {} bytes",
-                text.len()
-            ))
-        })?;
-        tokens.truncate(n);
-        tokens
-            .into_iter()
-            .map(|token| {
-                u32::try_from(token)
-                    .map_err(|_| runtime(format!("llama_tokenize returned token id {token}")))
-            })
-            .collect()
     }
 
     /// Raw, un-normalized pooled embedding for a single tokenized input.
@@ -410,13 +444,19 @@ impl EmbeddingBackend for LlamaBackend {
         self.raw_dim
     }
 
-    fn vocab_size(&self) -> usize {
-        self.n_vocab
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| LTEmbedError::Inference(InferenceError::MutexPoisoned))?;
+        // Safety: the guard keeps the model alive and serializes FFI calls on it.
+        unsafe { tokenize_with_vocab(ffi::llama_model_get_vocab(guard.model), text) }
+            .map_err(LTEmbedError::Tokenization)
     }
 
     fn embed(
         &self,
-        tokenized: &[TokenizerOutput],
+        tokenized: &[Vec<u32>],
         collect_profile: bool,
     ) -> Result<(Vec<Vec<f32>>, Option<BackendRunProfile>), LTEmbedError> {
         let guard = self
@@ -429,13 +469,9 @@ impl EmbeddingBackend for LlamaBackend {
         let mut run_ms = 0.0;
         // Sequences run independently (one `llama_encode` per input). True multi-sequence
         // batching in a single `llama_encode` is a future throughput optimization.
-        for item in tokenized {
+        for tokens in tokenized {
             let start = collect_profile.then(Instant::now);
-            // Feed only the real tokens, never batch padding. A tokenizer with padding enabled
-            // right-pads `encode_batch` rows to the longest; mean pooling would average those
-            // pad tokens into the embedding (see `TokenizerOutput::real_input_ids`).
-            let real_tokens = item.real_input_ids();
-            let raw = unsafe { self.embed_one(ctx, &real_tokens) }?;
+            let raw = unsafe { self.embed_one(ctx, tokens) }?;
             if let Some(start) = start {
                 run_ms += start.elapsed().as_secs_f64() * 1_000.0;
             }
@@ -528,5 +564,45 @@ mod tests {
     fn test_check_declared_pooling_rejects_missing_declaration() {
         let msg = runtime_error(check_declared_pooling("arch.pooling_type", None));
         assert!(msg.contains("GGUF has no arch.pooling_type"), "{msg}");
+    }
+
+    /// EmbeddingGemma 2's vocabulary: `<bos>` is 2 and `<eos>` 1.
+    const BOS: ffi::llama_token = 2;
+    const EOS: ffi::llama_token = 1;
+
+    #[test]
+    fn test_check_special_tokens_accepts_bos_and_eos() {
+        check_special_tokens(&[2, 43, 2335, 1], BOS, EOS).unwrap();
+    }
+
+    /// A GGUF that adds no EOS (`tokenizer.ggml.add_eos_token = false`), no BOS, or neither.
+    #[test]
+    fn test_check_special_tokens_rejects_missing_bos_or_eos() {
+        for (ids, missing) in [
+            (&[2, 43, 2335][..], "adds no EOS"),
+            (&[43, 2335, 1][..], "adds no BOS"),
+            (&[43, 2335][..], "adds no BOS or EOS"),
+            (&[][..], "adds no BOS or EOS"),
+        ] {
+            let msg = runtime_error(check_special_tokens(ids, BOS, EOS));
+            assert!(msg.contains(missing), "{ids:?}: {msg}");
+            assert!(msg.contains("BOS is 2 and EOS 1"), "{msg}");
+        }
+    }
+
+    /// A lone token that is both BOS and EOS is not a text wrapped in both.
+    #[test]
+    fn test_check_special_tokens_needs_two_tokens_when_bos_is_eos() {
+        let msg = runtime_error(check_special_tokens(&[7], 7, 7));
+        assert!(msg.contains("adds no EOS"), "{msg}");
+        check_special_tokens(&[7, 7], 7, 7).unwrap();
+    }
+
+    #[test]
+    fn test_check_special_tokens_rejects_vocabulary_without_them() {
+        let msg = runtime_error(check_special_tokens(&[2, 43, 1], -1, EOS));
+        assert!(msg.contains("has no BOS token"), "{msg}");
+        let msg = runtime_error(check_special_tokens(&[2, 43, 1], BOS, -1));
+        assert!(msg.contains("has no EOS token"), "{msg}");
     }
 }

@@ -10,19 +10,19 @@ see [bundle-format.md](./bundle-format.md); for build setup see
 EmbeddingEngine                      src/engine/mod.rs
 ├── ModelSpec      (build-info.json)  src/engine/bundle.rs
 ├── EngineConfig   (caller)           src/engine/config.rs
-├── HFTokenizer    (tokenizer.json)   src/traits/tokenizer.rs
 └── Box<dyn EmbeddingBackend>         src/engine/backend.rs   (pub(crate))
     └── LlamaBackend (model.gguf)     src/engine/llama/       (only implementation)
         └── raw FFI → static llama.cpp / ggml archives (build.rs)
 ```
 
 - **`EmbeddingEngine`** is the public entry point. It owns the shared pipeline: prefixing,
-  tokenization, truncation and normalization.
-- **`EmbeddingBackend`** is a crate-private trait. A backend receives tokenized inputs and
-  returns one raw, un-normalized, pooled vector of `raw_embedding_dimension` floats per
-  input. `LlamaBackend` is the only implementation. The trait exists so that another backend
-  could be added without touching the shared pipeline; there is no plan in the repository to
-  add one.
+  the input length limit, Matryoshka truncation and normalization.
+- **`EmbeddingBackend`** is a crate-private trait. A backend tokenizes text with the
+  model's own vocabulary (`tokenize`), and for tokenized inputs returns one raw,
+  un-normalized, pooled vector of `raw_embedding_dimension` floats per input (`embed`).
+  `LlamaBackend` is the only implementation; it tokenizes with the GGUF's vocabulary. The
+  trait exists so that another backend could be added without touching the shared
+  pipeline; there is no plan in the repository to add one.
 - **llama.cpp** is not a crates.io dependency. `build.rs` links the prebuilt static archives
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
@@ -75,38 +75,34 @@ supported; its vectors are not comparable with these. See
 `from_gguf_bundle_dir_with_threads(dir, config, n_threads)` do the following, in order. Any
 failure returns `LTEmbedError::ModelLoad(_)`:
 
-1. Require `model.gguf`, `tokenizer.json` and `build-info.json` in `dir` (`MissingFile`).
+1. Require `model.gguf` and `build-info.json` in `dir` (`MissingFile`). A `tokenizer.json`
+   in `dir` is not read.
 2. Parse and validate `build-info.json`, including `pooling = "mean"` and
    `1 <= max_length <= 8192` (see [bundle-format.md](./bundle-format.md#build-infojson)).
 3. Validate `EngineConfig`: `0 < output_dimension <= raw_embedding_dimension` (`Config`).
 4. Validate `n_threads > 0` (`Config`).
-5. Load `tokenizer.json` with the Hugging Face `tokenizers` crate (`Runtime` on failure).
-   The BPE word cache is turned off because `tokenizers` 0.23 leaks it when a tokenizer is
-   dropped.
-6. Load the GGUF on CPU (`n_gpu_layers = 0`) and check (`Runtime` on failure):
+5. Load the GGUF on CPU (`n_gpu_layers = 0`) and check (`Runtime` on failure):
    - `n_embd_out`, the length of each pooled vector, equals `raw_embedding_dimension`, and
      `n_embd` is a valid width. For EmbeddingGemma 2 these are 768 and 512; a bundle that
      declared 512 would read the first 512 projected values, so it is rejected.
    - `<architecture>.pooling_type` in the GGUF is mean (1).
-7. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_MEAN`,
+   - The GGUF's vocabulary tokenizes a fixed check text (`SPECIAL_TOKENS_CHECK_TEXT`) to ids
+     that start with its BOS and end with its EOS token. This rejects a GGUF whose tokenizer
+     metadata does not add both; it does not show that the vocabulary splits text like the
+     model's own tokenizer (see [bundle-format.md](./bundle-format.md#tokenization)).
+6. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_MEAN`,
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, flash attention `ENABLED`,
    `n_ctx = n_batch = n_ubatch = max_length`, `n_seq_max = 1`,
    `n_threads = n_threads_batch = n_threads`; then check that the context reports mean
    pooling.
-8. Check that the tokenizer's vocabulary size, added tokens included, equals the GGUF's
-   `llama_vocab_n_tokens` (262144 for both).
-9. Tokenize a fixed check text (`TOKENIZER_CHECK_TEXT`) with `tokenizer.json` and with the
-   GGUF's own vocabulary (`llama_tokenize`, special tokens added) and require identical
-   ids. This rejects a tokenizer that lost `<bos>` or `<eos>`, or comes from another model
-   with the same vocabulary size; it does not prove agreement on every input (see
-   [bundle-format.md](./bundle-format.md#tokenizerjson)).
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three
 warnings that need no action: two `control-looking token` lines (for `</s>` and
 `<|tool_response>`) and `'</s>' is a normal token here, removing it from EOG list`. They
-concern llama.cpp's own token types, which inference does not use: the token ids come from
-`tokenizer.json`.
+concern llama.cpp's token types. Those also decide which special-token text tokenization
+matches, and the [tokenizer parity tests](./testing.md#tokenizer-parity) show that the
+GGUF's vocabulary gives the same ids as the model's `tokenizer.json` on their corpus.
 
 Flash attention is stated rather than left to llama.cpp's automatic choice, which also
 enables it on CPU. It stores K and V in F16; the residual stream stays F32. With the BF16
@@ -121,20 +117,19 @@ and the latency of an 8192-token input.
 1. **Prefix.** `EmbeddingInput::query(text)` becomes `query_prefix + text`, and
    `EmbeddingInput::document(text)` becomes `document_prefix + text`, once. Callers pass raw
    text; the engine adds the prefix.
-2. **Tokenize** the whole batch with `HFTokenizer::encode_batch`. `<bos>` and `<eos>` are
-   added; the tokenizer pads nothing. Nothing is truncated: if any input exceeds
-   `max_length` tokens, the call returns `LTEmbedError::InputTooLong` and embeds none of the
-   batch.
+2. **Tokenize** each input with the GGUF's vocabulary (`llama_tokenize`, special tokens
+   added and special-token text matched). `<bos>` and `<eos>` are added; nothing is padded.
+   Nothing is truncated: if any input exceeds `max_length` tokens, the call returns
+   `LTEmbedError::InputTooLong` and embeds none of the batch.
 3. **Backend.** Under one `Mutex`, for each input in order:
-   - keep only real tokens (attention mask `1`);
    - clear the KV memory;
    - run `llama_encode` on that single sequence, every token marked as an output;
    - copy the pooled, projected vector from `llama_get_embeddings_seq`:
-     `raw_embedding_dimension` floats, the buffer's `n_embd_out` length that load step 6
+     `raw_embedding_dimension` floats, the buffer's `n_embd_out` length that load step 5
      checked.
 
-   Inputs are encoded **one at a time**. A batch call saves tokenizer and call overhead,
-   not model compute; multi-sequence batching is not implemented. A batch's outputs are
+   Inputs are encoded **one at a time**. A batch call saves call overhead, not model
+   compute; multi-sequence batching is not implemented. A batch's outputs are
    bit-identical to embedding each input alone, and repeated calls are bit-identical.
 4. **Check** that every raw value is finite. A NaN or infinity fails the call with
    `Inference(Backend)` rather than being normalized into a vector of NaNs.
@@ -150,15 +145,6 @@ vector, whose norm is not 1.
 An empty slice returns an empty `Vec` without touching the backend.
 `embed_batch_profiled` returns the same embeddings plus an `EmbedBatchProfile`, which holds
 per-stage milliseconds. The benchmark binary prints it when `LTEMBED_PROFILE=1`.
-
-### Why padding is stripped before the backend
-
-Mean pooling averages every token fed to the model. If a tokenizer with padding enabled
-right-padded a batch, the pad tokens of shorter inputs would be averaged into their
-embeddings. EmbeddingGemma 2's `tokenizer.json` configures no padding, but
-`TokenizerOutput::real_input_ids` still removes any padding by attention mask, so a bundle
-tokenizer that pads cannot change the result. The unit test
-`test_real_input_ids_strips_right_padding` covers this.
 
 ## Long inputs and memory
 
@@ -182,14 +168,16 @@ attention on, bundle `max_length` 8192):
 | 8192 | 9.53 GiB (10.2 GB) | 18.2 s | 72.8 s |
 
 That is about 0.47 GiB plus 1.13 MiB per token of the longest input embedded so far.
-Loading takes 1.3–1.4 s. Later calls of the same length are faster than the first, which
-also touches the newly reserved buffers: [benchmarking.md](./benchmarking.md#recorded-results)
-has warm latencies. Three consequences:
+Loading took 1.3–1.4 s. These runs predate tokenizing with the GGUF's vocabulary: the
+engine still loaded `tokenizer.json`, so the figures include its memory and its 0.65 s
+parse. Without it, loading takes about 0.42 s (6 threads, warm page cache). Later calls of
+the same length are faster than the first, which also touches the newly reserved buffers:
+[benchmarking.md](./benchmarking.md#recorded-results) has warm latencies. Three consequences:
 
 - **The buffer only grows.** llama.cpp keeps the output buffer at the largest size any
   input needed, so after one 8k input an engine holds about 9.5 GiB until it is dropped.
 - **`max_length` bounds it.** A bundle's `max_length` (`1..=8192`) sets
-  `n_ctx = n_batch = n_ubatch` and the tokenizer limit. Inputs over it fail with
+  `n_ctx = n_batch = n_ubatch` and the input token limit. Inputs over it fail with
   `InputTooLong` instead of being truncated, so a deployment that sets `max_length` to
   2048 caps peak memory at about 2.7 GiB and rejects longer inputs explicitly. A smaller
   `max_length` changes neither the result nor, measurably, the cost of inputs that fit:
@@ -221,9 +209,9 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling, context creation failure, tokenizer and GGUF vocabulary sizes differ, or they tokenize the check text differently |
+| `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
-| `Tokenization(_)` | The tokenizer rejects the input |
+| `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
 | `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
 
 ## Platform constraint

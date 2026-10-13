@@ -17,8 +17,8 @@ latency distribution (min/mean/median==p50/p95/p99/max) plus the run's metadata.
 fixture and vs the workflow's dynamic FP32 reference, and retrieval quality.
 
 A quant is recommendable only when its mean cosine vs FP32 stays at or above the quality
-gate AND its bundle (model.gguf + tokenizer.json + build-info.json) fits the uncompressed
-AWS Lambda package limit.
+gate AND its bundle (model.gguf + build-info.json, with SHA256SUMS and provenance.json) fits
+the uncompressed AWS Lambda package limit.
 
 If ``$GITHUB_STEP_SUMMARY`` is set, the report is also appended there so it renders in the
 Actions run UI. ``<output_dir>`` defaults to the current directory.
@@ -41,11 +41,11 @@ SCHEMA_VERSION = 1
 QUALITY_GATE = 0.99
 
 # Lambda size contract: the deployed package is the GGUF bundle (model.gguf +
-# tokenizer.json + build-info.json — metadata.json's bundle_size_bytes) plus the
-# bootstrap binary. AWS caps the unzipped deployment package at 250 MiB, so the
-# bundle's effective budget reserves an allowance for the binary. With EmbeddingGemma 2's
-# 32.2 MB tokenizer.json, the 175.7 MB UD-Q4_K_XL GGUF makes a 207.8 MB (198 MiB) bundle
-# that fits, while UD-Q5_K_XL (210.1 MB GGUF, 242.2 MB bundle) is just over the budget.
+# build-info.json, with SHA256SUMS and provenance.json — metadata.json's bundle_size_bytes)
+# plus the bootstrap binary. AWS caps the unzipped deployment package at 250 MiB, so the
+# bundle's effective budget reserves an allowance for the binary. The bundle has no
+# tokenizer.json, so it is its GGUF plus about 1.4 KB: UD-Q4_K_XL (175.7 MB, 167.5 MiB) and
+# UD-Q5_K_XL (210.1 MB, 200.3 MiB) fit, while UD-Q6_K_XL (248.8 MB, 237.3 MiB) is over.
 LAMBDA_PACKAGE_LIMIT_BYTES = 250 * 1024 * 1024
 LAMBDA_BINARY_ALLOWANCE_BYTES = 20 * 1024 * 1024
 LAMBDA_BUDGET_BYTES = LAMBDA_PACKAGE_LIMIT_BYTES - LAMBDA_BINARY_ALLOWANCE_BYTES

@@ -56,9 +56,9 @@ pub enum ModelLoadError {
     #[error("{0}")]
     Config(String),
 
-    /// Backend model load (GGUF load, context creation) or tokenizer load failure, or a GGUF
-    /// that does not match the rest of the bundle (its embedding width differs from
-    /// `build-info.json`, or its vocabulary size from `tokenizer.json`).
+    /// Backend model load (GGUF load, context creation) failure, or a GGUF the engine cannot
+    /// run as this model: its embedding width differs from `build-info.json`, it declares
+    /// another pooling, or its tokenization does not add BOS and EOS.
     #[error("{0}")]
     Runtime(String),
 }
@@ -108,12 +108,12 @@ mod tests {
     #[test]
     fn test_missing_file_error_display() {
         let e = LTEmbedError::ModelLoad(ModelLoadError::MissingFile {
-            label: "tokenizer".to_string(),
-            path: PathBuf::from("/tmp/tokenizer.json"),
+            label: "GGUF model".to_string(),
+            path: PathBuf::from("/tmp/model.gguf"),
         });
         assert_eq!(
             e.to_string(),
-            "Model load failed: tokenizer file not found: /tmp/tokenizer.json"
+            "Model load failed: GGUF model file not found: /tmp/model.gguf"
         );
     }
 

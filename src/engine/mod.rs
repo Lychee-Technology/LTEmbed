@@ -2,7 +2,6 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
-use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
 
 mod backend;
 mod bundle;
@@ -18,9 +17,7 @@ pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
 
 use backend::EmbeddingBackend;
-use bundle::{
-    check_tokenizer_agrees, check_vocab_sizes, require_file, ModelSpec, TOKENIZER_CHECK_TEXT,
-};
+use bundle::{require_file, ModelSpec};
 use inference::{postprocess_embedding, prefixed_text};
 use llama::LlamaBackend;
 
@@ -35,14 +32,13 @@ pub const QUERY_PREFIX: &str = "task: search result | query: ";
 pub const DOCUMENT_PREFIX: &str = "title: none | text: ";
 
 const MODEL_FILE: &str = "model.gguf";
-const TOKENIZER_FILE: &str = "tokenizer.json";
 const BUILD_INFO_FILE: &str = "build-info.json";
 
 /// A loaded embedding model. Backed by an internal backend (currently llama.cpp/GGUF);
-/// owns the shared prefix → tokenize → backend → truncate/normalize pipeline.
+/// owns the shared prefix → tokenize → backend → truncate/normalize pipeline. Inputs are
+/// tokenized with the GGUF's own vocabulary.
 pub struct EmbeddingEngine {
     backend: Box<dyn EmbeddingBackend>,
-    tokenizer: HFTokenizer,
     spec: ModelSpec,
     config: EngineConfig,
 }
@@ -54,8 +50,9 @@ impl std::fmt::Debug for EmbeddingEngine {
 }
 
 impl EmbeddingEngine {
-    /// Load from a bundle directory containing `model.gguf`, `tokenizer.json`, and
-    /// `build-info.json`, using a single inference thread.
+    /// Load from a bundle directory containing `model.gguf` and `build-info.json`, using a
+    /// single inference thread. The GGUF's own vocabulary tokenizes the inputs; a
+    /// `tokenizer.json` in the directory is not read.
     pub fn from_gguf_bundle_dir(
         bundle_dir: impl AsRef<Path>,
         config: EngineConfig,
@@ -77,15 +74,13 @@ impl EmbeddingEngine {
     ) -> Result<Self, LTEmbedError> {
         let bundle_dir = bundle_dir.as_ref();
         let model_path = bundle_dir.join(MODEL_FILE);
-        let tokenizer_path = bundle_dir.join(TOKENIZER_FILE);
         let build_info_path = bundle_dir.join(BUILD_INFO_FILE);
 
         require_file(&model_path, "GGUF model")?;
-        require_file(&tokenizer_path, "tokenizer")?;
         require_file(&build_info_path, "build-info metadata")?;
 
         let spec = ModelSpec::from_build_info(&build_info_path)?;
-        Self::build(&model_path, &tokenizer_path, spec, config, n_threads)
+        Self::build(&model_path, spec, config, n_threads)
     }
 
     fn validate_threads(n_threads: usize) -> Result<(), LTEmbedError> {
@@ -99,7 +94,6 @@ impl EmbeddingEngine {
 
     fn build(
         model_path: &Path,
-        tokenizer_path: &Path,
         spec: ModelSpec,
         config: EngineConfig,
         n_threads: usize,
@@ -107,28 +101,34 @@ impl EmbeddingEngine {
         config.validate(spec.raw_embedding_dimension)?;
         Self::validate_threads(n_threads)?;
 
-        let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy())?;
         // Loading checks that the GGUF declares mean pooling, the only pooling the bundle
-        // metadata accepts (`ModelSpec::from_build_info`).
+        // metadata accepts (`ModelSpec::from_build_info`), and that its tokenization adds
+        // BOS and EOS.
         let backend = LlamaBackend::load(
             model_path,
             spec.raw_embedding_dimension,
             spec.max_length,
             n_threads,
         )?;
-        check_vocab_sizes(tokenizer.vocab_size(), backend.vocab_size())?;
-        // Not limited to `max_length`: a bundle with a small one must still load.
-        let check_ids = tokenizer
-            .encode(TOKENIZER_CHECK_TEXT, usize::MAX)?
-            .input_ids;
-        check_tokenizer_agrees(&check_ids, &backend.tokenize(TOKENIZER_CHECK_TEXT)?)?;
 
         Ok(Self {
             backend: Box::new(backend),
-            tokenizer,
             spec,
             config,
         })
+    }
+
+    /// The GGUF vocabulary's token ids for `text`, BOS and EOS included. A text of more than
+    /// the bundle's `max_length` tokens is an error; it is never truncated.
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError> {
+        let ids = self.backend.tokenize(text)?;
+        if ids.len() > self.spec.max_length {
+            return Err(LTEmbedError::InputTooLong {
+                tokens: ids.len(),
+                max: self.spec.max_length,
+            });
+        }
+        Ok(ids)
     }
 
     pub fn embed(&self, input: EmbeddingInput<'_>) -> Result<Vec<f32>, LTEmbedError> {
@@ -181,17 +181,14 @@ impl EmbeddingEngine {
         let prefix_ms = prefix_start.elapsed().as_secs_f64() * 1_000.0;
 
         let tokenize_start = Instant::now();
-        let encoded = self
-            .tokenizer
-            .encode_batch(&prefixed_inputs, self.spec.max_length)?;
+        let encoded = prefixed_inputs
+            .iter()
+            .map(|text| self.tokenize(text))
+            .collect::<Result<Vec<_>, _>>()?;
         let tokenize_ms = tokenize_start.elapsed().as_secs_f64() * 1_000.0;
 
         let batch_size = encoded.len();
-        let sequence_length = encoded
-            .iter()
-            .map(|item| item.input_ids.len())
-            .max()
-            .unwrap_or(0);
+        let sequence_length = encoded.iter().map(Vec::len).max().unwrap_or(0);
 
         let (raw_embeddings, backend_profile) = self.backend.embed(&encoded, collect_profile)?;
 

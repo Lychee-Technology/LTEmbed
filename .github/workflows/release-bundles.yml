@@ -1,13 +1,14 @@
 name: release-bundles
 
-# Package an LTEmbed source tree + a ready-to-load GGUF bundle (model.gguf + tokenizer.json +
-# build-info.json, with SHA256SUMS and provenance.json) into a release tarball. Mirrors the
-# runtime's bundle contract; the old ORT (model.ort + libonnxruntime.so) layout was removed
-# with the llama.cpp/GGUF migration.
+# Package an LTEmbed source tree + a ready-to-load GGUF bundle (model.gguf + build-info.json,
+# with SHA256SUMS and provenance.json) into a release tarball. Mirrors the runtime's bundle
+# contract: the engine tokenizes with the GGUF's own vocabulary, so the bundle has no
+# tokenizer.json. The old ORT (model.ort + libonnxruntime.so) layout was removed with the
+# llama.cpp/GGUF migration.
 #
-# The bundle comes from scripts/assemble_gguf_bundle.py, which downloads the GGUF and
-# tokenizer.json from pinned Hugging Face revisions and checks their sha256, the same files
-# the CI Test jobs run on ARM64 and x86-64-v3. This workflow does not build or test.
+# The bundle comes from scripts/assemble_gguf_bundle.py, which downloads the GGUF from a
+# pinned Hugging Face revision and checks its sha256, the same file the CI Test jobs run on
+# ARM64 and x86-64-v3. This workflow does not build or test.
 #
 # workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
 # published release it also uploads the tarball as a release asset. Pushing a v* tag creates
@@ -56,7 +57,7 @@ jobs:
           # The script writes exactly these files; a projector (mmproj-*.gguf) or any other
           # extra file must never ship in a text bundle.
           contents="$(find "$BUNDLE" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
-          expected="SHA256SUMS build-info.json model.gguf provenance.json tokenizer.json "
+          expected="SHA256SUMS build-info.json model.gguf provenance.json "
           if [ "$contents" != "$expected" ]; then
             echo "::error::bundle holds '$contents', expected '$expected'"
             exit 1
@@ -99,11 +100,16 @@ jobs:
           # instead of piping into `grep -q`: grep exits on the first match, which SIGPIPEs tar
           # and fails the step under `set -o pipefail` exactly when model.gguf IS present.
           tar -tzf "artifacts/package/${OUTPUT_NAME}" > artifacts/package/archive-contents.txt
-          for file in model.gguf tokenizer.json build-info.json SHA256SUMS provenance.json; do
+          for file in model.gguf build-info.json SHA256SUMS provenance.json; do
             grep -F -x -q "${ROOT_NAME}/gguf_bundle/${file}" artifacts/package/archive-contents.txt
           done
           if grep -i -q mmproj artifacts/package/archive-contents.txt; then
             echo "::error::the release archive contains an mmproj file"
+            exit 1
+          fi
+          # No file in the archive, in the bundle or in the source tree, is a tokenizer.json.
+          if grep -q 'tokenizer\.json$' artifacts/package/archive-contents.txt; then
+            echo "::error::the release archive contains a tokenizer.json"
             exit 1
           fi
           # Published next to the tarball: the bundle's own SHA256SUMS covers only its files.

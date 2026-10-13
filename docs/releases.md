@@ -18,7 +18,6 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64.tar.gz.s
     ├── <source tree>      git archive of the commit being built
     └── gguf_bundle/
         ├── model.gguf         embeddinggemma-2-UD-Q4_K_XL.gguf
-        ├── tokenizer.json
         ├── build-info.json
         ├── SHA256SUMS
         └── provenance.json
@@ -26,12 +25,14 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64.tar.gz.s
 
 - `<version>` is `package.version` from `Cargo.toml`.
 - `gguf_bundle/` is what `scripts/assemble_gguf_bundle.py` writes and follows
-  [bundle-format.md](./bundle-format.md): the GGUF and tokenizer at their pinned Hugging Face
-  revisions, checked against their pinned sha256, which are the files CI tests on both
-  architectures. `provenance.json` records each file's repository, revision, URL and
-  sha256, the upstream model and its license, and the LTEmbed commit and workflow run.
-- The workflow fails if the bundle holds any file but these five, or if the archive
-  contains an `mmproj` (vision or audio projector) file.
+  [bundle-format.md](./bundle-format.md): the GGUF at its pinned Hugging Face revision,
+  checked against its pinned sha256, which is the file CI tests on both architectures.
+  `provenance.json` records each file's repository, revision, URL and sha256, the upstream
+  model and its license, and the LTEmbed commit and workflow run.
+- The workflow fails if the bundle holds any file but these four, or if the archive
+  contains an `mmproj` (vision or audio projector) file or any `tokenizer.json`. The engine
+  tokenizes with the GGUF's own vocabulary
+  ([bundle-format.md](./bundle-format.md#tokenization)).
 - The tarball contains **no compiled binary and no static llama.cpp archives**. To build
   from it, you still need aarch64 Linux or x86-64-v3 Linux and `STATIC_LLAMA_DIR`; see
   [development.md](./development.md).
@@ -66,10 +67,10 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
   publishes, with the `Cargo.toml` version in the file name.
 - The workflow does **not** build the crate or run tests. It packages whatever commit the
   tag points at, so run CI on that commit first.
-- `model.gguf` and `tokenizer.json` come from the same pinned revisions and hashes as CI's
-  bundle (`scripts/assemble_gguf_bundle.py`); no step downloads from a branch such as
-  `main`. Changing the release's model files therefore means changing the pins in that
-  script, which CI then tests.
+- `model.gguf` comes from the same pinned revision and hash as CI's bundle
+  (`scripts/assemble_gguf_bundle.py`); no step downloads from a branch such as `main`.
+  Changing the release's model file therefore means changing the pins in that script, which
+  CI then tests.
 
 ### Cutting a release
 
@@ -93,20 +94,26 @@ To try the packaging without publishing anything, run the workflow by hand
 
 The release and CI bundles use `embeddinggemma-2-UD-Q4_K_XL.gguf`, Unsloth's dynamic 4-bit
 quant, from [`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF)
-at revision `031f0d4b…`. It is the only pinned quant that meets the size budget, and its
+at revision `031f0d4b…`. It is the smallest pinned quant, it meets the size budget, and its
 quantization error is within the gates the tests apply:
 
-| GGUF | Bundle (GGUF + tokenizer) | Fits 230 MiB | Golden cosine, min / mean (768) |
+| GGUF | Bundle | Fits 230 MiB | Golden cosine, min / mean (768) |
 |---|---|---|---|
-| `UD-Q4_K_XL` | 207.8 MB (198.2 MiB) | yes | 0.98944 / 0.99471 |
-| `UD-Q5_K_XL` | 242.2 MB (231.0 MiB) | no | 0.9969 / 0.9985 |
-| `UD-Q6_K_XL` | 281.0 MB (268.0 MiB) | no | 0.9983 / 0.9992 |
-| `Q8_0` | 342.0 MB (326.2 MiB) | no | 0.9996 / 0.99985 |
-| `BF16` | 590.1 MB (562.8 MiB) | no | ≥ 0.99999 |
+| `UD-Q4_K_XL` | 175.7 MB (167.5 MiB) | yes | 0.98944 / 0.99471 |
+| `UD-Q5_K_XL` | 210.1 MB (200.3 MiB) | yes | 0.9969 / 0.9985 |
+| `UD-Q6_K_XL` | 248.8 MB (237.3 MiB) | no | 0.9983 / 0.9992 |
+| `Q8_0` | 309.9 MB (295.5 MiB) | no | 0.9996 / 0.99985 |
+| `BF16` | 558.0 MB (532.1 MiB) | no | ≥ 0.99999 |
 
 - **Size**: the 230 MiB budget is the AWS Lambda unzipped package limit of 250 MiB minus a
-  20 MiB allowance for a binary (see [AWS Lambda](#aws-lambda)). The 32 MB tokenizer takes a
-  large share of it.
+  20 MiB allowance for a binary (see [AWS Lambda](#aws-lambda)). A bundle is its GGUF plus
+  about 1.4 KB of `build-info.json`, `SHA256SUMS` and `provenance.json`. Since the bundle
+  dropped the 32 MB `tokenizer.json`, `UD-Q5_K_XL` fits the budget too.
+- **Why not `UD-Q5_K_XL`**: the test gates and the llama.cpp reference fixture are
+  calibrated for `UD-Q4_K_XL`, and the benchmark report recommends the smallest bundle that
+  passes its quality gate, which is still `UD-Q4_K_XL`. Shipping `UD-Q5_K_XL` would be a
+  separate change: recalibrate the gates and regenerate the llama.cpp reference for both
+  variants on it.
 - **Parity**: cosine of LTEmbed's output against the PyTorch F32 golden over 25 inputs of
   up to 8192 tokens, measured on x86-64-v3 (aarch64: minimum 0.98985, mean 0.99485). At the
   default 512 dimensions the release quant scores a minimum of 0.98972 and a mean of

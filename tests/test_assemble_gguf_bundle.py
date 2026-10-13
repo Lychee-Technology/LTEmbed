@@ -49,17 +49,21 @@ class AssembleTests(unittest.TestCase):
         self.enterContext(mock.patch.dict("os.environ", {"GITHUB_SHA": "abc123"}))
 
     def assemble(self, destination, **kwargs):
-        return self.module.assemble(
-            destination, "UD-Q4_K_XL", kwargs.get("gguf", self.gguf),
-            kwargs.get("tokenizer", self.tokenizer),
-        )
+        return self.module.assemble(destination, "UD-Q4_K_XL", kwargs.get("gguf", self.gguf))
+
+    def main(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = self.module.main([str(arg) for arg in argv])
+        return code, stdout.getvalue(), stderr.getvalue()
 
     def test_writes_exactly_the_bundle_files_with_their_checksums(self):
         bundle = self.tmp / "bundle"
         hashes = self.assemble(bundle)
         self.assertEqual(sorted(p.name for p in bundle.iterdir()), self.module.OUTPUT_FILES)
         self.assertEqual((bundle / "model.gguf").read_bytes(), self.gguf.read_bytes())
-        self.assertEqual((bundle / "tokenizer.json").read_bytes(), self.tokenizer.read_bytes())
+        # The engine tokenizes with the GGUF's own vocabulary.
+        self.assertNotIn("tokenizer.json", self.module.OUTPUT_FILES)
         self.assertEqual(
             json.loads((bundle / "build-info.json").read_text(encoding="utf-8")),
             self.module.build_info("UD-Q4_K_XL"),
@@ -80,11 +84,9 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual(model["revision"], self.module.GGUF_REVISION)
         self.assertEqual(model["sha256"], hashes["model.gguf"])
         self.assertIn(f"/resolve/{self.module.GGUF_REVISION}/", model["url"])
-        tokenizer = provenance["files"]["tokenizer.json"]
-        self.assertEqual(tokenizer["repo"], self.module.TOKENIZER_REPO)
-        self.assertIn(f"/resolve/{self.module.TOKENIZER_REVISION}/", tokenizer["url"])
         self.assertEqual(provenance["files"]["build-info.json"]["sha256"],
                          hashes["build-info.json"])
+        self.assertEqual(sorted(provenance["files"]), sorted(self.module.BUNDLE_FILES))
 
     def test_hash_mismatch_fails_and_leaves_no_bundle(self):
         other = self.tmp / "other.gguf"
@@ -104,12 +106,50 @@ class AssembleTests(unittest.TestCase):
             self.assemble(bundle)
 
     def test_main_reports_errors_without_a_traceback(self):
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            code = self.module.main([str(self.tmp / "b"), "--gguf", str(self.tokenizer),
-                                     "--tokenizer", str(self.tokenizer)])
+        code, _, stderr = self.main(self.tmp / "b", "--gguf", self.tokenizer)
         self.assertEqual(code, 1)
-        self.assertIn("error: model.gguf", stderr.getvalue())
+        self.assertIn("error: model.gguf", stderr)
+
+    def test_reference_tokenizer_is_written_outside_the_bundle(self):
+        bundle, reference = self.tmp / "bundle", self.tmp / "ref" / "tokenizer.json"
+        code, stdout, stderr = self.main(bundle, "--gguf", self.gguf,
+                                         "--reference-tokenizer", reference,
+                                         "--tokenizer", self.tokenizer)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(reference.read_bytes(), self.tokenizer.read_bytes())
+        self.assertEqual(sorted(p.name for p in bundle.iterdir()), self.module.OUTPUT_FILES)
+        self.assertEqual(sorted(p.name for p in reference.parent.iterdir()), ["tokenizer.json"])
+        self.assertIn(f"{self.module.TOKENIZER_SHA256}  {reference}", stdout)
+
+    def test_reference_tokenizer_inside_the_bundle_is_refused(self):
+        bundle = self.tmp / "bundle"
+        code, _, stderr = self.main(bundle, "--gguf", self.gguf,
+                                    "--reference-tokenizer", bundle / "tokenizer.json",
+                                    "--tokenizer", self.tokenizer)
+        self.assertEqual(code, 1)
+        self.assertIn("must be outside the bundle", stderr)
+        self.assertFalse(bundle.exists())
+
+    def test_tokenizer_needs_reference_tokenizer(self):
+        bundle = self.tmp / "bundle"
+        code, _, stderr = self.main(bundle, "--gguf", self.gguf, "--tokenizer", self.tokenizer)
+        self.assertEqual(code, 1)
+        self.assertIn("needs --reference-tokenizer", stderr)
+        self.assertFalse(bundle.exists())
+
+    def test_reference_tokenizer_mismatch_keeps_the_previous_file(self):
+        reference = self.tmp / "reference-tokenizer.json"
+        reference.write_bytes(b"previous")
+        other = self.tmp / "other-tokenizer.json"
+        other.write_bytes(b'{"model": {"other": 1}}')
+        with self.assertRaisesRegex(ValueError, "expected the pinned"):
+            self.module.fetch_reference_tokenizer(reference, other)
+        self.assertEqual(reference.read_bytes(), b"previous")
+        self.module.fetch_reference_tokenizer(reference, self.tokenizer)
+        self.assertEqual(reference.read_bytes(), self.tokenizer.read_bytes())
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()),
+                         ["model-source.gguf", "other-tokenizer.json",
+                          "reference-tokenizer.json", "tokenizer-source.json"])
 
 
 class PinTests(unittest.TestCase):

@@ -64,7 +64,7 @@ Never fill it from LTEmbed output. Regenerate it, for every variant, when the go
 
 ## Tokenizer Fixtures
 
-Tokenizer parity fixtures protect against tokenizer drift.
+`tests/fixtures/token_ids.json` holds Python `tokenizers` output for the model's pinned `tokenizer.json`; the GGUF's vocabulary, which the engine tokenizes with, must reproduce it. It protects against tokenizer drift.
 
 Relevant generator:
 
@@ -78,9 +78,9 @@ Do not update expected token IDs merely to make a failing implementation pass.
 
 ## Tokenizer Parity Test
 
-`src/engine/tokenizer_parity.rs` compares `tokenizer.json` with the GGUF's own vocabulary (`llama_tokenize`) on a fixed corpus (`docs/testing.md` § "Tokenizer parity"). It lives in the crate because the GGUF tokenizer is crate-internal; do not expose it publicly for the test. It is bundle-gated like the Tier 2 tests and `#[ignore]`d in plain `cargo test --lib`; CI runs it with `--ignored` after assembling the bundle.
+`src/engine/tokenizer_parity.rs` compares the GGUF's own vocabulary (`llama_tokenize`), the engine's only tokenizer, with the model's pinned `tokenizer.json` on a fixed corpus, and with the token ids of the token-id and llama.cpp reference fixtures (`docs/testing.md` § "Tokenizer parity"). It lives in the crate because the GGUF tokenizer is crate-internal; do not expose it publicly for the test. The `tokenizer.json` is a reference only: `scripts/assemble_gguf_bundle.py --reference-tokenizer` writes it outside the bundle, the test reads it from `LTEMBED_TEST_REFERENCE_TOKENIZER` and checks its sha256, and `tokenizers` is a dev-dependency. The tests are bundle-gated like the Tier 2 tests and `#[ignore]`d in plain `cargo test --lib`; CI runs them with `--ignored` after assembling the bundle and the reference.
 
-Equality is exact. Do not add a tolerance, an allow-list of differing inputs, or drop corpus sources to make it pass: a difference is a finding. Run it whenever a change can affect tokenization: the tokenizer revision, the `tokenizers` version, the static llama.cpp release, or the prefixes.
+Equality is exact. Do not add a tolerance, an allow-list of differing inputs, or drop corpus sources to make it pass: a difference is a finding. Run it whenever a change can affect tokenization: the GGUF, the tokenizer revision, the `tokenizers` version, the static llama.cpp release, or the prefixes.
 
 ## Large Fixture Changes
 

@@ -204,19 +204,20 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --lib
-cargo test --test tokenizer_reload_tests
 cargo test --test benchmarking_support_tests --bin benchmark_ltembed
 cargo check --example api_usage
 LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+  LTEMBED_TEST_REFERENCE_TOKENIZER="$PWD/reference-tokenizer.json" \
   cargo test --lib tokenizer_parity -- --ignored
 LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
   cargo test --test integration_tests
 python3 -m pytest tests/ -q
 ```
 
-The tokenizer parity test and the model-backed integration tests need a bundle at
-`./gguf_bundle`; build it with
-`python3 scripts/assemble_gguf_bundle.py gguf_bundle`
+The tokenizer parity tests and the model-backed integration tests need a bundle at
+`./gguf_bundle`, and the parity tests also the model's `tokenizer.json` at
+`./reference-tokenizer.json`, outside the bundle. Build both with
+`python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json`
 ([bundle-format.md](./bundle-format.md#assembling-a-bundle)), which downloads the same pinned
 files CI uses. The integration tests also need about 10 GB of free memory for the
 8192-token input.
@@ -241,13 +242,12 @@ The example prints the embedding count, the dimension (`512`) and the first five
 |---|---|
 | `src/engine/` | `EmbeddingEngine`, bundle parsing, config, inputs, postprocessing |
 | `src/engine/llama/` | `LlamaBackend` and the FFI include |
-| `src/traits/tokenizer.rs` | `HFTokenizer` |
+| `src/traits/tokenizer.rs` | The public `Tokenizer` trait and `TokenizerOutput`, which the engine does not use |
 | `src/error.rs` | `LTEmbedError`, `ModelLoadError`, `InferenceError` |
 | `src/benchmarking.rs`, `src/bin/benchmark_ltembed.rs` | Benchmark scenarios and CLI ([benchmarking.md](./benchmarking.md)) |
 | `examples/api_usage.rs` | Minimal API example |
 | `tests/` | Rust integration tests, Python script tests, fixtures |
 | `scripts/` | Python tooling ([scripts/README.md](../scripts/README.md)) |
-| `assets/` | `config.json` and an old BERT `tokenizer.json`, used only by tokenizer unit tests. Not a bundle. |
 | `.github/scripts/fetch-static-llama.sh` | CI download and verify of the static release |
 | `.github/scripts/x86-64-v3.sh` | The x86-64-v3 CPU check, sourced by `fetch-static-llama.sh` and `pre-push` |
 | `.githooks/` | `pre-commit`, `pre-push` |

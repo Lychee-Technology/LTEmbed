@@ -28,13 +28,14 @@ entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
 
 ## Model bundle
 
-The engine loads a directory with three files:
+The engine loads a directory with two files:
 
 | File | Contents |
 |---|---|
 | `model.gguf` | The GGUF model. CI and releases use the `UD-Q4_K_XL` quant. |
-| `tokenizer.json` | The model's own Hugging Face tokenizer, from `unsloth/embeddinggemma-2` |
 | `build-info.json` | Metadata: format, pooling, query/document prefixes, dimensions, max length |
+
+Inputs are tokenized with the GGUF's own vocabulary; the bundle has no `tokenizer.json`.
 
 The release workflow packages a ready-made `gguf_bundle/`, or you can assemble one from the
 pinned Hugging Face revisions with `python3 scripts/assemble_gguf_bundle.py gguf_bundle`.

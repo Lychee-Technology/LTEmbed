@@ -16,17 +16,6 @@ path = "src/lib.rs"
 # so this crate builds only on aarch64 Linux or x86-64-v3 Linux, with STATIC_LLAMA_DIR set to
 # the matching release variant (see docs/development.md).
 
-# Tokenization — Oniguruma regex backend (C, built via cc), the same engine as the Python
-# `tokenizers` used for the token-id fixture. Not fancy-regex: on a regex pre-tokenizer it
-# silently stops splitting once its backtrack limit is hit (~1M-char whitespace runs).
-# EmbeddingGemma 2's tokenizer.json has only literal " " patterns, which `tokenizers` compiles
-# to escaped regexes that never backtrack; test_token_ids_match_python_tokenizers
-# (tests/integration_tests.rs) compares the result with Python's, including a 100k-space run.
-# Training-only defaults are disabled.
-# HFTokenizer::from_file turns off 0.23's per-thread BPE cache, which leaks on drop; recheck
-# that workaround when bumping.
-tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
-
 # Structured metadata / fixture parsing
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
@@ -56,5 +45,12 @@ lto = "thin"
 [dev-dependencies]
 approx = "0.5"
 serde = { version = "1", features = ["derive"] }
-# Hashes the bundle tokenizer.json against tests/fixtures/token_ids.json.
+# Hashes the release GGUF against tests/fixtures/llama_cpp_reference.json, and the reference
+# tokenizer.json against tests/fixtures/token_ids.json.
 sha2 = "0.11"
+# Test-only: the engine tokenizes with the GGUF's own vocabulary, and neither the library nor a
+# bundle carries a tokenizer.json. The tokenizer parity test (src/engine/tokenizer_parity.rs)
+# loads the model's pinned tokenizer.json with this crate and compares it with the GGUF's
+# vocabulary. Oniguruma regex backend (C, built via cc), the same engine as the Python
+# `tokenizers` that wrote tests/fixtures/token_ids.json; training-only defaults are disabled.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }

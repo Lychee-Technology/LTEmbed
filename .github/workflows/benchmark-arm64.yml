@@ -129,7 +129,7 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu \
             "torch==2.14.1" "torchvision==0.29.1"
 
-      # The safetensors model at the revision the bundle's tokenizer.json and the golden
+      # The safetensors model at the revision the reference tokenizer.json and the golden
       # fixture come from; scripts/assemble_gguf_bundle.py holds the pin.
       - name: Download Model Snapshot
         run: |

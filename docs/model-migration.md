@@ -13,7 +13,7 @@ results are archived in
 |---|---|---|
 | Bundle `target_id` | `jinaai/jina-embeddings-v5-text-nano-retrieval` | `unsloth/embeddinggemma-2-GGUF` |
 | GGUF | `v5-nano-retrieval-Q5_K_M.gguf`, about 169 MB | `embeddinggemma-2-UD-Q4_K_XL.gguf`, 176 MB |
-| `tokenizer.json` | 128256 tokens, right padding, about 17 MB | 262144 tokens, no padding, 32 MB |
+| Tokenizer | the bundle's `tokenizer.json`: 128256 tokens, right padding, about 17 MB | the GGUF's own vocabulary: 262144 tokens, no padding; the bundle has no `tokenizer.json` |
 | Pooling | last token | mean over all tokens, then a 512→768 projection |
 | Query prefix | `Query: ` | `task: search result \| query: ` |
 | Document prefix | `Document: ` | `title: none \| text: ` |
@@ -68,7 +68,11 @@ still missing cannot be found.
 - **Token budgets and chunking.** The limit is still 8192 tokens, but counted with a
   different tokenizer, so the same text can have a different count. Inputs over the limit
   fail with `InputTooLong`; nothing is truncated. A chunker that counts tokens must count
-  them with the bundle's new `tokenizer.json`.
+  them with the new model's tokenizer, which the bundle no longer contains. The pinned
+  `tokenizer.json` that `scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes
+  gives the same ids as the GGUF's vocabulary on the
+  [tokenizer parity](./testing.md#tokenizer-parity) corpus; the engine's count includes
+  `<bos>` and `<eos>` and the prefix.
 - **Memory.** llama.cpp reserves about 1 MiB per input token for this model's 262144-token
   vocabulary, and keeps the largest reservation for the engine's lifetime: an 8192-token
   input needs about 10 GB. Size hosts for the longest input you accept, or set a lower

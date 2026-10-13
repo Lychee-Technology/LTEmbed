@@ -27,7 +27,7 @@ Output:
 The fixture holds one 768-wide, L2-normalized vector per input. The Rust tests derive each
 Matryoshka width (512/256/128) by truncating it and renormalizing, which is how the model
 card says to use the smaller widths. Keep REVISION equal to TOKENIZER_REVISION in
-scripts/assemble_gguf_bundle.py, the revision the bundles take tokenizer.json from.
+scripts/assemble_gguf_bundle.py, the revision of the tests' reference tokenizer.json.
 """
 
 import argparse

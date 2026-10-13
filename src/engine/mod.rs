@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
-use crate::traits::tokenizer::HFTokenizer;
+use crate::traits::tokenizer::{HFTokenizer, Tokenizer};
 
 mod backend;
 mod bundle;
@@ -16,15 +16,21 @@ pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
 
 use backend::EmbeddingBackend;
-use bundle::{check_vocab_sizes, require_file, ModelSpec};
+use bundle::{
+    check_tokenizer_agrees, check_vocab_sizes, require_file, ModelSpec, TOKENIZER_CHECK_TEXT,
+};
 use inference::{postprocess_embedding, prefixed_text};
 use llama::LlamaBackend;
 
+/// Width of EmbeddingGemma 2's pooled, projected output (hidden width 512, projected to 768).
 pub const RAW_EMBEDDING_DIMENSION: usize = 768;
+/// `EngineConfig::default()` output size: the first 512 of the 768 Matryoshka dimensions.
 pub const EMBEDDING_DIMENSION: usize = 512;
 pub const MAX_LENGTH: usize = 8192;
-pub const QUERY_PREFIX: &str = "Query: ";
-pub const DOCUMENT_PREFIX: &str = "Document: ";
+/// EmbeddingGemma 2's search-query task prompt (its `Retrieval-query` / `SearchQuery` prompt).
+pub const QUERY_PREFIX: &str = "task: search result | query: ";
+/// EmbeddingGemma 2's untitled-document prompt (its `Retrieval-document` / `Document` prompt).
+pub const DOCUMENT_PREFIX: &str = "title: none | text: ";
 
 const MODEL_FILE: &str = "model.gguf";
 const TOKENIZER_FILE: &str = "tokenizer.json";
@@ -100,6 +106,8 @@ impl EmbeddingEngine {
         Self::validate_threads(n_threads)?;
 
         let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy())?;
+        // Loading checks that the GGUF declares mean pooling, the only pooling the bundle
+        // metadata accepts (`ModelSpec::from_build_info`).
         let backend = LlamaBackend::load(
             model_path,
             spec.raw_embedding_dimension,
@@ -107,6 +115,11 @@ impl EmbeddingEngine {
             n_threads,
         )?;
         check_vocab_sizes(tokenizer.vocab_size(), backend.vocab_size())?;
+        // Not limited to `max_length`: a bundle with a small one must still load.
+        let check_ids = tokenizer
+            .encode(TOKENIZER_CHECK_TEXT, usize::MAX)?
+            .input_ids;
+        check_tokenizer_agrees(&check_ids, &backend.tokenize(TOKENIZER_CHECK_TEXT)?)?;
 
         Ok(Self {
             backend: Box::new(backend),

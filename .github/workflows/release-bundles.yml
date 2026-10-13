@@ -1,8 +1,13 @@
 name: release-bundles
 
 # Package an LTEmbed source tree + a ready-to-load GGUF bundle (model.gguf + tokenizer.json +
-# build-info.json) into a release tarball. Mirrors the runtime's bundle contract; the old ORT
-# (model.ort + libonnxruntime.so) layout was removed with the llama.cpp/GGUF migration.
+# build-info.json, with SHA256SUMS and provenance.json) into a release tarball. Mirrors the
+# runtime's bundle contract; the old ORT (model.ort + libonnxruntime.so) layout was removed
+# with the llama.cpp/GGUF migration.
+#
+# The bundle comes from scripts/assemble_gguf_bundle.py, which downloads the GGUF and
+# tokenizer.json from pinned Hugging Face revisions and checks their sha256, the same files
+# the CI Test jobs run on ARM64 and x86-64-v3. This workflow does not build or test.
 #
 # workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
 # published release it also uploads the tarball as a release asset. Pushing a v* tag creates
@@ -29,11 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Q5_K_M is the smallest quant that clears the ≥0.99 parity gate while fitting the
-          # 250 MB Lambda limit (≈169 MB gguf + ≈17 MB tokenizer). See docs/releases.md.
-          - gguf_repo: jinaai/jina-embeddings-v5-text-nano-retrieval
-            quant: Q5_K_M
-            expected_model_id: jinaai/jina-embeddings-v5-text-nano-retrieval
+          # UD-Q4_K_XL is the quant LTEmbed's CI tests and the golden gates are calibrated
+          # for. See docs/releases.md.
+          - quant: UD-Q4_K_XL
+            expected_model_id: unsloth/embeddinggemma-2-GGUF
             output_dimension: 512
             l2_normalize: true
 
@@ -43,42 +47,30 @@ jobs:
 
       - name: Assemble GGUF bundle
         env:
-          GGUF_REPO: ${{ matrix.gguf_repo }}
           QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
         run: |
           set -euo pipefail
           BUNDLE=artifacts/gguf_bundle
-          mkdir -p "$BUNDLE"
-          curl -fsSL -o "$BUNDLE/model.gguf" \
-            "https://huggingface.co/$GGUF_REPO/resolve/main/v5-nano-retrieval-$QUANT.gguf"
-          curl -fsSL -o "$BUNDLE/tokenizer.json" \
-            "https://huggingface.co/$GGUF_REPO/resolve/main/tokenizer.json"
-          cat > "$BUNDLE/build-info.json" <<JSON
-          {
-            "target_id": "$EXPECTED_MODEL_ID",
-            "model_metadata": {
-              "model_format": "gguf",
-              "quant": "$QUANT",
-              "pooling": "last_token",
-              "input_kind": "retrieval",
-              "query_prefix": "Query: ",
-              "document_prefix": "Document: ",
-              "raw_embedding_dimension": 768,
-              "output_embedding_dimension": 768,
-              "max_length": 8192
-            }
-          }
-          JSON
-          test -f "$BUNDLE/model.gguf"
-          test -f "$BUNDLE/tokenizer.json"
-          test -f "$BUNDLE/build-info.json"
-          ( cd "$BUNDLE" && sha256sum model.gguf tokenizer.json build-info.json > SHA256SUMS )
+          python3 scripts/assemble_gguf_bundle.py "$BUNDLE" --quant "$QUANT"
+          # The script writes exactly these files; a projector (mmproj-*.gguf) or any other
+          # extra file must never ship in a text bundle.
+          contents="$(find "$BUNDLE" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
+          expected="SHA256SUMS build-info.json model.gguf provenance.json tokenizer.json "
+          if [ "$contents" != "$expected" ]; then
+            echo "::error::bundle holds '$contents', expected '$expected'"
+            exit 1
+          fi
+          target_id="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["target_id"])' "$BUNDLE/build-info.json")"
+          if [ "$target_id" != "$EXPECTED_MODEL_ID" ]; then
+            echo "::error::build-info.json target_id is '$target_id' (expected '$EXPECTED_MODEL_ID')"
+            exit 1
+          fi
+          ( cd "$BUNDLE" && sha256sum -c SHA256SUMS )
 
       - name: Build LTEmbed release tarball
         id: bundle
         env:
-          GGUF_REPO: ${{ matrix.gguf_repo }}
           QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
           OUTPUT_DIMENSION: ${{ matrix.output_dimension }}
@@ -107,24 +99,42 @@ jobs:
           # instead of piping into `grep -q`: grep exits on the first match, which SIGPIPEs tar
           # and fails the step under `set -o pipefail` exactly when model.gguf IS present.
           tar -tzf "artifacts/package/${OUTPUT_NAME}" > artifacts/package/archive-contents.txt
-          grep -F -q "${ROOT_NAME}/gguf_bundle/model.gguf" artifacts/package/archive-contents.txt
+          for file in model.gguf tokenizer.json build-info.json SHA256SUMS provenance.json; do
+            grep -F -x -q "${ROOT_NAME}/gguf_bundle/${file}" artifacts/package/archive-contents.txt
+          done
+          if grep -i -q mmproj artifacts/package/archive-contents.txt; then
+            echo "::error::the release archive contains an mmproj file"
+            exit 1
+          fi
+          # Published next to the tarball: the bundle's own SHA256SUMS covers only its files.
+          ( cd artifacts/package && sha256sum "${OUTPUT_NAME}" > "${OUTPUT_NAME}.sha256" )
 
           {
-            echo "gguf_repo=${GGUF_REPO}"
+            python3 - artifacts/gguf_bundle/provenance.json <<'PY'
+          import json, sys
+          model = json.load(open(sys.argv[1]))["files"]["model.gguf"]
+          print(f"gguf={model['repo']}@{model['revision']}/{model['file']}")
+          print(f"model_sha256={model['sha256']}")
+          PY
             echo "quant=${QUANT}"
             echo "expected_model_id=${EXPECTED_MODEL_ID}"
             echo "output_dimension=${OUTPUT_DIMENSION}"
             echo "l2_normalize=${L2_NORMALIZE}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          echo "path=artifacts/package/${OUTPUT_NAME}" >> "${GITHUB_OUTPUT}"
-          echo "name=${OUTPUT_NAME}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "path=artifacts/package/${OUTPUT_NAME}"
+            echo "checksum=artifacts/package/${OUTPUT_NAME}.sha256"
+            echo "name=${OUTPUT_NAME}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.bundle.outputs.name }}
-          path: ${{ steps.bundle.outputs.path }}
+          path: |
+            ${{ steps.bundle.outputs.path }}
+            ${{ steps.bundle.outputs.checksum }}
           retention-days: 7
 
       - name: Ensure release exists for tag
@@ -152,5 +162,6 @@ jobs:
         run: |
           gh release upload "${RELEASE_TAG}" \
             "${{ steps.bundle.outputs.path }}" \
+            "${{ steps.bundle.outputs.checksum }}" \
             --repo "${{ github.repository }}" \
             --clobber

@@ -27,7 +27,7 @@ check_release() {
     # against a different artifact contract, or on the other architecture's variant, which
     # this build cannot link.
     contract="$(grep -o '"artifact_contract_version": *"[0-9]*"' "$dir/build-info.json" | grep -o '[0-9]*' || true)"
-    if [[ "$contract" != "4" ]]; then
+    if [[ "$contract" != "5" ]]; then
         echo "pre-push: unexpected artifact_contract_version '${contract:-<missing>}' in $dir/build-info.json" >&2
         echo "(expected 4) — re-download the pinned release (see docs/development.md)" >&2
         exit 1

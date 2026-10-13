@@ -3,9 +3,13 @@
 Generate the token-id parity fixture for `HFTokenizer`.
 
 Encodes a small set of inputs with the Python `tokenizers` library, once singly and once as a
-single padded batch. It uses the model's tokenizer.json at the same revision that the CI bundle
+single batch. It uses the model's tokenizer.json at the same revision that the CI bundle
 downloads. `test_token_ids_match_python_tokenizers` in tests/integration_tests.rs encodes the
 same inputs with `HFTokenizer` and requires identical input ids, attention masks and type ids.
+
+EmbeddingGemma 2's tokenizer.json configures no padding, so each batch row must equal the
+input's single encoding, and the fixture stores only the single encodings ("padding": null).
+A right-padding tokenizer would also store each batch row, without its padding.
 
 Requirements:
     pip install tokenizers==<version>, where <version> is the Rust `tokenizers` crate version in
@@ -19,10 +23,11 @@ Usage:
 Output:
     tests/fixtures/token_ids.json
 
-Regenerate the fixture after changing INPUTS or bumping REVISION. Keep REVISION equal to
-HF_REVISION in .github/workflows/ci.yml. The fixture records the sha256 of the tokenizer.json
-it was generated from. If a bundle's tokenizer.json has a different hash, the Rust test fails
-and says to rerun this script.
+Regenerate the fixture after changing INPUTS or bumping REVISION. Keep REPO and REVISION
+equal to TOKENIZER_REPO and TOKENIZER_REVISION in scripts/assemble_gguf_bundle.py, which
+builds the CI and release bundles, and update its TOKENIZER_SHA256 to the hash this script
+records. If a bundle's tokenizer.json has a different hash, the Rust test fails and says to
+rerun this script.
 """
 
 import hashlib
@@ -34,63 +39,74 @@ import urllib.request
 from pathlib import Path
 
 
-REPO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
-REVISION = "ac5d898c8d382b17167c33e5c8af644a3519b47d"
+REPO = "unsloth/embeddinggemma-2"
+REVISION = "c8f89cc7ecb4ba5122cd15fdd487422b2b487daf"
 OUTPUT_PATH = Path("tests/fixtures/token_ids.json")
 CARGO_LOCK_PATH = Path("Cargo.lock")
 MAX_LENGTH = 8192  # ltembed::engine::MAX_LENGTH: HFTokenizer rejects longer inputs
 
+QUERY = "task: search result | query: "
+DOCUMENT = "title: none | text: "
+
 # Each input is {"text": ...} or {"repeat": {prefix, unit, count, suffix}}. Long inputs use
 # the repeat form so that neither the fixture nor the Rust test stores them as a literal.
 INPUTS = [
-    # Retrieval-prefixed English and CJK text.
-    {"name": "query_en", "input": {"text": "Query: What is machine learning?"}},
+    # Retrieval-prompted English and CJK text.
+    {"name": "query_en", "input": {"text": QUERY + "What is machine learning?"}},
     {
         "name": "document_en",
         "input": {
-            "text": "Document: The quick brown fox isn't lazy; it's 3.14159 times faster—"
-            "really!"
+            "text": DOCUMENT + "The quick brown fox isn't lazy; it's 3.14159 times faster—really!"
         },
     },
-    {"name": "query_zh", "input": {"text": "Query: 人工智能是什么？"}},
+    {"name": "query_zh", "input": {"text": QUERY + "人工智能是什么？"}},
     {
         "name": "document_zh_en",
         "input": {
-            "text": "Document: 机器学习（machine learning）是人工智能的一个分支。"
+            "text": DOCUMENT + "机器学习（machine learning）是人工智能的一个分支。"
             "Deep learning 使用多层神经网络，例如 Transformer。"
         },
     },
-    {"name": "query_ja_ko_emoji", "input": {"text": "Query: 東京の天気は？ 서울 날씨는? 🦀🚀"}},
+    {"name": "query_ja_ko_emoji", "input": {"text": QUERY + "東京の天気は？ 서울 날씨는? 🦀🚀"}},
     {
         "name": "document_whitespace_mix",
-        "input": {"text": "Document: line one\n\n  line two\t\ttabbed\r\nend   "},
+        "input": {"text": DOCUMENT + "line one\n\n  line two\t\ttabbed\r\nend   "},
+    },
+    # Characters outside the vocabulary fall back to byte tokens (<0xF0> ...).
+    {
+        "name": "byte_fallback",
+        "input": {"text": DOCUMENT + "𓀀 ꙮ \u200b\u0007 \U0001F9EC tab\tend"},
     },
     {"name": "empty", "input": {"text": ""}},
-    # Added tokens. <|mask|> (id 128002) is lstrip: it absorbs the whitespace before it.
-    {"name": "mask_no_space", "input": {"text": "Query: The capital of France is<|mask|>."}},
-    {"name": "mask_one_space", "input": {"text": "Query: The capital of France is <|mask|>."}},
-    {
-        "name": "mask_many_spaces",
-        "input": {"text": "Query: The capital of France is    \t<|mask|>."},
-    },
+    # Added tokens are matched in the text itself. None of them strips adjacent whitespace.
+    {"name": "mask_no_space", "input": {"text": QUERY + "The capital of France is<mask>."}},
+    {"name": "mask_one_space", "input": {"text": QUERY + "The capital of France is <mask>."}},
     {
         "name": "adjacent_added_tokens",
-        "input": {
-            "text": "Document: <|begin_of_text|><|mask|><|mask|><|start_header_id|>user"
-            "<|end_header_id|><|end_of_text|>"
-        },
+        "input": {"text": DOCUMENT + "<bos><eos><mask><|turn>user<turn|><pad><|image|>"},
     },
     {
         "name": "unterminated_added_tokens",
-        "input": {"text": "Query: an unterminated <|mask and <|mask| and <|"},
+        "input": {"text": QUERY + "an unterminated <|turn and <turn| and <"},
     },
-    {"name": "uppercase_added_token", "input": {"text": "Query: upper case <|MASK|> is plain text"}},
-    # 7,816 tokens with either regex backend, but different ids. Oniguruma's `\s+(?!\S)` leaves
-    # the last space to form "Ġb". fancy-regex hits its backtrack limit there, so the whole run
-    # stays one piece and "b" is encoded alone.
+    {"name": "uppercase_added_token", "input": {"text": QUERY + "upper case <MASK> is plain text"}},
+    # The normalizer turns every space into "▁" before the BPE model, which then merges runs
+    # of up to 31 of them: 3,230 tokens for 100,000 spaces.
     {
-        "name": "whitespace_run_1m",
-        "input": {"repeat": {"prefix": "a", "unit": " ", "count": 1_000_000, "suffix": "b"}},
+        "name": "whitespace_run_100k",
+        "input": {"repeat": {"prefix": "a", "unit": " ", "count": 100_000, "suffix": "b"}},
+    },
+    # A long mixed-script document (6,009 tokens).
+    {
+        "name": "long_zh_en_repeat",
+        "input": {
+            "repeat": {
+                "prefix": DOCUMENT,
+                "unit": "机器学习 machine learning ",
+                "count": 1500,
+                "suffix": ".",
+            }
+        },
     },
 ]
 
@@ -122,9 +138,9 @@ def encoding_fields(encoding) -> dict:
 def strip_right_padding(fields: dict, pad_id: int, pad_type_id: int) -> dict:
     """Drop a batch row's trailing padding and record its length as "padding".
 
-    Rows of a batch that contains the 1M-space input are padded to ~7,800 tokens, so storing
-    them in full would make the fixture megabytes long. The Rust test appends the padding back
-    before comparing. Raises unless the dropped tail is made up entirely of padding tokens.
+    Rows of a batch that contains a long input are padded to its length, so storing them in
+    full could make the fixture megabytes long. The Rust test appends the padding back before
+    comparing. Raises unless the dropped tail is made up entirely of padding tokens.
     """
     ids, mask, type_ids = fields["input_ids"], fields["attention_mask"], fields["type_ids"]
     real = len(mask)
@@ -172,8 +188,8 @@ def main():
         tokenizer = tokenizers.Tokenizer.from_file(str(path))
 
     padding = tokenizer.padding
-    if padding is None or padding["direction"] != "right":
-        raise SystemExit(f"expected a right-padding tokenizer, got padding={padding}")
+    if padding is not None and padding["direction"] != "right":
+        raise SystemExit(f"expected no padding or right padding, got padding={padding}")
 
     texts = [build_text(item["input"]) for item in INPUTS]
     singles = [tokenizer.encode(text, add_special_tokens=True) for text in texts]
@@ -183,22 +199,21 @@ def main():
     for item, single, row in zip(INPUTS, singles, batch, strict=True):
         if len(single.ids) > MAX_LENGTH:
             raise SystemExit(f"{item['name']}: {len(single.ids)} tokens exceeds {MAX_LENGTH}")
-        cases.append(
-            {
-                "name": item["name"],
-                "input": item["input"],
-                "single": encoding_fields(single),
-                "batch": strip_right_padding(
-                    encoding_fields(row), padding["pad_id"], padding["pad_type_id"]
-                ),
-            }
-        )
+        case = {"name": item["name"], "input": item["input"], "single": encoding_fields(single)}
+        if padding is None:
+            if encoding_fields(row) != case["single"]:
+                raise SystemExit(f"{item['name']}: an unpadded batch row differs from encode()")
+        else:
+            case["batch"] = strip_right_padding(
+                encoding_fields(row), padding["pad_id"], padding["pad_type_id"]
+            )
+        cases.append(case)
         print(f"  OK: {item['name']} ({len(single.ids)} tokens)")
 
     fixture = {
         "tokenizer": {"repo": REPO, "revision": REVISION, "sha256": sha256},
         "tokenizers_version": tokenizers.__version__,
-        "padding": {
+        "padding": None if padding is None else {
             "direction": padding["direction"],
             "pad_id": padding["pad_id"],
             "pad_type_id": padding["pad_type_id"],

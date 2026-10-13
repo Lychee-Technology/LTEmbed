@@ -64,7 +64,7 @@ fn test_corpus_scenarios_yield_expected_input_counts_and_kinds() {
     let long = scenario_inputs(scenario_by_name("single/long").expect("exists"));
     assert_eq!(long.len(), 1);
     assert_eq!(long[0].kind, EmbeddingInputKind::Query);
-    // Long must dwarf medium but stay under the token budget after the "Query: " prefix
+    // Long must dwarf medium but stay under the token budget after the query prefix
     // (~4 chars/token heuristic against BENCHMARK_MAX_LENGTH = 8192).
     assert!(long[0].text.len() > 4 * medium[0].text.len());
     assert!(long[0].text.len() < 28_000);

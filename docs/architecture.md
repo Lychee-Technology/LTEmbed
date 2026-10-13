@@ -27,8 +27,8 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-1` (llama.cpp `v0.6.0`,
-  artifact contract `4`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-2` (llama.cpp `b11577`,
+  artifact contract `5`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
   No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
   one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
   architecture and checks the contract version, variant and commit; `.githooks/pre-push`
@@ -37,24 +37,37 @@ EmbeddingEngine                      src/engine/mod.rs
 
 ## Model
 
-The target model is
-[`jinaai/jina-embeddings-v5-text-nano-retrieval`](https://huggingface.co/jinaai/jina-embeddings-v5-text-nano-retrieval)
-in GGUF form. The migration spike recorded `general.architecture = eurobert` and
-`n_embd = 768` for it. LTEmbed runs it as an encoder: non-causal attention, last-token
-pooling.
+The target model is [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)
+(`google/embeddinggemma-2`, 271M parameters, Apache-2.0), run from the text-only GGUF
+`embeddinggemma-2-UD-Q4_K_XL.gguf` in
+[`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF).
+The GGUF declares `general.architecture = gemma-embedding2`: a bidirectional Gemma encoder
+with a hidden width of 512, mean pooling over every token, and a dense projection of the
+pooled vector to 768 dimensions. The model card gives it an 8,192-token context and
+Matryoshka widths of 768, 512, 256 and 128.
+
+LTEmbed returns the projected vector, never the hidden state. llama.cpp applies the
+projection inside its pooling step, so the pooled buffer that `llama_get_embeddings_seq`
+returns is already 768 wide (`n_embd_out`), while `n_embd` stays 512.
 
 Public constants in `ltembed::engine` describe this model:
 
 | Constant | Value |
 |---|---|
-| `RAW_EMBEDDING_DIMENSION` | `768` |
+| `RAW_EMBEDDING_DIMENSION` | `768` (the projected width) |
 | `EMBEDDING_DIMENSION` | `512` (the `EngineConfig::default()` output size) |
 | `MAX_LENGTH` | `8192` |
-| `QUERY_PREFIX` / `DOCUMENT_PREFIX` | `"Query: "` / `"Document: "` |
+| `QUERY_PREFIX` | `"task: search result \| query: "` |
+| `DOCUMENT_PREFIX` | `"title: none \| text: "` |
 
-At runtime the engine does **not** read the prefix, dimension or length constants. It uses
-the values in the bundle's `build-info.json`. The constants match the bundles that CI and
-the release workflow write.
+The prefixes are the model's own `query` and `document` prompts. At runtime the engine does
+**not** read the prefix, dimension or length constants. It uses the values in the bundle's
+`build-info.json`, except that `max_length` must lie in `1..=MAX_LENGTH`. The constants
+match the bundles that `scripts/assemble_gguf_bundle.py` writes, which a Python test checks.
+
+The previous target, `jinaai/jina-embeddings-v5-text-nano-retrieval`, is no longer
+supported; its vectors are not comparable with these. See
+[model-migration.md](./model-migration.md).
 
 ## Load path
 
@@ -63,48 +76,76 @@ the release workflow write.
 failure returns `LTEmbedError::ModelLoad(_)`:
 
 1. Require `model.gguf`, `tokenizer.json` and `build-info.json` in `dir` (`MissingFile`).
-2. Parse and validate `build-info.json` (see [bundle-format.md](./bundle-format.md)).
+2. Parse and validate `build-info.json`, including `pooling = "mean"` and
+   `1 <= max_length <= 8192` (see [bundle-format.md](./bundle-format.md#build-infojson)).
 3. Validate `EngineConfig`: `0 < output_dimension <= raw_embedding_dimension` (`Config`).
 4. Validate `n_threads > 0` (`Config`).
 5. Load `tokenizer.json` with the Hugging Face `tokenizers` crate (`Runtime` on failure).
    The BPE word cache is turned off because `tokenizers` 0.23 leaks it when a tokenizer is
    dropped.
-6. Load the GGUF on CPU (`n_gpu_layers = 0`) and check that its `n_embd` and `n_embd_out`
-   both equal `raw_embedding_dimension` (`Runtime` on mismatch). `n_embd_out` is the length
-   of each pooled vector, which a GGUF may set apart from `n_embd`.
-7. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_LAST`,
-   `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, `n_ctx = n_batch = n_ubatch = max_length`,
-   `n_seq_max = 1`, `n_threads = n_threads_batch = n_threads`.
+6. Load the GGUF on CPU (`n_gpu_layers = 0`) and check (`Runtime` on failure):
+   - `n_embd_out`, the length of each pooled vector, equals `raw_embedding_dimension`, and
+     `n_embd` is a valid width. For EmbeddingGemma 2 these are 768 and 512; a bundle that
+     declared 512 would read the first 512 projected values, so it is rejected.
+   - `<architecture>.pooling_type` in the GGUF is mean (1).
+7. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_MEAN`,
+   `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, flash attention `ENABLED`,
+   `n_ctx = n_batch = n_ubatch = max_length`, `n_seq_max = 1`,
+   `n_threads = n_threads_batch = n_threads`; then check that the context reports mean
+   pooling.
 8. Check that the tokenizer's vocabulary size, added tokens included, equals the GGUF's
-   `llama_vocab_n_tokens` (`Runtime` on mismatch). This rejects a tokenizer from a model
-   with another vocabulary size, such as `assets/tokenizer.json`. A wrong tokenizer of the
-   same size still loads; see [bundle-format.md](./bundle-format.md#tokenizerjson).
+   `llama_vocab_n_tokens` (262144 for both).
+9. Tokenize a fixed check text (`TOKENIZER_CHECK_TEXT`) with `tokenizer.json` and with the
+   GGUF's own vocabulary (`llama_tokenize`, special tokens added) and require identical
+   ids. This rejects a tokenizer that lost `<bos>` or `<eos>`, or comes from another model
+   with the same vocabulary size; it does not prove agreement on every input (see
+   [bundle-format.md](./bundle-format.md#tokenizerjson)).
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
-INFO/DEBUG lines and forwards WARN and above to stderr.
+INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three
+warnings that need no action: two `control-looking token` lines (for `</s>` and
+`<|tool_response>`) and `'</s>' is a normal token here, removing it from EOG list`. They
+concern llama.cpp's own token types, which inference does not use: the token ids come from
+`tokenizer.json`.
+
+Flash attention is stated rather than left to llama.cpp's automatic choice, which also
+enables it on CPU. It stores K and V in F16; the residual stream stays F32. With the BF16
+GGUF, LTEmbed stays within cosine 1e-5 of the F32 reference on both architectures with flash
+attention on or off, so it costs no measurable precision, and it halves the compute buffer
+and the latency of an 8192-token input.
 
 ## Inference path
 
 `embed(input)` is `embed_batch(&[input])`. `embed_batch(&inputs)`:
 
 1. **Prefix.** `EmbeddingInput::query(text)` becomes `query_prefix + text`, and
-   `EmbeddingInput::document(text)` becomes `document_prefix + text`. Callers pass raw
+   `EmbeddingInput::document(text)` becomes `document_prefix + text`, once. Callers pass raw
    text; the engine adds the prefix.
-2. **Tokenize** the whole batch with `HFTokenizer::encode_batch`. Special tokens are added,
-   and the bundle tokenizer's padding settings apply. Nothing is truncated: if any input
-   exceeds `max_length` tokens, the call returns `LTEmbedError::InputTooLong`.
+2. **Tokenize** the whole batch with `HFTokenizer::encode_batch`. `<bos>` and `<eos>` are
+   added; the tokenizer pads nothing. Nothing is truncated: if any input exceeds
+   `max_length` tokens, the call returns `LTEmbedError::InputTooLong` and embeds none of the
+   batch.
 3. **Backend.** Under one `Mutex`, for each input in order:
-   - keep only real tokens (attention mask `1`) and drop right padding;
+   - keep only real tokens (attention mask `1`);
    - clear the KV memory;
-   - run `llama_encode` on that single sequence;
-   - copy the pooled vector from `llama_get_embeddings_seq`: `raw_embedding_dimension`
-     floats, the buffer's `n_embd_out` length that load step 6 checked.
+   - run `llama_encode` on that single sequence, every token marked as an output;
+   - copy the pooled, projected vector from `llama_get_embeddings_seq`:
+     `raw_embedding_dimension` floats, the buffer's `n_embd_out` length that load step 6
+     checked.
 
    Inputs are encoded **one at a time**. A batch call saves tokenizer and call overhead,
-   not model compute; multi-sequence batching is not implemented.
-4. **Truncate** each raw 768-d vector to `config.output_dimension` (Matryoshka).
-5. **Normalize** to unit L2 norm if `config.l2_normalize`. An all-zero vector is returned
-   unchanged.
+   not model compute; multi-sequence batching is not implemented. A batch's outputs are
+   bit-identical to embedding each input alone, and repeated calls are bit-identical.
+4. **Check** that every raw value is finite. A NaN or infinity fails the call with
+   `Inference(Backend)` rather than being normalized into a vector of NaNs.
+5. **Truncate** each raw 768-d vector to its first `config.output_dimension` values
+   (Matryoshka).
+6. **Normalize** to unit L2 norm if `config.l2_normalize`, with the norm accumulated in
+   `f64`. An all-zero vector is returned unchanged.
+
+Truncation comes before normalization, so a 512-wide output has unit norm, as the model card
+prescribes. With `l2_normalize = false` the caller gets the raw prefix of the projected
+vector, whose norm is not 1.
 
 An empty slice returns an empty `Vec` without touching the backend.
 `embed_batch_profiled` returns the same embeddings plus an `EmbedBatchProfile`, which holds
@@ -112,12 +153,58 @@ per-stage milliseconds. The benchmark binary prints it when `LTEMBED_PROFILE=1`.
 
 ### Why padding is stripped before the backend
 
-Last-token pooling takes the hidden state of the final position fed to the model. In a
-padded batch, shorter inputs end in pad tokens (pad id `128004`). Feeding them pooled the
-pad position, which dropped cosine against the FP32 reference to about 0.31 and broke
-cross-lingual retrieval. `TokenizerOutput::real_input_ids` removes padding so that each
-sequence ends on its real last token. The unit test
+Mean pooling averages every token fed to the model. If a tokenizer with padding enabled
+right-padded a batch, the pad tokens of shorter inputs would be averaged into their
+embeddings. EmbeddingGemma 2's `tokenizer.json` configures no padding, but
+`TokenizerOutput::real_input_ids` still removes any padding by attention mask, so a bundle
+tokenizer that pads cannot change the result. The unit test
 `test_real_input_ids_strips_right_padding` covers this.
+
+## Long inputs and memory
+
+The memory an input needs grows with its length, almost entirely in one allocation:
+llama.cpp's output buffer. On every `llama_encode` it reserves room for vocabulary logits
+for every output token (`n_vocab × n_tokens` floats), whether or not the model computes
+them. With 262144 tokens in the vocabulary that is 1 MiB per input token, 8 GiB at 8192.
+LTEmbed cannot avoid it without changing llama.cpp: an encoder needs every token as an
+output, and llama.cpp sizes the buffer by outputs.
+
+Peak resident memory (`/usr/bin/time -v`) of one process that loads the engine and embeds
+one input, and the time of that first call (UD-Q4_K_XL, x86-64-v3 Ryzen 5 5600G, flash
+attention on, bundle `max_length` 8192):
+
+| Input tokens | Peak RSS | First call, 6 threads | First call, 1 thread |
+|---|---|---|---|
+| 14 | 0.47 GiB | 0.02 s | 0.06 s |
+| 1024 | 1.64 GiB | 1.3 s | 4.1 s |
+| 2039 | 2.67 GiB | 3.1 s | — |
+| 4074 | 4.91 GiB | 7.1 s | 25.7 s |
+| 8192 | 9.53 GiB (10.2 GB) | 18.2 s | 72.8 s |
+
+That is about 0.47 GiB plus 1.13 MiB per token of the longest input embedded so far.
+Loading takes 1.3–1.4 s. Later calls of the same length are faster than the first, which
+also touches the newly reserved buffers: [benchmarking.md](./benchmarking.md#recorded-results)
+has warm latencies. Three consequences:
+
+- **The buffer only grows.** llama.cpp keeps the output buffer at the largest size any
+  input needed, so after one 8k input an engine holds about 9.5 GiB until it is dropped.
+- **`max_length` bounds it.** A bundle's `max_length` (`1..=8192`) sets
+  `n_ctx = n_batch = n_ubatch` and the tokenizer limit. Inputs over it fail with
+  `InputTooLong` instead of being truncated, so a deployment that sets `max_length` to
+  2048 caps peak memory at about 2.7 GiB and rejects longer inputs explicitly. A smaller
+  `max_length` changes neither the result nor, measurably, the cost of inputs that fit:
+  with `max_length` 2048 instead of 8192, the 2039-token input peaks at the same 2.67 GiB
+  and the 1024-token one 65 MiB lower, and short-input latency is the same with
+  `max_length` 128, 512, 2048 or 8192.
+- **One sequence per micro-batch.** llama.cpp's encoder cannot split a sequence across
+  micro-batches (it asserts `n_ubatch >= n_tokens`), so `n_ubatch` must equal the context
+  length. LTEmbed checks the length before encoding, so the assertion cannot fire.
+
+Latency grows faster than linearly with length, because attention is quadratic. Flash
+attention keeps the attention's compute buffer small: measured with llama.cpp's own
+`llama-embedding` on the same GGUF and settings at 6 threads, turning it off raises the
+8192-token input's peak RSS from 9.43 GiB to 10.43 GiB and its run time, load included, from
+19.9 s to 38.9 s (4074 tokens: 8.7 s to 12.8 s).
 
 ## Concurrency
 
@@ -132,12 +219,12 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 |---|---|
 | `ModelLoad(MissingFile)` | A bundle file is missing |
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
-| `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed |
+| `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, context creation failure, tokenizer and GGUF vocabulary sizes differ |
+| `ModelLoad(Runtime)` | Tokenizer or GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling, context creation failure, tokenizer and GGUF vocabulary sizes differ, or they tokenize the check text differently |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The tokenizer rejects the input |
-| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code |
+| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
 
 ## Platform constraint
 
@@ -164,4 +251,8 @@ switch off.
   `OnnxEngineConfig` → `EngineConfig`, `InferenceError::OrtRun` → `Backend`.
 - An earlier pure-Rust BERT backend built on `matrixmultiply` lives on the
   `matrixmultiply` branch.
+- Until the EmbeddingGemma 2 migration, the GGUF backend ran
+  `jinaai/jina-embeddings-v5-text-nano-retrieval` (last-token pooling, `Query: ` /
+  `Document: ` prefixes, Q5_K_M). Its bundle and results are archived in
+  [history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md).
 - The documents behind these decisions are in [history/](./README.md#history).

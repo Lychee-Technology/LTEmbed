@@ -54,6 +54,8 @@ When modifying a workflow:
 
 Treat the current release workflow as authoritative for distributable bundle assembly.
 
+Every workflow builds its bundle with `scripts/assemble_gguf_bundle.py`, so CI tests the files a release ships. Do not download model files in a workflow by other means, and never from a floating revision such as `resolve/main`; `tests/test_assemble_gguf_bundle.py` checks this. A text bundle never contains an `mmproj` projector.
+
 Keep release metadata consistent with the runtime GGUF contract.
 
 When bundle structure changes, review the runtime loader, CI bundle generation, release bundle generation, tests, and documentation together.

@@ -16,14 +16,15 @@ pub(crate) struct BackendRunProfile {
 /// An embedding inference backend.
 ///
 /// Implementations own a loaded model and return, for each already-tokenized input, the
-/// **raw, un-normalized, last-token-pooled** embedding of length `raw_embedding_dimension()`.
+/// **raw, un-normalized, mean-pooled** embedding of length `raw_embedding_dimension()`.
 /// The shared engine layer ([`super::EmbeddingEngine`]) owns prefixing, tokenization, and
 /// the Matryoshka truncation + optional L2 normalization applied on top.
 ///
 /// This trait is the sole seam for adding future backends; today `LlamaBackend` is the only
 /// implementation.
 pub(crate) trait EmbeddingBackend: Send + Sync {
-    /// Raw embedding width the backend emits before truncation (e.g. 768).
+    /// Raw embedding width the backend emits before truncation (768 for EmbeddingGemma 2:
+    /// its projected output, not its 512-wide hidden state).
     fn raw_embedding_dimension(&self) -> usize;
 
     /// Number of tokens in the model's own vocabulary, i.e. the token ids it accepts.

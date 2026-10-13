@@ -50,6 +50,18 @@ scripts/generate_fixtures.py
 
 Fixture regeneration must be intentional and reviewed.
 
+The golden gates (per-input and mean cosine) are set just below the measured quantization error of the release GGUF (`docs/testing.md` § "Gates and how they were set"). Do not lower them to make a failing result pass; a result below them is a finding to investigate.
+
+## llama.cpp Reference Fixture
+
+`tests/fixtures/llama_cpp_reference.json` holds what upstream llama.cpp's own embedding tool computes on the release GGUF, per static-release variant. It is reference data from a tool that shares LTEmbed's kernels but none of its code, built by `scripts/build_llama_cpp_reference_tool.sh` and recorded by:
+
+```text
+scripts/generate_llama_cpp_reference.py
+```
+
+Never fill it from LTEmbed output. Regenerate it, for every variant, when the golden inputs, the release GGUF or the static llama.cpp release change.
+
 ## Tokenizer Fixtures
 
 Tokenizer parity fixtures protect against tokenizer drift.

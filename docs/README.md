@@ -1,7 +1,7 @@
 # LTEmbed Documentation
 
 Everything outside [history/](#history) describes the current `main` branch: the
-llama.cpp/GGUF backend. Start with the [project README](../README.md) for a summary.
+llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README](../README.md) for a summary.
 
 ## By task
 
@@ -13,7 +13,8 @@ llama.cpp/GGUF backend. Start with the [project README](../README.md) for a summ
 | Set up a dev environment, including on macOS or x86_64 | [development.md](./development.md) |
 | Know what the tests cover and what CI runs | [testing.md](./testing.md) |
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
-| Cut a release or see why Q5_K_M was chosen | [releases.md](./releases.md) |
+| Cut a release or see why UD-Q4_K_XL was chosen | [releases.md](./releases.md) |
+| Move an existing index from the previous model | [model-migration.md](./model-migration.md) |
 | Use the Python benchmark and fixture scripts | [scripts/README.md](../scripts/README.md) |
 | Follow the Rust coding conventions | [rust-coding-std.md](./rust-coding-std.md) |
 
@@ -46,9 +47,16 @@ commands and file names in them may no longer exist.
   evaluation of replacing `ort` with `llama-cpp-rs`. Superseded: `main` uses raw FFI to
   static archives instead.
 - [history/migrations/llama-cpp-spike-results.md](./history/migrations/llama-cpp-spike-results.md):
-  the de-risking spike that picked Q5_K_M. Its still-valid results are in
-  [releases.md](./releases.md#why-q5_k_m) and
-  [benchmarking.md](./benchmarking.md#recorded-results).
+  the de-risking spike that picked Q5_K_M for the previous model. Its results for that
+  model are collected in
+  [history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md).
+
+**Previous models**
+
+- [history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md):
+  `jinaai/jina-embeddings-v5-text-nano-retrieval`, the model `main` ran on llama.cpp until
+  the EmbeddingGemma 2 migration: its bundle, quant choice, golden fixture and recorded
+  results. Migration guidance is in [model-migration.md](./model-migration.md).
 
 **Plans**
 

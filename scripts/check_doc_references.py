@@ -58,6 +58,13 @@ NOT_REPO_PATHS = frozenset(
         # status banner template in docs/history/AGENTS.md.
         "query/document",
         "llama.cpp/GGUF",
+        # Hugging Face repositories of the current and the previous model (root AGENTS.md,
+        # src/engine/AGENTS.md), and the floating revision URL segment .github/AGENTS.md
+        # forbids.
+        "unsloth/embeddinggemma-2-GGUF",
+        "unsloth/embeddinggemma-2",
+        "jinaai/jina-embeddings-v5-text-nano-retrieval",
+        "resolve/main",
     }
 )
 

@@ -43,9 +43,9 @@ QUALITY_GATE = 0.99
 # Lambda size contract: the deployed package is the GGUF bundle (model.gguf +
 # tokenizer.json + build-info.json — metadata.json's bundle_size_bytes) plus the
 # bootstrap binary. AWS caps the unzipped deployment package at 250 MiB, so the
-# bundle's effective budget reserves an allowance for the binary. This reproduces the
-# tradeoff #150 requires: a ~233 MB Q8_0 GGUF is over budget once the tokenizer and
-# binary ride along, while a ~169 MB Q5_K_M fits comfortably.
+# bundle's effective budget reserves an allowance for the binary. With EmbeddingGemma 2's
+# 32.2 MB tokenizer.json, the 175.7 MB UD-Q4_K_XL GGUF makes a 207.8 MB (198 MiB) bundle
+# that fits, while UD-Q5_K_XL (210.1 MB GGUF, 242.2 MB bundle) is just over the budget.
 LAMBDA_PACKAGE_LIMIT_BYTES = 250 * 1024 * 1024
 LAMBDA_BINARY_ALLOWANCE_BYTES = 20 * 1024 * 1024
 LAMBDA_BUDGET_BYTES = LAMBDA_PACKAGE_LIMIT_BYTES - LAMBDA_BINARY_ALLOWANCE_BYTES

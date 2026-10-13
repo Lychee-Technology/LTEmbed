@@ -24,7 +24,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-nano-retrieval"
+DEFAULT_MODEL_ID = "unsloth/embeddinggemma-2-GGUF"
 DEFAULT_MODEL_SOURCE = "huggingface"
 DEFAULT_CORRECTNESS_THRESHOLD = 0.98
 DEFAULT_RETRIEVAL_EVAL_PATH = ROOT / "scripts" / "retrieval_eval_cases.json"
@@ -602,7 +602,7 @@ def build_golden_retrieval_case(golden: dict[str, Any]) -> tuple[dict[str, Any],
     """Turn the golden fixture into a retrieval-eval spec plus expected embeddings by id.
 
     Items are routed by ``kind`` into queries vs documents so the runner applies the same
-    Query:/Document: prefixes the golden embeddings were generated with.
+    query/document prompts the golden embeddings were generated with.
     """
     queries: list[dict[str, Any]] = []
     documents: list[dict[str, str]] = []
@@ -635,16 +635,18 @@ def collect_golden_parity_rows(
     retrieval-eval case, embedded by ltembed, and compared against the checked-in
     embeddings with the pure-Python cosine.
 
-    Skipped (with a visible log line) when the requested output dimension differs from
-    the fixture's — cosine against unequal-length vectors is undefined, and dispatches
-    with a non-default dimension are still valid latency runs.
+    The fixture stores each full-width (``raw_dim``) vector; a Matryoshka width listed in its
+    ``dims`` is its first ``output_dimension`` values, which the cosine compares directly
+    (cosine ignores the norm, so renormalizing would not change it). Skipped (with a visible
+    log line) for any other output dimension, where the model defines no reference.
     """
     golden = load_golden_fixture(args.golden_fixture_path)
-    golden_dim = int(golden.get("dim") or 0)
-    if golden_dim and int(args.output_dimension) != golden_dim:
+    dims = [int(dim) for dim in golden.get("dims") or []]
+    output_dimension = int(args.output_dimension)
+    if output_dimension not in dims:
         log_progress(
-            f"golden_parity (fixture dim {golden_dim} != output dimension "
-            f"{args.output_dimension})",
+            f"golden_parity (output dimension {output_dimension} is not one of the "
+            f"fixture's widths {dims})",
             "SKIP",
         )
         return []
@@ -668,7 +670,9 @@ def collect_golden_parity_rows(
             for item in result.get(group, []):
                 item_id = str(item["id"])
                 golden_entry = expected[item_id]
-                similarity = cosine_similarity(item["embedding"], golden_entry["embedding"])
+                similarity = cosine_similarity(
+                    item["embedding"], golden_entry["embedding"][:output_dimension]
+                )
                 compared.add(item_id)
                 scenario = Scenario(
                     name=golden_entry["scenario"], batch_size=1, text_profile="golden"

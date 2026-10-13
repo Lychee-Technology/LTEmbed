@@ -6,7 +6,7 @@
 > **Current implementation:** llama.cpp/GGUF on `main`\
 > **Current documentation:** [docs/architecture.md](../../architecture.md)
 >
-> Findings that still hold now live in current docs: quant choice and parity in [docs/releases.md](../../releases.md), the tokenizer and golden-fixture pitfalls in [docs/bundle-format.md](../../bundle-format.md) and [docs/testing.md](../../testing.md), and the Apple Silicon latency table in [docs/benchmarking.md](../../benchmarking.md). Out of date here: `--features llama`, the `spike_llama` binary, `.llama-artifacts/dev.sh`, the "feature-gated" `build.rs`, `llama_decode` (the backend calls `llama_encode`) and the `single/short` scenario (no longer defined).
+> The model it evaluated, `jinaai/jina-embeddings-v5-text-nano-retrieval`, has since been replaced by EmbeddingGemma 2; the quant choice, golden parity and Apple Silicon latency recorded here for it are collected in [history/models/jina-embeddings-v5-text-nano-retrieval.md](../models/jina-embeddings-v5-text-nano-retrieval.md). The backend findings (raw FFI to static archives, `llama_encode`) still hold. Out of date here: `--features llama`, the `spike_llama` binary, `.llama-artifacts/dev.sh`, the "feature-gated" `build.rs`, `llama_decode` (the backend calls `llama_encode`) and the `single/short` scenario (no longer defined).
 
 Status: **correctness + size validated; ORT fully removed; `LlamaBackend` is the sole
 backend behind the `EmbeddingBackend` trait.** The de-risk spike (below) is throwaway and

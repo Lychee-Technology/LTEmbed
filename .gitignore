@@ -56,6 +56,8 @@ perf-results/
 # llama.cpp migration: prebuilt static-lib artifacts + GGUF models (download + SHA-verify, never commit)
 .llama-artifacts/
 *.gguf
+# Local bundle from scripts/assemble_gguf_bundle.py (docs/development.md); its tokenizer.json is 32 MB
+/gguf_bundle/
 
 docs/superpowers/
 .ruff_cache/

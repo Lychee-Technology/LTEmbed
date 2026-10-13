@@ -59,7 +59,7 @@ def write_executable(path, text):
     path.chmod(0o755)
 
 
-def write_release(directory, triple, contract="4", omit=()):
+def write_release(directory, triple, contract="5", omit=()):
     """An extracted static llama.cpp release: empty files and a build-info.json."""
     for name in RELEASE_FILES:
         if name not in omit:
@@ -207,7 +207,7 @@ class PrePushHookTests(unittest.TestCase):
     def test_native_branches_reject_another_contract_or_an_incomplete_release(self):
         bad_contract = "unexpected artifact_contract_version '{}' in {}/build-info.json"
         defects = {
-            "contract 3": (dict(contract="3"), bad_contract.format("3", "{}")),
+            "contract 4": (dict(contract="4"), bad_contract.format("4", "{}")),
             "no contract": (dict(contract=""), bad_contract.format("<missing>", "{}")),
             "no libggml.a": (dict(omit=("lib/libggml.a",)), "{}/lib/libggml.a not found"),
         }

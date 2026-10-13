@@ -117,12 +117,14 @@ at revision `031f0d4b…`. It is the most accurate pinned quant that meets the s
 - **Tail**: over 2000 short Chinese and English sentences at 512 dimensions, the lowest
   cosine is 0.9911, the 1st percentile 0.9962, and 10 texts (0.5%) fall below 0.995; recall
   stays at the F32 model's level ([benchmarking.md](./benchmarking.md#recorded-results)).
-- **Why not `UD-Q4_K_XL`**, the release quant before: it is 32.8 MiB smaller and faster on
-  short inputs (`single/zh` 18.4 ms against 24.6 ms at 6 threads on x86-64-v3; about the
-  same at 4075 tokens, 5374 ms against 5288 ms), with the same recall on the CN/EN set. But 1% of those 2000 sentences fall
-  below 0.985, down to 0.9614, so its vectors drift further from the model's on short
-  text. The benchmark report still recommends it, because its quality gate is a mean
-  cosine of 0.99 and it picks the smallest bundle that passes
+- **Why not `UD-Q4_K_XL`**, the release quant before: it is 32.8 MiB smaller and faster
+  (`single/zh` 18.7 ms against 24.3 ms at 6 threads on x86-64-v3; at 4075 tokens 5521 ms
+  against 5816 ms, less than that time varies between processes, see
+  [benchmarking.md](./benchmarking.md#recorded-results)), with the same recall on the
+  CN/EN set. But 1% of those 2000 sentences fall below 0.985, down to 0.9614, so its
+  vectors drift further from the model's on short text. The benchmark report still
+  recommends it, because its quality gate is a mean cosine of 0.99 and it picks the
+  smallest bundle that passes
   ([benchmarking.md](./benchmarking.md#how-the-report-recommends-a-quant)); that gate does
   not see the tail. `scripts/assemble_gguf_bundle.py --quant UD-Q4_K_XL` still builds it.
 - Where the size budget does not apply, `Q8_0` is the closest to the F32 model;

@@ -190,39 +190,49 @@ Measured during the EmbeddingGemma 2 migration, on one machine:
 - AMD Ryzen 5 5600G (Zen 3, 6 cores / 12 threads, x86-64-v3), 27 GiB RAM, Fedora Linux
   (kernel 7.2), nothing else running;
 - static llama.cpp `v0.1.159-2` (`b11577`), `x86_64-v3` variant; flash attention on;
+- the engine tokenizing with the GGUF's vocabulary, bundles without `tokenizer.json`;
 - `benchmark_ltembed --mode warm`, `--output-dimension 512 --l2-normalize true`, 3 warm-up
-  and 20 timed iterations (`single/long`: 1 and 3). Values are medians in ms.
+  and 20 timed iterations (`single/long`: 1 and 2 or 3). Values are medians in ms.
 
 These are single-machine numbers. They show how the quants, thread counts and input lengths
 compare; they do not predict Graviton or Lambda latency.
 
+**Long inputs vary between processes.** The same bundle, opened through paths of
+different lengths, gives `single/long` times that differ by up to 13% between processes
+(`UD-Q5_K_XL`: 5330 to 5914 ms), while repeated calls in one process differ by under 1%.
+Another copy of the same GGUF, evicting it from the page cache, and padding the environment
+by up to 112 bytes change nothing; the likely cause, not confirmed, is the process's memory
+layout, which the path's length shifts. `BF16` varies by 0.5%, the quantized GGUFs by
+9–13%, short inputs by 2–4%. A single process's `single/long` time is therefore one sample
+of that spread. The `single/long` column below is the median over eight such paths, with
+their range; the ranges of the 4-, 5- and 6-bit quants overlap.
+
 **Warm latency by quant**, 6 threads. Token counts include the prompt, `<bos>` and `<eos>`.
 
-| Quant | `single/zh` (13) | `single/en` (14) | `single/medium` (90) | `batch/medium/8` (8 × 90) | `single/long` (4075) |
+| Quant | `single/zh` (13) | `single/en` (14) | `single/medium` (90) | `batch/medium/8` (8 × 90) | `single/long` (4075), median (range) |
 |---|---|---|---|---|---|
-| `UD-Q4_K_XL` | 18.4 | 19.4 | 68.7 | 555 | 5374 |
-| `UD-Q5_K_XL` | 24.6 | 25.1 | 85.2 | 701 | 5288 |
-| `UD-Q6_K_XL` | 26.7 | 27.0 | 89.8 | 735 | 5390 |
-| `Q8_0` | 23.0 | 23.7 | 98.8 | 786 | 6293 |
-| `BF16` | 24.4 | 25.3 | 101.6 | 805 | 6553 |
+| `UD-Q4_K_XL` | 18.7 | 19.6 | 69.6 | 557 | 5521 (5000–5652) |
+| `UD-Q5_K_XL` | 24.3 | 25.0 | 84.1 | 689 | 5816 (5330–5914) |
+| `UD-Q6_K_XL` | 26.3 | 27.0 | 87.2 | 715 | 5747 (5446–6004) |
+| `Q8_0` | 22.6 | 23.7 | 95.7 | 759 | 6765 (6274–6821) |
+| `BF16` | 24.5 | 25.6 | 98.6 | 780 | 6625 (6618–6648) |
 
-**Warm latency of `UD-Q4_K_XL` by thread count**:
+**Warm latency of `UD-Q5_K_XL` by thread count**. `single/long` at 1 and 4 threads is
+one process each:
 
 | Threads | `single/zh` | `single/en` | `single/medium` | `batch/medium/8` | `single/long` |
 |---|---|---|---|---|---|
-| 1 | 51.3 | 54.5 | 265.7 | 1873 | 23627 |
-| 4 | 21.0 | 22.2 | 85.1 | 666 | 6887 |
-| 6 | 18.4 | 19.4 | 68.7 | 555 | 5374 |
+| 1 | 67.8 | 68.8 | 279.4 | 2190 | 25161 |
+| 4 | 27.1 | 28.0 | 104.9 | 810 | 7753 |
+| 6 | 24.3 | 25.0 | 84.1 | 689 | 5816 |
 
 - `batch/medium/8` costs eight single calls, as expected from one `llama_encode` per input.
 - Output width does not matter: at 768 instead of 512 dimensions, `single/medium` takes
-  69.5 ms and `batch/medium/8` 562 ms. Truncation and normalization take about 2 µs.
-- The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 51.4,
-  51.5, 51.7 and 51.9 ms at 1 thread with `max_length` 8192, 2048, 512 and 128.
-- Loading the engine takes 1.3–1.4 s. A cold start of `single/zh` (load and one embedding
-  in a fresh process, 6 threads) takes about 1.2 s. Both were measured while the engine
-  still parsed `tokenizer.json` (0.65 s); without it, loading takes about 0.42 s (6
-  threads, warm page cache).
+  84.1 ms and `batch/medium/8` 691 ms. Truncation and normalization take about 2 µs.
+- The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 67.8,
+  67.9, 67.6 and 67.9 ms at 1 thread with `max_length` 8192, 2048, 512 and 128.
+- Loading the engine takes 0.48–0.53 s (warm page cache). A cold start of `single/zh`
+  (load and one embedding in a fresh process, 6 threads) takes 0.50–0.51 s.
 - Memory and first-call latency for inputs of up to 8192 tokens, and the effect of flash
   attention, are in [architecture.md](./architecture.md#long-inputs-and-memory).
 

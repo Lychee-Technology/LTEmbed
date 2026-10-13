@@ -155,36 +155,33 @@ them. With 262144 tokens in the vocabulary that is 1 MiB per input token, 8 GiB 
 LTEmbed cannot avoid it without changing llama.cpp: an encoder needs every token as an
 output, and llama.cpp sizes the buffer by outputs.
 
-Peak resident memory (`/usr/bin/time -v`) of one process that loads the engine and embeds
-one input, and the time of that first call (x86-64-v3 Ryzen 5 5600G, flash attention on,
-bundle `max_length` 8192). These were measured with `UD-Q4_K_XL`, the release quant before
-`UD-Q5_K_XL`, and not repeated with it; its GGUF is 34 MB larger, and the output buffer
-below, which dominates, does not depend on the quant:
+Peak resident memory (`/usr/bin/time -v`) of one process that loads the release bundle
+(`UD-Q5_K_XL`, `max_length` 8192) and embeds one input, and the time of that first call
+(x86-64-v3 Ryzen 5 5600G, flash attention on):
 
 | Input tokens | Peak RSS | First call, 6 threads | First call, 1 thread |
 |---|---|---|---|
-| 14 | 0.47 GiB | 0.02 s | 0.06 s |
-| 1024 | 1.64 GiB | 1.3 s | 4.1 s |
-| 2039 | 2.67 GiB | 3.1 s | — |
-| 4074 | 4.91 GiB | 7.1 s | 25.7 s |
-| 8192 | 9.53 GiB (10.2 GB) | 18.2 s | 72.8 s |
+| 14 | 0.32 GiB | 0.03 s | 0.08 s |
+| 1024 | 1.47 GiB | 1.5 s | 4.7 s |
+| 2039 | 2.50 GiB | 3.3 s | — |
+| 4074 | 4.75 GiB | 7.2 s | 26.3 s |
+| 8192 | 9.38 GiB (10.1 GB) | 18.3 s | 74.2 s |
 
-That is about 0.47 GiB plus 1.13 MiB per token of the longest input embedded so far.
-Loading took 1.3–1.4 s. These runs predate tokenizing with the GGUF's vocabulary: the
-engine still loaded `tokenizer.json`, so the figures include its memory and its 0.65 s
-parse. Without it, loading takes about 0.42 s (6 threads, warm page cache). Later calls of
-the same length are faster than the first, which also touches the newly reserved buffers:
-[benchmarking.md](./benchmarking.md#recorded-results) has warm latencies. Three consequences:
+That is about 0.32 GiB plus 1.13 MiB per token of the longest input embedded so far.
+Loading takes 0.48–0.53 s (warm page cache). Later calls of the same length are faster
+than the first, which also touches the newly reserved buffers:
+[benchmarking.md](./benchmarking.md#recorded-results) has warm latencies, and how much
+long-input times vary between processes. Three consequences:
 
 - **The buffer only grows.** llama.cpp keeps the output buffer at the largest size any
-  input needed, so after one 8k input an engine holds about 9.5 GiB until it is dropped.
+  input needed, so after one 8k input an engine holds about 9.4 GiB until it is dropped.
 - **`max_length` bounds it.** A bundle's `max_length` (`1..=8192`) sets
   `n_ctx = n_batch = n_ubatch` and the input token limit. Inputs over it fail with
   `InputTooLong` instead of being truncated, so a deployment that sets `max_length` to
-  2048 caps peak memory at about 2.7 GiB and rejects longer inputs explicitly. A smaller
+  2048 caps peak memory at about 2.5 GiB and rejects longer inputs explicitly. A smaller
   `max_length` changes neither the result nor, measurably, the cost of inputs that fit:
-  with `max_length` 2048 instead of 8192, the 2039-token input peaks at the same 2.67 GiB
-  and the 1024-token one 65 MiB lower, and short-input latency is the same with
+  with `max_length` 2048 instead of 8192, the 2039-token input peaks at the same 2.50 GiB
+  and the 1024-token one 63 MiB lower, and short-input latency is the same with
   `max_length` 128, 512, 2048 or 8192.
 - **One sequence per micro-batch.** llama.cpp's encoder cannot split a sequence across
   micro-batches (it asserts `n_ubatch >= n_tokens`), so `n_ubatch` must equal the context
@@ -193,8 +190,8 @@ the same length are faster than the first, which also touches the newly reserved
 Latency grows faster than linearly with length, because attention is quadratic. Flash
 attention keeps the attention's compute buffer small: measured with llama.cpp's own
 `llama-embedding` on the same GGUF and settings at 6 threads, turning it off raises the
-8192-token input's peak RSS from 9.43 GiB to 10.43 GiB and its run time, load included, from
-19.9 s to 38.9 s (4074 tokens: 8.7 s to 12.8 s).
+8192-token input's peak RSS from 9.40 GiB to 10.40 GiB and its run time, load included, from
+20.5 s to 39.2 s (4074 tokens: 8.6 s to 13.2 s).
 
 ## Concurrency
 

@@ -15,6 +15,7 @@ llama.cpp/GGUF backend. Start with the [project README](../README.md) for a summ
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
 | Cut a release or see why Q5_K_M was chosen | [releases.md](./releases.md) |
 | Understand source and model licensing | [README licensing](../README.md#licensing) and [model redistribution notice](../licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md) |
+| Redistribute llama.cpp/ggml or statically linked binaries | [Native dependency licenses and attribution](../licenses/llama.cpp/NOTICE.md) |
 | Use the Python benchmark and fixture scripts | [scripts/README.md](../scripts/README.md) |
 | Follow the Rust coding conventions | [rust-coding-std.md](./rust-coding-std.md) |
 

@@ -36,6 +36,10 @@ LTEmbed's original source code is dual-licensed under either the
 option (`MIT OR Apache-2.0`). Third-party models, tokenizers, assets and dependencies
 are not relicensed by this grant; their applicable upstream terms remain in effect.
 
+The statically linked llama.cpp/ggml components are **MIT-licensed**. Their upstream
+copyright and permission notice must accompany redistributed binaries, even when
+statically linked; see [native dependency licenses and attribution](./licenses/llama.cpp/NOTICE.md).
+
 The Jina model is **CC BY-NC 4.0 (NonCommercial only)**; commercial use requires
 separate permission from [sales@jina.ai](mailto:sales@jina.ai). See the
 [model attribution, provenance and redistribution checklist](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md).

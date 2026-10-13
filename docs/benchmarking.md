@@ -253,6 +253,14 @@ and that set's retrieval metrics, where each query must find both sentences of i
 
 - `BF16` matches the F32 model on every text, so the drift of the smaller quants is
   quantization error, not an LTEmbed error. It shrinks with each larger quant.
+- `UD-Q5_K_XL` is closer to the F32 model than `UD-Q4_K_XL` on every one of the 2000 texts
+  (by 0.0033 on average) and on every golden input at every trained width; its mean
+  error, 1 − cosine, is 3.6 times smaller on the CN/EN set and 3.5 times on the golden
+  inputs at 512 dimensions. The two quants also differ from each other more
+  than either differs from the F32 model: the cosine between their vectors of the same text
+  at 512 dimensions is at least 0.98805 (mean 0.99383) over the golden inputs, and at
+  least 0.9458 (mean 0.9945; 886 texts below 0.995) over the CN/EN set. Their errors point
+  in different directions, so vectors from different quants do not belong in one index.
 - `UD-Q4_K_XL` keeps retrieval quality on this set, but 1% of its short sentences drift to
   cosine 0.96–0.985. The worst is the English sentence "The worker is pushing the
   distaff." as a query (0.9614). This tail is why the release ships `UD-Q5_K_XL`, whose

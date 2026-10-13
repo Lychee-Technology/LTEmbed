@@ -109,10 +109,11 @@ at revision `031f0d4b…`. It is the most accurate pinned quant that meets the s
   about 1.4 KB of `build-info.json`, `SHA256SUMS` and `provenance.json`. `UD-Q5_K_XL` has
   fitted since the bundle dropped the 32 MB `tokenizer.json`; `UD-Q6_K_XL` does not.
 - **Parity**: cosine of LTEmbed's output against the PyTorch F32 golden over 25 inputs of
-  up to 8192 tokens, measured on x86-64-v3 (aarch64: TODO(aarch64), from the aarch64
-  llama.cpp reference). At the default 512 dimensions the release quant scores a minimum of
-  0.99702 and a mean of 0.99852. Its worst input is a Rust code snippet. The test gate is
-  0.995 for every input at every width; see
+  up to 8192 tokens; the table above is measured on x86-64-v3. At the default 512
+  dimensions the release quant scores a minimum of 0.99702 and a mean of 0.99852 there, and
+  0.99640 and 0.99851 on aarch64, where its vectors differ slightly (from the aarch64
+  llama.cpp reference, which LTEmbed matches). Its worst input on both is a Rust code
+  snippet. The test gate is 0.995 for every input at every width; see
   [testing.md](./testing.md#gates-and-how-they-were-set) for how it was set.
 - **Tail**: over 2000 short Chinese and English sentences at 512 dimensions, the lowest
   cosine is 0.9911, the 1st percentile 0.9962, and 10 texts (0.5%) fall below 0.995; recall

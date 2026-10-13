@@ -207,9 +207,10 @@ the remaining gap is weight quantization, which shrinks with each larger quant. 
 release quant at the other widths: 512, minimum 0.99702 and mean 0.99852; 256, minimum
 0.99730 and mean 0.99869; 128, minimum 0.99829 and mean 0.99911. Its worst input is a Rust
 code snippet at 768 and 512, and a Python one at 256 and 128. On aarch64 the release
-quant's vectors differ slightly (see the llama.cpp reference below); there the minimum at
-768 is TODO(aarch64) and the mean TODO(aarch64), from the aarch64 reference vectors that
-LTEmbed must match.
+quant's vectors differ slightly (see the llama.cpp reference below). From the aarch64
+reference vectors, which LTEmbed must match, its minimum and mean are 0.99622 and 0.99847
+at 768, 0.99640 and 0.99851 at 512, 0.99700 and 0.99869 at 256, and 0.99807 and 0.99909 at
+128, with the same Rust snippet worst at every width.
 
 The gate was set just below that measured error. Until the release moved from `UD-Q4_K_XL`
 to `UD-Q5_K_XL`, the gates were 0.985 per input and 0.993 on average, just below the 4-bit

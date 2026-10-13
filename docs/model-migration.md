@@ -82,9 +82,9 @@ still missing cannot be found.
   example a Python job using the model directly), it must now use the model's
   `query` and `document` prompts. Passing text that already carries a prefix to
   `EmbeddingInput` applies the prefix twice.
-- **Retrieval quality.** The release quant `UD-Q5_K_XL` has cosine ≥ 0.996 (x86-64-v3; aarch64:
-  TODO(aarch64)) against the F32 model on every golden test input at every trained width, and each test
-  query ranks its document first, as with the F32 model. Over 2000 short Chinese and English
+- **Retrieval quality.** The release quant `UD-Q5_K_XL` has cosine ≥ 0.996 against the F32
+  model on every golden test input at every trained width, on x86-64-v3 and on aarch64,
+  and each test query ranks its document first, as with the F32 model. Over 2000 short Chinese and English
   sentences, 0.5% drift below 0.995, down to 0.991, while recall stays at the F32 model's
   level (see
   [testing.md](./testing.md#golden-fixture-testsfixturestest_fixturesjson) and

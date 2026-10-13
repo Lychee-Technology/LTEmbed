@@ -208,14 +208,18 @@ cargo test --test tokenizer_reload_tests
 cargo test --test benchmarking_support_tests --bin benchmark_ltembed
 cargo check --example api_usage
 LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+  cargo test --lib tokenizer_parity -- --ignored
+LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
   cargo test --test integration_tests
 python3 -m pytest tests/ -q
 ```
 
-The model-backed integration tests need a bundle at `./gguf_bundle`; build it with
+The tokenizer parity test and the model-backed integration tests need a bundle at
+`./gguf_bundle`; build it with
 `python3 scripts/assemble_gguf_bundle.py gguf_bundle`
 ([bundle-format.md](./bundle-format.md#assembling-a-bundle)), which downloads the same pinned
-files CI uses. They also need about 10 GB of free memory for the 8192-token input.
+files CI uses. The integration tests also need about 10 GB of free memory for the
+8192-token input.
 
 ## End-to-end sanity check
 

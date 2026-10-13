@@ -75,9 +75,9 @@ Raise unrelated problems separately.
 
 ## Baseline Validation
 
-The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: the Markdown link and `AGENTS.md` path check, formatting, Clippy, rustdoc, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
+The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: the Markdown link and `AGENTS.md` path check, formatting, Clippy, rustdoc, the Rust test targets, the example build, the tokenizer parity test, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
 
-Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The model-backed integration tests also need a GGUF bundle.
+Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The tokenizer parity test and the model-backed integration tests also need a GGUF bundle.
 
 Never report a command as passing unless it actually ran successfully. A model-backed test that skipped because no bundle was available did not pass. If validation cannot run because of architecture, artifacts, model weights, Docker, or another environmental limitation, state that explicitly.
 

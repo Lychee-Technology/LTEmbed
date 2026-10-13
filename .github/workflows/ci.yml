@@ -108,6 +108,13 @@ jobs:
           python3 scripts/assemble_gguf_bundle.py "$BUNDLE"
           echo "LTEMBED_TEST_BUNDLE_DIR=$BUNDLE" >> "$GITHUB_ENV"
 
+      # The bundle's tokenizer.json, which inference tokenizes with, against the GGUF's own
+      # vocabulary, which upstream llama.cpp tokenizes with: identical token ids on ~76k
+      # encodings of a fixed corpus (src/engine/tokenizer_parity.rs). The test is #[ignore]d
+      # in the plain `cargo test --lib` above because it needs the bundle.
+      - name: Run tokenizer parity test (tokenizer.json vs the GGUF vocabulary)
+        run: cargo test --lib tokenizer_parity -- --ignored
+
       - name: Run integration tests (llama.cpp GGUF inference)
         run: cargo test --test integration_tests
 

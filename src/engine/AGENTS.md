@@ -91,7 +91,7 @@ Loading fails explicitly only for what it checks: missing files, unreadable or u
 
 The two tokenizer checks are sanity checks, not an identity check. They reject a tokenizer from a model with another vocabulary size, or one that lost its special tokens, but a tokenizer that agrees with the GGUF on the check text and differs elsewhere loads without error and produces wrong embeddings; only the bundle-gated tests catch that, and only for the bundle and inputs they run (`docs/testing.md`). So:
 
-- the tokenizer must be the one pinned in `scripts/assemble_gguf_bundle.py`: `unsloth/embeddinggemma-2` at its pinned revision, Unsloth's safetensors copy of the model (the GGUF repository has no `tokenizer.json`). Its agreement with the GGUF's vocabulary is shown by the load-time check and by the llama.cpp reference test's token ids, not by provenance;
+- the tokenizer must be the one pinned in `scripts/assemble_gguf_bundle.py`: `unsloth/embeddinggemma-2` at its pinned revision, Unsloth's safetensors copy of the model (the GGUF repository has no `tokenizer.json`). Its agreement with the GGUF's vocabulary is shown by the load-time check, by the llama.cpp reference test's token ids, and by the tokenizer parity test (`src/engine/tokenizer_parity.rs`, `docs/testing.md` § "Tokenizer parity") on a fixed corpus of about 25,000 texts, not by provenance;
 - do not use `assets/tokenizer.json` as a runtime replacement. It is a stale 30k-vocab placeholder, and loading rejects it;
 - do not describe either check as validating tokenizer/model identity.
 

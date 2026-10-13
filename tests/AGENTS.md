@@ -76,6 +76,12 @@ When changing tokenizer revisions or the Rust `tokenizers` dependency, verify th
 
 Do not update expected token IDs merely to make a failing implementation pass.
 
+## Tokenizer Parity Test
+
+`src/engine/tokenizer_parity.rs` compares `tokenizer.json` with the GGUF's own vocabulary (`llama_tokenize`) on a fixed corpus (`docs/testing.md` § "Tokenizer parity"). It lives in the crate because the GGUF tokenizer is crate-internal; do not expose it publicly for the test. It is bundle-gated like the Tier 2 tests and `#[ignore]`d in plain `cargo test --lib`; CI runs it with `--ignored` after assembling the bundle.
+
+Equality is exact. Do not add a tolerance, an allow-list of differing inputs, or drop corpus sources to make it pass: a difference is a finding. Run it whenever a change can affect tokenization: the tokenizer revision, the `tokenizers` version, the static llama.cpp release, or the prefixes.
+
 ## Large Fixture Changes
 
 Treat large generated diffs as review-sensitive.

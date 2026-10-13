@@ -15,6 +15,7 @@ other hosts, run them in the container from
 | Benchmark support and binary unit tests | `cargo test --test benchmarking_support_tests --bin benchmark_ltembed` | — | Yes |
 | Example compiles | `cargo check --example api_usage` | — | Yes |
 | Example unit test | `cargo test --example api_usage` | — | **No** |
+| Tokenizer parity (`src/engine/tokenizer_parity.rs`) | `cargo test --lib tokenizer_parity -- --ignored` | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` | Yes (required) |
 | Integration tests, Tier 1 | `cargo test --test integration_tests` | — | Yes |
 | Integration tests, Tier 2 | same | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` | Yes (required) |
 | Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` (and `sentence-transformers` for one) for two modules | Yes, without `torch` |
@@ -49,7 +50,10 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    tokenizer at the pinned Hugging Face revisions, checked against their pinned sha256
    (see [bundle-format.md](./bundle-format.md#assembling-a-bundle)); then export
    `LTEMBED_TEST_BUNDLE_DIR`.
-8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
+8. `cargo test --lib tokenizer_parity -- --ignored`: the
+   [tokenizer parity test](#tokenizer-parity), which
+   plain `cargo test --lib` (step 3) skips as ignored.
+9. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
    8192-token input, which takes about 10 GB of memory
    ([architecture.md](./architecture.md#long-inputs-and-memory)); GitHub's standard Linux
    runners have 16 GB.
@@ -321,6 +325,90 @@ run. No model weights are needed.
 must equal `TOKENIZER_REPO` and `TOKENIZER_REVISION` in `scripts/assemble_gguf_bundle.py`,
 and its `TOKENIZER_SHA256` must equal the hash the fixture records.
 `tests/test_reference_generators.py` checks all of them.
+
+## Tokenizer parity
+
+`src/engine/tokenizer_parity.rs` checks that the bundle's two tokenizers give identical
+token ids. One is `tokenizer.json`, run by the `tokenizers` crate, which the engine
+tokenizes inference inputs with. The other is the GGUF's own vocabulary
+(`tokenizer.ggml.*`), run by `llama_tokenize`, which is what upstream llama.cpp tokenizes
+with. The load-time check compares the two on one text (`TOKENIZER_CHECK_TEXT`) and the
+[llama.cpp reference test](#llamacpp-reference-testsfixturesllama_cpp_referencejson) on the
+25 golden inputs; this test compares them on a fixed corpus of 25,401 texts:
+
+| Source | Texts |
+|---|---|
+| `tests/CN_EN_Data.csv`, both columns | 5268 |
+| [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson) inputs | 25 |
+| [Token-id fixture](#token-id-fixture-testsfixturestoken_idsjson) inputs, `repeat` specs expanded | 15 |
+| `text` fields of `scripts/benchmark_corpus.json` and `scripts/retrieval_eval_cases.json` | 28 |
+| Hand-picked edge cases (`EDGE_CASES`, plus five long runs without a word boundary) | 65 |
+| Seeded random strings | 20,000 |
+
+- **Edge cases**:
+  - whitespace and invisible characters: no-break and ideographic spaces, zero-width
+    characters, BOM, NEL, line and paragraph separators, NUL, control characters;
+  - composed and decomposed Unicode, and compatibility characters;
+  - scripts written without spaces;
+  - emoji ZWJ sequences, flags and keycaps;
+  - digits in several scripts;
+  - code and URLs;
+  - special-token text in exact, nested, unterminated and wrong-case forms.
+- **Random strings**: each has 1 to 12 segments. A segment is either a special-token or
+  whitespace fragment, or a run of code points from one of 30 ranges (ASCII, controls, Latin,
+  combining marks, Greek, Cyrillic, Hebrew, Arabic, Devanagari, Thai, Hangul, kana, CJK and
+  CJK Extension B, private use, variation selectors, fullwidth forms, hieroglyphs, regional
+  indicators, emoji). A fixed seed (`RANDOM_SEED`, xorshift64*) makes them the same on every
+  run.
+
+Each text is tokenized three times: as is, with the query prefix and with the document
+prefix, through the engine's own `prefixed_text`. That makes 76,203 encodings, about 4.1
+million tokens. Any difference fails the test, which lists the first 20 with the position of
+their first differing token. There is no tolerance.
+
+On the pinned bundle all 76,203 encodings are identical. On x86-64-v3 this was measured
+locally, and the test takes about 18 s in a debug build. CI runs it on both variants.
+
+**What a pass shows.** The two tokenizers agree on this corpus, for the pinned
+`tokenizer.json`, GGUF, `tokenizers` version and static llama.cpp release. It is not a
+proof for every input. Neither is checked against the tokenizer the model was trained with;
+for `tokenizer.json` against Python `tokenizers`, see the token-id fixture.
+
+**How sensitive it is.** Run with the real GGUF and a deliberately altered copy of
+`tokenizer.json`:
+
+| Change to `tokenizer.json` | Encodings that differ |
+|---|---|
+| `<eos>` removed from the template | 76,203 (all) |
+| NFC normalization added before the space replacement | 14,916 |
+| `<mask>` no longer an added token | 2,712 |
+| One BPE merge removed (`▁th` + `e`) | 0 |
+
+Removing one merge changes nothing because the BPE reaches the same tokens through other
+merges. Python `tokenizers` also gives unchanged ids for all 5268 Chinese and English
+sentences after removing any one of nine merges tried.
+
+**Running it.** The test needs the GGUF, so it is `#[ignore]`d and plain `cargo test --lib`
+stays model-free:
+
+```bash
+LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+  cargo test --lib tokenizer_parity -- --ignored
+```
+
+- **Skip or fail**: it follows the same rules as the Tier 2 integration tests
+  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). It needs `model.gguf` and
+  `tokenizer.json` and does not read `build-info.json`.
+- **Corpus check**: the model-free unit test `test_corpus_reads_every_source`, part of
+  `cargo test --lib`, checks that every source loads and that the `repeat` specs are
+  expanded.
+- **Expected warnings**: texts that start with `<bos>` or end with `<eos>` make llama.cpp
+  print `check_double_bos_eos` warnings, about 560 per run. Both tokenizers add a second BOS
+  or EOS there.
+
+There is no fixture to regenerate: the test computes both sides on every run. If it fails
+after a bump of `tokenizers`, the tokenizer revision or the static llama.cpp release, that is
+a finding. It means the engine no longer tokenizes the way llama.cpp reads the GGUF.
 
 ## Python tests
 

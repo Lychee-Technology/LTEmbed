@@ -10,6 +10,8 @@ mod config;
 mod inference;
 mod input;
 mod llama;
+#[cfg(test)]
+mod tokenizer_parity;
 
 pub use config::EngineConfig;
 pub use inference::EmbedBatchProfile;

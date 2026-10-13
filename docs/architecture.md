@@ -39,7 +39,7 @@ EmbeddingEngine                      src/engine/mod.rs
 
 The target model is [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)
 (`google/embeddinggemma-2`, 271M parameters, Apache-2.0), run from the text-only GGUF
-`embeddinggemma-2-UD-Q4_K_XL.gguf` in
+`embeddinggemma-2-UD-Q5_K_XL.gguf` in
 [`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF).
 The GGUF declares `general.architecture = gemma-embedding2`: a bidirectional Gemma encoder
 with a hidden width of 512, mean pooling over every token, and a dense projection of the
@@ -156,8 +156,10 @@ LTEmbed cannot avoid it without changing llama.cpp: an encoder needs every token
 output, and llama.cpp sizes the buffer by outputs.
 
 Peak resident memory (`/usr/bin/time -v`) of one process that loads the engine and embeds
-one input, and the time of that first call (UD-Q4_K_XL, x86-64-v3 Ryzen 5 5600G, flash
-attention on, bundle `max_length` 8192):
+one input, and the time of that first call (x86-64-v3 Ryzen 5 5600G, flash attention on,
+bundle `max_length` 8192). These were measured with `UD-Q4_K_XL`, the release quant before
+`UD-Q5_K_XL`, and not repeated with it; its GGUF is 34 MB larger, and the output buffer
+below, which dominates, does not depend on the quant:
 
 | Input tokens | Peak RSS | First call, 6 threads | First call, 1 thread |
 |---|---|---|---|

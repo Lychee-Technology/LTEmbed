@@ -19,7 +19,7 @@ writes it to `PATH` outside the bundle. CI, the release workflow and the ARM64 b
 call it. Python 3 standard library only.
 
 ```bash
-python3 scripts/assemble_gguf_bundle.py gguf_bundle                  # UD-Q4_K_XL
+python3 scripts/assemble_gguf_bundle.py gguf_bundle                  # UD-Q5_K_XL
 python3 scripts/assemble_gguf_bundle.py gguf_bundle-q8 --quant Q8_0
 python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH      # local copy of the GGUF
 python3 scripts/assemble_gguf_bundle.py gguf_bundle \

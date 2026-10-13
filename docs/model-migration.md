@@ -1,6 +1,6 @@
 # Migrating from Jina v5 Nano to EmbeddingGemma 2
 
-LTEmbed now embeds with EmbeddingGemma 2 (`unsloth/embeddinggemma-2-GGUF`, `UD-Q4_K_XL`)
+LTEmbed now embeds with EmbeddingGemma 2 (`unsloth/embeddinggemma-2-GGUF`, `UD-Q5_K_XL`)
 and no longer loads `jinaai/jina-embeddings-v5-text-nano-retrieval`. There is no dual-model
 mode. This page lists what changes for an application that stored vectors from the previous
 model, and how to move an index without mixing the two. The previous model's bundle and
@@ -12,7 +12,7 @@ results are archived in
 | | Jina v5 Nano (before) | EmbeddingGemma 2 (now) |
 |---|---|---|
 | Bundle `target_id` | `jinaai/jina-embeddings-v5-text-nano-retrieval` | `unsloth/embeddinggemma-2-GGUF` |
-| GGUF | `v5-nano-retrieval-Q5_K_M.gguf`, about 169 MB | `embeddinggemma-2-UD-Q4_K_XL.gguf`, 176 MB |
+| GGUF | `v5-nano-retrieval-Q5_K_M.gguf`, about 169 MB | `embeddinggemma-2-UD-Q5_K_XL.gguf`, 210 MB |
 | Tokenizer | the bundle's `tokenizer.json`: 128256 tokens, right padding, about 17 MB | the GGUF's own vocabulary: 262144 tokens, no padding; the bundle has no `tokenizer.json` |
 | Pooling | last token | mean over all tokens, then a 512→768 projection |
 | Query prefix | `Query: ` | `task: search result \| query: ` |
@@ -82,17 +82,18 @@ still missing cannot be found.
   example a Python job using the model directly), it must now use the model's
   `query` and `document` prompts. Passing text that already carries a prefix to
   `EmbeddingInput` applies the prefix twice.
-- **Retrieval quality.** The release quant `UD-Q4_K_XL` has cosine ≥ 0.989 against the F32
-  model on every golden test input at every trained width, and each test query ranks its
-  document first, as with the F32 model. Over 2000 short Chinese and English sentences, 1%
-  drift further, down to 0.961, while recall stays at the F32 model's level (see
+- **Retrieval quality.** The release quant `UD-Q5_K_XL` has cosine ≥ 0.996 (x86-64-v3; aarch64:
+  TODO(aarch64)) against the F32 model on every golden test input at every trained width, and each test
+  query ranks its document first, as with the F32 model. Over 2000 short Chinese and English
+  sentences, 0.5% drift below 0.995, down to 0.991, while recall stays at the F32 model's
+  level (see
   [testing.md](./testing.md#golden-fixture-testsfixturestest_fixturesjson) and
   [benchmarking.md](./benchmarking.md#recorded-results)). That is no substitute for
   evaluating recall on your own data before the switch.
 - **Bundles and releases.** Bundles built for the previous model fail to load
   (`UnsupportedPooling`); build a new one with `scripts/assemble_gguf_bundle.py`
   ([bundle-format.md](./bundle-format.md#assembling-a-bundle)). Release tarballs are now
-  named `ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64.tar.gz`.
+  named `ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz`.
 - **License.** The model cards of `google/embeddinggemma-2` and of both Unsloth repositories
   the bundle comes from declare `apache-2.0`. The previous model had its own terms. Check
   that the new license fits your distribution before shipping the bundle.

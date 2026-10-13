@@ -44,8 +44,8 @@ Without this variable, every `cargo build`, `cargo test` and `cargo run` fails i
 ## 3. Get a model bundle
 
 A bundle is a directory with `model.gguf` and `build-info.json`; the engine tokenizes with
-the GGUF's own vocabulary. To assemble the same `UD-Q4_K_XL` bundle that CI uses into
-`./gguf_bundle` (about 176 MB of downloads, checked against pinned hashes):
+the GGUF's own vocabulary. To assemble the same `UD-Q5_K_XL` bundle that CI uses into
+`./gguf_bundle` (about 210 MB of downloads, checked against pinned hashes):
 
 ```bash
 python3 scripts/assemble_gguf_bundle.py gguf_bundle

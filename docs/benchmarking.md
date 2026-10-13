@@ -46,8 +46,8 @@ batching.
 - **Golden parity**: cosine against the immutable fixture `tests/fixtures/test_fixtures.json`
   (see [testing.md](./testing.md#golden-fixture-testsfixturestest_fixturesjson)), truncated
   to `--output-dimension`. Threshold `0.98` per input by default
-  (`--golden-parity-threshold`), looser than the test suite's gates (0.985 per input, 0.993
-  mean). It is skipped unless `--output-dimension` is one of the fixture's widths (768, 512,
+  (`--golden-parity-threshold`), looser than the test suite's gate (0.995 per input). It is
+  skipped unless `--output-dimension` is one of the fixture's widths (768, 512,
   256, 128).
 - **Retrieval quality**: `recall_at_1`, `recall_at_3`, `both_at_3` and `mrr_at_3` per
   dataset, for LTEmbed and for PyTorch.
@@ -164,8 +164,8 @@ All artifacts are kept for 3 days. Copy any result you want to keep.
 
 - **Quality gate**: mean cosine ≥ `0.99` against the golden fixture, or against the
   workflow's dynamic PyTorch reference when golden parity is missing. This is stricter
-  than the orchestrator's `0.98` pass thresholds, and looser than the test suite's 0.993
-  mean gate.
+  than the orchestrator's `0.98` pass thresholds, and looser than the test suite's gate,
+  which requires 0.995 for every input.
 - **Size budget**: every file in the bundle directory (`model.gguf`, `build-info.json`,
   `SHA256SUMS`, `provenance.json`: `metadata.json`'s `bundle_size_bytes`) ≤ 230 MiB, which
   is the 250 MiB unzipped AWS Lambda package limit minus a 20 MiB allowance for a binary.
@@ -244,15 +244,16 @@ and that set's retrieval metrics, where each query must find both sentences of i
 - `BF16` matches the F32 model on every text, so the drift of the smaller quants is
   quantization error, not an LTEmbed error. It shrinks with each larger quant.
 - `UD-Q4_K_XL` keeps retrieval quality on this set, but 1% of its short sentences drift to
-  cosine 0.96–0.985, below the per-input gate the test suite applies to its 25 golden
-  inputs. The worst is the English sentence "The worker is pushing the distaff." as a
-  query (0.9614). Deployments that compare scores across models or depend on absolute
-  thresholds should measure on their own data, or use `UD-Q5_K_XL` or larger where the
-  size budget allows.
+  cosine 0.96–0.985. The worst is the English sentence "The worker is pushing the
+  distaff." as a query (0.9614). This tail is why the release ships `UD-Q5_K_XL`, whose
+  worst is 0.9911; 10 of its 2000 texts fall below 0.995, the per-input gate the test suite
+  applies to its 25 golden inputs. Deployments that compare scores across models or depend
+  on absolute thresholds should still measure on their own data.
 - Recall@1 is at most 0.5 here, because each query has two relevant documents and recall
   counts the fraction found.
 - The orchestrator and `render_benchmark_report.py` reproduce these runs: with the
   `UD-Q4_K_XL`, `UD-Q5_K_XL` and `Q8_0` results, the report recommends `UD-Q4_K_XL` as the
   only quant within the 230 MiB budget. Those bundles still held the 32 MB `tokenizer.json`;
-  without it `UD-Q5_K_XL` (200.3 MiB) fits too, and the report's smallest-bundle rule
-  still picks `UD-Q4_K_XL` ([releases.md](./releases.md#why-ud-q4_k_xl)).
+  without it `UD-Q5_K_XL` (200.3 MiB) fits too. The report's smallest-bundle rule still
+  picks `UD-Q4_K_XL`, because its mean-cosine gate does not see the tail above; the release
+  ships `UD-Q5_K_XL` anyway ([releases.md](./releases.md#why-ud-q5_k_xl)).

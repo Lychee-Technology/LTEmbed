@@ -30,8 +30,8 @@ file per quant as `embeddinggemma-2-<QUANT>.gguf`, which the script renames to `
 
 | Quant | File size | sha256 | Used by |
 |---|---|---|---|
-| `UD-Q4_K_XL` | 175,673,856 B | `ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493` | CI, release, golden gates |
-| `UD-Q5_K_XL` | 210,055,680 B | `a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5bb983db7c7ac41` | benchmarks |
+| `UD-Q4_K_XL` | 175,673,856 B | `ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493` | benchmarks |
+| `UD-Q5_K_XL` | 210,055,680 B | `a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5bb983db7c7ac41` | CI, release, golden gates |
 | `UD-Q6_K_XL` | 248,812,032 B | `dc84f042bc3ffbe6122b3b38b2fb299d66f5f37b276c9d458db85d4a4f1e6ba3` | benchmarks |
 | `Q8_0` | 309,855,520 B | `6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc` | benchmarks |
 | `BF16` | 557,950,240 B | `f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f` | benchmarks, precision checks |
@@ -99,7 +99,7 @@ The engine reads only the fields below. Unknown fields such as `quant` are ignor
   "target_id": "unsloth/embeddinggemma-2-GGUF",
   "model_metadata": {
     "model_format": "gguf",
-    "quant": "UD-Q4_K_XL",
+    "quant": "UD-Q5_K_XL",
     "pooling": "mean",
     "input_kind": "retrieval",
     "query_prefix": "task: search result | query: ",
@@ -157,7 +157,7 @@ cd gguf_bundle && sha256sum -c SHA256SUMS
 ## Assembling a bundle
 
 ```bash
-python3 scripts/assemble_gguf_bundle.py gguf_bundle                 # UD-Q4_K_XL
+python3 scripts/assemble_gguf_bundle.py gguf_bundle                 # UD-Q5_K_XL
 python3 scripts/assemble_gguf_bundle.py gguf_bundle-q8 --quant Q8_0
 # Also the tests' reference tokenizer.json, outside the bundle:
 python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json

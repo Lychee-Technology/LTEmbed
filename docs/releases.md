@@ -9,15 +9,15 @@ crates.io.
 
 ## What a release tarball contains
 
-One tarball per matrix entry. There is currently one entry, `UD-Q4_K_XL`:
+One tarball per matrix entry. There is currently one entry, `UD-Q5_K_XL`:
 
 ```
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64.tar.gz
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64.tar.gz.sha256
-└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q4_K_XL-linux-arm64/
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.sha256
+└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64/
     ├── <source tree>      git archive of the commit being built
     └── gguf_bundle/
-        ├── model.gguf         embeddinggemma-2-UD-Q4_K_XL.gguf
+        ├── model.gguf         embeddinggemma-2-UD-Q5_K_XL.gguf
         ├── build-info.json
         ├── SHA256SUMS
         └── provenance.json
@@ -90,40 +90,42 @@ The repository has no release script. Based on the workflow, the steps are:
 To try the packaging without publishing anything, run the workflow by hand
 (`workflow_dispatch`) and download the workflow artifact.
 
-## Why UD-Q4_K_XL
+## Why UD-Q5_K_XL
 
-The release and CI bundles use `embeddinggemma-2-UD-Q4_K_XL.gguf`, Unsloth's dynamic 4-bit
+The release and CI bundles use `embeddinggemma-2-UD-Q5_K_XL.gguf`, Unsloth's dynamic 5-bit
 quant, from [`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF)
-at revision `031f0d4b…`. It is the smallest pinned quant, it meets the size budget, and its
-quantization error is within the gates the tests apply:
+at revision `031f0d4b…`. It is the most accurate pinned quant that meets the size budget:
 
-| GGUF | Bundle | Fits 230 MiB | Golden cosine, min / mean (768) |
-|---|---|---|---|
-| `UD-Q4_K_XL` | 175.7 MB (167.5 MiB) | yes | 0.98944 / 0.99471 |
-| `UD-Q5_K_XL` | 210.1 MB (200.3 MiB) | yes | 0.9969 / 0.9985 |
-| `UD-Q6_K_XL` | 248.8 MB (237.3 MiB) | no | 0.9983 / 0.9992 |
-| `Q8_0` | 309.9 MB (295.5 MiB) | no | 0.9996 / 0.99985 |
-| `BF16` | 558.0 MB (532.1 MiB) | no | ≥ 0.99999 |
+| GGUF | Bundle | Fits 230 MiB | Golden cosine, min / mean (768) | CN/EN min (512) |
+|---|---|---|---|---|
+| `UD-Q4_K_XL` | 175.7 MB (167.5 MiB) | yes | 0.98944 / 0.99471 | 0.9614 |
+| `UD-Q5_K_XL` | 210.1 MB (200.3 MiB) | yes | 0.99690 / 0.99849 | 0.9911 |
+| `UD-Q6_K_XL` | 248.8 MB (237.3 MiB) | no | 0.9983 / 0.9992 | 0.9949 |
+| `Q8_0` | 309.9 MB (295.5 MiB) | no | 0.9996 / 0.99985 | 0.9986 |
+| `BF16` | 558.0 MB (532.1 MiB) | no | ≥ 0.99999 | 0.9999 |
 
 - **Size**: the 230 MiB budget is the AWS Lambda unzipped package limit of 250 MiB minus a
   20 MiB allowance for a binary (see [AWS Lambda](#aws-lambda)). A bundle is its GGUF plus
-  about 1.4 KB of `build-info.json`, `SHA256SUMS` and `provenance.json`. Since the bundle
-  dropped the 32 MB `tokenizer.json`, `UD-Q5_K_XL` fits the budget too.
-- **Why not `UD-Q5_K_XL`**: the test gates and the llama.cpp reference fixture are
-  calibrated for `UD-Q4_K_XL`, and the benchmark report recommends the smallest bundle that
-  passes its quality gate, which is still `UD-Q4_K_XL`. Shipping `UD-Q5_K_XL` would be a
-  separate change: recalibrate the gates and regenerate the llama.cpp reference for both
-  variants on it.
+  about 1.4 KB of `build-info.json`, `SHA256SUMS` and `provenance.json`. `UD-Q5_K_XL` has
+  fitted since the bundle dropped the 32 MB `tokenizer.json`; `UD-Q6_K_XL` does not.
 - **Parity**: cosine of LTEmbed's output against the PyTorch F32 golden over 25 inputs of
-  up to 8192 tokens, measured on x86-64-v3 (aarch64: minimum 0.98985, mean 0.99485). At the
-  default 512 dimensions the release quant scores a minimum of 0.98972 and a mean of
-  0.99486. Its worst input is a Python code snippet. The test gates are 0.985 per input and 0.993 on average; see
-  [testing.md](./testing.md#gates-and-how-they-were-set) for how they were set.
-- **Tail**: over 2000 short Chinese and English sentences, 1% drift below 0.985, down to
-  0.9614, while retrieval recall stays at the F32 model's level; `UD-Q5_K_XL`'s worst is
-  0.9911 ([benchmarking.md](./benchmarking.md#recorded-results)).
-- The previous model's gate of 0.99 per input is not met by this 4-bit quant on its worst
-  input. Where the size budget does not apply, `Q8_0` is the closest to the F32 model;
+  up to 8192 tokens, measured on x86-64-v3 (aarch64: TODO(aarch64), from the aarch64
+  llama.cpp reference). At the default 512 dimensions the release quant scores a minimum of
+  0.99702 and a mean of 0.99852. Its worst input is a Rust code snippet. The test gate is
+  0.995 for every input at every width; see
+  [testing.md](./testing.md#gates-and-how-they-were-set) for how it was set.
+- **Tail**: over 2000 short Chinese and English sentences at 512 dimensions, the lowest
+  cosine is 0.9911, the 1st percentile 0.9962, and 10 texts (0.5%) fall below 0.995; recall
+  stays at the F32 model's level ([benchmarking.md](./benchmarking.md#recorded-results)).
+- **Why not `UD-Q4_K_XL`**, the release quant before: it is 32.8 MiB smaller and faster on
+  short inputs (`single/zh` 18.4 ms against 24.6 ms at 6 threads on x86-64-v3; about the
+  same at 4075 tokens, 5374 ms against 5288 ms), with the same recall on the CN/EN set. But 1% of those 2000 sentences fall
+  below 0.985, down to 0.9614, so its vectors drift further from the model's on short
+  text. The benchmark report still recommends it, because its quality gate is a mean
+  cosine of 0.99 and it picks the smallest bundle that passes
+  ([benchmarking.md](./benchmarking.md#how-the-report-recommends-a-quant)); that gate does
+  not see the tail. `scripts/assemble_gguf_bundle.py --quant UD-Q4_K_XL` still builds it.
+- Where the size budget does not apply, `Q8_0` is the closest to the F32 model;
   `scripts/assemble_gguf_bundle.py --quant Q8_0` builds that bundle.
 
 The `benchmark-arm64` workflow re-checks the size budget and a quality gate for any set of

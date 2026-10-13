@@ -66,7 +66,7 @@ GGUF_FILES = {
     "BF16": ("embeddinggemma-2-BF16.gguf",
              "f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f"),
 }
-DEFAULT_QUANT = "UD-Q4_K_XL"
+DEFAULT_QUANT = "UD-Q5_K_XL"
 
 # Unsloth's safetensors copy of the model: the GGUF repository has no tokenizer.json. Its
 # revision is also the golden fixture's model revision (scripts/generate_fixtures.py).

@@ -13,7 +13,7 @@ llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README]
 | Set up a dev environment, including on macOS or x86_64 | [development.md](./development.md) |
 | Know what the tests cover and what CI runs | [testing.md](./testing.md) |
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
-| Cut a release or see why UD-Q4_K_XL was chosen | [releases.md](./releases.md) |
+| Cut a release or see why UD-Q5_K_XL was chosen | [releases.md](./releases.md) |
 | Move an existing index from the previous model | [model-migration.md](./model-migration.md) |
 | Use the Python benchmark and fixture scripts | [scripts/README.md](../scripts/README.md) |
 | Follow the Rust coding conventions | [rust-coding-std.md](./rust-coding-std.md) |

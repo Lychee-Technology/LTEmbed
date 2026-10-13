@@ -41,7 +41,7 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 4. `cargo test --test benchmarking_support_tests --bin benchmark_ltembed`
 5. `cargo check --example api_usage`
 6. `python3 scripts/assemble_gguf_bundle.py ci_gguf_bundle --reference-tokenizer
-   ci_reference_tokenizer.json`: the UD-Q4_K_XL GGUF at its pinned Hugging Face revision,
+   ci_reference_tokenizer.json`: the UD-Q5_K_XL GGUF at its pinned Hugging Face revision,
    and the model's `tokenizer.json` at its own, outside the bundle, each checked against its
    pinned sha256 (see [bundle-format.md](./bundle-format.md#assembling-a-bundle)); then
    export `LTEMBED_TEST_BUNDLE_DIR` and `LTEMBED_TEST_REFERENCE_TOKENIZER`.
@@ -97,7 +97,7 @@ The `build-info.json` range check for `max_length` (`1..=8192`) is covered by un
 
 | Test | Checks |
 |---|---|
-| `test_golden_parity_at_every_trained_dimension` | The 21 short golden inputs at widths 768, 512, 256 and 128: width, finite values, unit norm, cosine ≥ 0.985 per input and ≥ 0.993 on average against the golden truncated to that width, and each query ranks its relevant document first |
+| `test_golden_parity_at_every_trained_dimension` | The 22 golden inputs of at most 512 tokens, at widths 768, 512, 256 and 128: width, finite values, unit norm, cosine ≥ 0.995 for each input against the golden truncated to that width, and each query ranks its relevant document first |
 | `test_llama_cpp_reference_parity` | All 25 golden inputs, up to 8192 tokens: the GGUF's sha256 is the one the reference was generated from; the raw 768-wide vector has cosine ≥ 0.99999 and a norm within 1e-4 of the reference for this variant; and each input passes the per-input golden gate at 768 and 512. The token ids the reference recorded are checked by the [tokenizer parity tests](#tokenizer-parity). |
 | `test_embed_batch_matches_single_embeds_and_repeats_exactly` | `embed_batch` returns one vector per input, in order, bit-identical to embedding each alone, and repeating the call returns bit-identical vectors |
 | `test_query_and_document_prompts_differ` | The same text as a query and as a document gives different vectors |
@@ -111,7 +111,7 @@ The `build-info.json` range check for `max_length` (`1..=8192`) is covered by un
 | `test_gguf_without_eos_returns_model_load_error` | A copy of the GGUF with `tokenizer.ggml.add_eos_token` set to false fails the load-time tokenization check, naming the missing EOS. A copy without `add_bos_token` would still load: llama.cpp forces it on for this tokenizer, so the BOS half of the check has unit tests only. |
 
 The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error` and
-`test_gguf_without_eos_returns_model_load_error`, about 176 MB each, go to Cargo's
+`test_gguf_without_eos_returns_model_load_error`, about 210 MB each, go to Cargo's
 integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
 than `/tmp`, and are removed afterwards, even when the test fails. No crafted
 GGUF is committed. The tests that swap one bundle file symlink the others instead of
@@ -186,16 +186,17 @@ versions (`sentence-transformers` 6.1.0, `transformers` 5.19.0, `torch` 2.14.1+c
 ### Gates and how they were set
 
 Quantization moves a vector away from the F32 reference; an implementation mistake (wrong
-prompt, pooling, tokenizer or width) moves it further. The gates sit between the two:
-per-input cosine ≥ **0.985**, mean ≥ **0.993**, at every width.
+prompt, pooling, tokenizer or width) moves it further. The gate sits between the two: cosine
+≥ **0.995** for every input, at every width. There is no separate mean gate: every input
+must reach 0.995, so the mean does too.
 
 Cosine of LTEmbed's output against the golden, over all 25 inputs at 768 dimensions, for
 each GGUF of the pinned revision (x86-64-v3, flash attention on):
 
 | GGUF | Minimum | Mean |
 |---|---|---|
-| `UD-Q4_K_XL` (release) | 0.98944 | 0.99471 |
-| `UD-Q5_K_XL` | 0.9969 | 0.9985 |
+| `UD-Q4_K_XL` | 0.98944 | 0.99471 |
+| `UD-Q5_K_XL` (release) | 0.99690 | 0.99849 |
 | `UD-Q6_K_XL` | 0.9983 | 0.9992 |
 | `Q8_0` | 0.9996 | 0.99985 |
 | `BF16` | 0.99999 | 0.99999+ |
@@ -203,18 +204,20 @@ each GGUF of the pinned revision (x86-64-v3, flash attention on):
 `BF16` agrees with the F32 reference on every input, including the 8192-token one, so
 tokenization, prompts, pooling, projection and LTEmbed's attention settings are right and
 the remaining gap is weight quantization, which shrinks with each larger quant. For the
-release quant at the other widths: 512, minimum 0.98972 and mean 0.99486; 256, minimum
-0.98998 and mean 0.99530; 128, minimum 0.99415 and mean 0.99685. On aarch64 the release
+release quant at the other widths: 512, minimum 0.99702 and mean 0.99852; 256, minimum
+0.99730 and mean 0.99869; 128, minimum 0.99829 and mean 0.99911. Its worst input is a Rust
+code snippet at 768 and 512, and a Python one at 256 and 128. On aarch64 the release
 quant's vectors differ slightly (see the llama.cpp reference below); there the minimum at
-768 is 0.98985 and the mean 0.99485, from the aarch64 reference vectors that LTEmbed must
-match.
+768 is TODO(aarch64) and the mean TODO(aarch64), from the aarch64 reference vectors that
+LTEmbed must match.
 
-The previous model's gate was 0.99 per input. The 4-bit release GGUF cannot meet that: its
-worst input, a Python code snippet, scores 0.9894. The gates hold for these 25 inputs, not
-for every text: over 2000 short CN/EN sentences, 1% of the release quant's vectors fall below
-0.985 ([benchmarking.md](./benchmarking.md#recorded-results)). Keeping 0.99 would fail correct output;
-the gates were set just below the measured quantization error instead, and the llama.cpp
-reference test below catches implementation errors with a far tighter gate.
+The gate was set just below that measured error. Until the release moved from `UD-Q4_K_XL`
+to `UD-Q5_K_XL`, the gates were 0.985 per input and 0.993 on average, just below the 4-bit
+quant's error; the previous model's gate was 0.99 per input. The gate holds for these 25
+inputs, not for every text: over 2000 short CN/EN sentences at 512 dimensions, 10 of the
+release quant's vectors (0.5%) fall below 0.995, the lowest at 0.9911
+([benchmarking.md](./benchmarking.md#recorded-results)). The llama.cpp reference test below
+catches implementation errors with a far tighter gate.
 
 ### How sensitive the gates are
 
@@ -228,8 +231,8 @@ correct embedding, over the 21 short inputs:
 | The previous model's `Query: `/`Document: ` prompts | 0.929 | per-input gate |
 | Last-token pooling | 0.880 | per-input gate |
 | First-token pooling | 0.871 | per-input gate |
-| Prompt applied twice | 0.9985 (median 0.991) | mean gate; llama.cpp reference |
-| `<eos>` missing | 0.9856 (median 0.973) | mean gate; load-time tokenization check |
+| Prompt applied twice | 0.9985 (median 0.991) | per-input gate; llama.cpp reference |
+| `<eos>` missing | 0.9856 (median 0.973) | per-input gate; load-time tokenization check |
 
 Every mistake also fails the llama.cpp reference test, which uses the correct prompt and
 the GGUF's own tokenizer.

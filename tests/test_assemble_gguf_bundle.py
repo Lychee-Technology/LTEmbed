@@ -38,10 +38,10 @@ class AssembleTests(unittest.TestCase):
         self.gguf.write_bytes(b"GGUF fake weights")
         self.tokenizer = self.tmp / "tokenizer-source.json"
         self.tokenizer.write_bytes(b'{"model": {}}')
+        quant = self.module.DEFAULT_QUANT
         self.enterContext(mock.patch.dict(
             self.module.GGUF_FILES,
-            {"UD-Q4_K_XL": ("embeddinggemma-2-UD-Q4_K_XL.gguf",
-                            sha256(self.gguf.read_bytes()))},
+            {quant: (f"embeddinggemma-2-{quant}.gguf", sha256(self.gguf.read_bytes()))},
         ))
         self.enterContext(mock.patch.object(
             self.module, "TOKENIZER_SHA256", sha256(self.tokenizer.read_bytes())
@@ -49,7 +49,8 @@ class AssembleTests(unittest.TestCase):
         self.enterContext(mock.patch.dict("os.environ", {"GITHUB_SHA": "abc123"}))
 
     def assemble(self, destination, **kwargs):
-        return self.module.assemble(destination, "UD-Q4_K_XL", kwargs.get("gguf", self.gguf))
+        return self.module.assemble(destination, self.module.DEFAULT_QUANT,
+                                    kwargs.get("gguf", self.gguf))
 
     def main(self, *argv):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -66,7 +67,7 @@ class AssembleTests(unittest.TestCase):
         self.assertNotIn("tokenizer.json", self.module.OUTPUT_FILES)
         self.assertEqual(
             json.loads((bundle / "build-info.json").read_text(encoding="utf-8")),
-            self.module.build_info("UD-Q4_K_XL"),
+            self.module.build_info(self.module.DEFAULT_QUANT),
         )
         sums = (bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
         self.assertEqual(sums, [f"{hashes[n]}  {n}" for n in self.module.BUNDLE_FILES])
@@ -162,7 +163,7 @@ class PinTests(unittest.TestCase):
             self.assertIsNotNone(match, name)
             return json.loads(match.group(1))
 
-        metadata = module.build_info("UD-Q4_K_XL")["model_metadata"]
+        metadata = module.build_info(module.DEFAULT_QUANT)["model_metadata"]
         self.assertEqual(metadata["query_prefix"], constant("QUERY_PREFIX"))
         self.assertEqual(metadata["document_prefix"], constant("DOCUMENT_PREFIX"))
         self.assertEqual(metadata["raw_embedding_dimension"], constant("RAW_EMBEDDING_DIMENSION"))
@@ -173,12 +174,12 @@ class PinTests(unittest.TestCase):
 
     def test_build_info_is_the_documented_one_for_the_release_quant(self):
         module = load_module()
-        self.assertEqual(module.DEFAULT_QUANT, "UD-Q4_K_XL")
-        self.assertEqual(module.build_info("UD-Q4_K_XL"), {
+        self.assertEqual(module.DEFAULT_QUANT, "UD-Q5_K_XL")
+        self.assertEqual(module.build_info("UD-Q5_K_XL"), {
             "target_id": "unsloth/embeddinggemma-2-GGUF",
             "model_metadata": {
                 "model_format": "gguf",
-                "quant": "UD-Q4_K_XL",
+                "quant": "UD-Q5_K_XL",
                 "pooling": "mean",
                 "input_kind": "retrieval",
                 "query_prefix": "task: search result | query: ",

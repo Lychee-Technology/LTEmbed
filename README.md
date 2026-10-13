@@ -2,7 +2,7 @@
 
 LTEmbed is a Rust library that turns text into embedding vectors for retrieval. It runs
 [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) on the CPU through
-**llama.cpp**, using the 4-bit **GGUF** `embeddinggemma-2-UD-Q4_K_XL.gguf` from
+**llama.cpp**, using the 5-bit **GGUF** `embeddinggemma-2-UD-Q5_K_XL.gguf` from
 [`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF). Its
 entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
 
@@ -32,7 +32,7 @@ The engine loads a directory with two files:
 
 | File | Contents |
 |---|---|
-| `model.gguf` | The GGUF model. CI and releases use the `UD-Q4_K_XL` quant. |
+| `model.gguf` | The GGUF model. CI and releases use the `UD-Q5_K_XL` quant. |
 | `build-info.json` | Metadata: format, pooling, query/document prefixes, dimensions, max length |
 
 Inputs are tokenized with the GGUF's own vocabulary; the bundle has no `tokenizer.json`.
@@ -108,7 +108,7 @@ Download steps and the container setup for other hosts are in
 | [Development](./docs/development.md) | Toolchain, static llama.cpp release, containers, hooks |
 | [Testing](./docs/testing.md) | Test suites, fixtures, what CI runs |
 | [Benchmarking](./docs/benchmarking.md) | Latency, parity and retrieval benchmarks, recorded results |
-| [Releases](./docs/releases.md) | Release tarballs, why UD-Q4_K_XL |
+| [Releases](./docs/releases.md) | Release tarballs, why UD-Q5_K_XL |
 | [Model migration](./docs/model-migration.md) | Moving an index from the previous model |
 | [Scripts](./scripts/README.md) | Python benchmark and fixture tools |
 

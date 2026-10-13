@@ -151,7 +151,7 @@ mod tests {
             "target_id": "unsloth/embeddinggemma-2-GGUF",
             "model_metadata": {
                 "model_format": "gguf",
-                "quant": "UD-Q4_K_XL",
+                "quant": "UD-Q5_K_XL",
                 "pooling": "mean",
                 "input_kind": "retrieval",
                 "query_prefix": "task: search result | query: ",

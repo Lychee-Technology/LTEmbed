@@ -3,7 +3,7 @@
 Generate the quantized reference: upstream llama.cpp's own embedding tool on the release GGUF.
 
 The golden fixture (scripts/generate_fixtures.py) is the F32 PyTorch model. LTEmbed runs a
-4-bit GGUF, so it can only approach that reference to within quantization error. This script
+5-bit GGUF, so it can only approach that reference to within quantization error. This script
 records what upstream llama.cpp itself computes for the same GGUF and inputs, so that the
 tests can tell the two apart: LTEmbed must reproduce this reference almost exactly (any gap
 is an LTEmbed tokenization, prefix, pooling or FFI error), while the gap between this
@@ -25,7 +25,7 @@ Requirements: Python 3 only (no third-party packages).
 
 Usage:
     python3 scripts/generate_llama_cpp_reference.py --variant x86_64-v3 \\
-        --tool /path/to/llama-embedding --gguf /path/to/embeddinggemma-2-UD-Q4_K_XL.gguf
+        --tool /path/to/llama-embedding --gguf /path/to/embeddinggemma-2-UD-Q5_K_XL.gguf
 
 Output:
     tests/fixtures/llama_cpp_reference.json (the variant's section is replaced, others kept)
@@ -47,8 +47,8 @@ STATIC_RELEASE = "v0.1.159-2"
 GGUF = {
     "repo": "unsloth/embeddinggemma-2-GGUF",
     "revision": "031f0d4b35536f69ab3509d4893c923264fcf253",
-    "file": "embeddinggemma-2-UD-Q4_K_XL.gguf",
-    "sha256": "ea905fd08e8061db77a0031cbb5096d459d7cfd2bdd0ad2ba66e483f16719493",
+    "file": "embeddinggemma-2-UD-Q5_K_XL.gguf",
+    "sha256": "a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5bb983db7c7ac41",
 }
 # SHA-256 of each variant's release archive, as pinned in .github/workflows/ci.yml
 # (tests/test_reference_generators.py checks that they agree).

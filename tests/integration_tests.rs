@@ -25,13 +25,12 @@ const REQUIRE_TEST_BUNDLE_ENV: &str = "LTEMBED_REQUIRE_TEST_BUNDLE";
 const ENGINE_BUNDLE_FILES: &[&str] = &["model.gguf"];
 
 /// Lowest cosine allowed between the engine's output and the F32 PyTorch golden, per input
-/// and at every width. The release GGUF is 4-bit: measured against the golden, UD-Q4_K_XL
-/// reaches 0.9894 at worst (a Python snippet at 768 dimensions) and the BF16 GGUF of the same
+/// and at every width. The release GGUF is 5-bit: measured against the golden, UD-Q5_K_XL
+/// reaches 0.9969 at worst (a Rust snippet at 768 dimensions) and the BF16 GGUF of the same
 /// revision 0.99999 through this same engine, so the gap is weight quantization. Semantic
-/// mistakes fall far below the gate (docs/testing.md § "Golden fixture").
-const GOLDEN_MIN_COSINE: f64 = 0.985;
-/// Lowest mean cosine over the golden inputs at each width (measured: 0.9947 at 768).
-const GOLDEN_MIN_MEAN_COSINE: f64 = 0.993;
+/// mistakes fall far below the gate (docs/testing.md § "Golden fixture"). Every input must
+/// pass it, so it also bounds the mean.
+const GOLDEN_MIN_COSINE: f64 = 0.995;
 /// Lowest cosine allowed between the engine's raw vector and upstream llama.cpp's own
 /// embedding tool on the same GGUF, kernels and settings (measured: identical up to the
 /// tool's 7-decimal output). Anything lower is an LTEmbed error, not quantization.
@@ -402,7 +401,7 @@ fn valid_build_info() -> serde_json::Value {
         "target_id": "unsloth/embeddinggemma-2-GGUF",
         "model_metadata": {
             "model_format": "gguf",
-            "quant": "UD-Q4_K_XL",
+            "quant": "UD-Q5_K_XL",
             "pooling": "mean",
             "input_kind": "retrieval",
             "query_prefix": "task: search result | query: ",
@@ -769,11 +768,6 @@ fn test_golden_parity_at_every_trained_dimension() {
         let mean = cosines.iter().sum::<f64>() / cosines.len() as f64;
         let min = cosines.iter().copied().fold(f64::INFINITY, f64::min);
         report.push(format!("{dim}: min {min:.6} mean {mean:.6}"));
-        if mean < GOLDEN_MIN_MEAN_COSINE {
-            failures.push(format!(
-                "mean cosine {mean:.6} at {dim} < {GOLDEN_MIN_MEAN_COSINE}"
-            ));
-        }
 
         let documents: Vec<(&Fixture, &Vec<f32>)> = fixtures
             .iter()
@@ -1042,7 +1036,7 @@ fn test_gguf_without_mean_pooling_returns_model_load_error() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    // The GGUF copy is about 176 MB.
+    // The GGUF copy is about 210 MB.
     let temp_dir = TempDir::new();
     link_bundle_files(&bundle_dir, temp_dir.path(), &["build-info.json"]);
     let gguf = GgufFile::read(&bundle_dir.join("model.gguf"));
@@ -1068,7 +1062,7 @@ fn test_gguf_without_eos_returns_model_load_error() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    // The GGUF copy is about 176 MB.
+    // The GGUF copy is about 210 MB.
     let temp_dir = TempDir::new();
     link_bundle_files(&bundle_dir, temp_dir.path(), &["build-info.json"]);
     let key = "tokenizer.ggml.add_eos_token";

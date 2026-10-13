@@ -35,9 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # UD-Q4_K_XL is the quant LTEmbed's CI tests and the golden gates are calibrated
+          # UD-Q5_K_XL is the quant LTEmbed's CI tests and the golden gates are calibrated
           # for. See docs/releases.md.
-          - quant: UD-Q4_K_XL
+          - quant: UD-Q5_K_XL
             expected_model_id: unsloth/embeddinggemma-2-GGUF
             output_dimension: 512
             l2_normalize: true

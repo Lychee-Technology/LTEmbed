@@ -10,7 +10,7 @@ LTEmbed is a Rust text-embedding library centered on `EmbeddingEngine`.
 
 The current `main` branch uses:
 
-- llama.cpp / GGUF for inference, running EmbeddingGemma 2 (`unsloth/embeddinggemma-2-GGUF`, `UD-Q4_K_XL`);
+- llama.cpp / GGUF for inference, running EmbeddingGemma 2 (`unsloth/embeddinggemma-2-GGUF`, `UD-Q5_K_XL`);
 - statically linked llama.cpp/ggml artifacts;
 - tokenization with the GGUF's own vocabulary (llama.cpp `llama_tokenize`): the library has no `tokenizer.json` and no `tokenizers` dependency;
 - typed query/document retrieval inputs;

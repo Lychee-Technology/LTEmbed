@@ -15,7 +15,7 @@ llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README]
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
 | Cut a release or see why UD-Q5_K_XL was chosen | [releases.md](./releases.md) |
 | See the model's license and attribution | [licenses/embeddinggemma-2/NOTICE.md](../licenses/embeddinggemma-2/NOTICE.md) |
-| Move an existing index from the previous model | [model-migration.md](./model-migration.md) |
+| Move an existing index from the previous model, or update code that used `HFTokenizer` | [model-migration.md](./model-migration.md) |
 | Use the Python benchmark and fixture scripts | [scripts/README.md](../scripts/README.md) |
 | Follow the Rust coding conventions | [rust-coding-std.md](./rust-coding-std.md) |
 

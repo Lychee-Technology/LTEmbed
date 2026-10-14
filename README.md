@@ -109,7 +109,7 @@ Download steps and the container setup for other hosts are in
 | [Testing](./docs/testing.md) | Test suites, fixtures, what CI runs |
 | [Benchmarking](./docs/benchmarking.md) | Latency, parity and retrieval benchmarks, recorded results |
 | [Releases](./docs/releases.md) | Release tarballs, why UD-Q5_K_XL |
-| [Model migration](./docs/model-migration.md) | Moving an index from the previous model |
+| [Model migration](./docs/model-migration.md) | Moving an index from the previous model; the Rust API changes (`HFTokenizer` removed) |
 | [Scripts](./scripts/README.md) | Python benchmark and fixture tools |
 
 The full index, including archived design documents, is [docs/README.md](./docs/README.md).

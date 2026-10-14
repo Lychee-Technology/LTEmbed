@@ -1,5 +1,8 @@
+import contextlib
 import importlib.util
+import io
 import re
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,20 +18,30 @@ except ModuleNotFoundError:  # heavy optional deps; CI's python-tests job runs w
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "bench_pytorch.py"
+ORCHESTRATOR_PATH = ROOT / "scripts" / "run_embedding_benchmarks.py"
 ENGINE_PATH = ROOT / "src" / "engine" / "mod.rs"
 
 
-def load_module():
-    spec = importlib.util.spec_from_file_location("bench_pytorch", MODULE_PATH)
+def load_module(path=MODULE_PATH, name="bench_pytorch"):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
 
+# The raw pooled and projected vector per kind, before the pipeline's final Normalize: the
+# vector LTEmbed returns with l2_normalize off. Far from unit norm, as the real one is.
+RAW = None if torch is None else {
+    "query": np.arange(1, 769, dtype=np.float32) * 3.0,
+    "document": np.linspace(-2.0, 5.0, 768, dtype=np.float32) * 700.0,
+}
+
+
 class FakeModel:
     """Stands in for a SentenceTransformer: records each encode call and returns a fixed
-    768-wide vector per kind."""
+    768-wide vector per kind. Like the real pipeline, whose last module is Normalize, it
+    returns the RAW vector normalized."""
 
     def __init__(self, prompts, tokens=5, dtype=None):
         self.prompts = prompts
@@ -51,8 +64,8 @@ class FakeModel:
 
     def encode(self, texts, prompt_name, batch_size, convert_to_numpy):
         self.calls.append((list(texts), prompt_name, batch_size))
-        value = 1.0 if prompt_name == "query" else 2.0
-        return np.full((len(texts), 768), value, dtype=np.float32)
+        raw = RAW[prompt_name]
+        return np.tile(raw / np.linalg.norm(raw), (len(texts), 1))
 
 
 @unittest.skipUnless(torch is not None, "torch/sentence-transformers not installed")
@@ -87,16 +100,45 @@ class BenchPyTorchTests(unittest.TestCase):
         for embedding in embeddings:
             self.assertAlmostEqual(float(np.linalg.norm(embedding)), 1.0, places=6)
 
-    def test_embed_texts_respects_output_dimension_and_normalization(self):
+    def test_embed_texts_gives_ltembeds_normalized_direction_at_every_width(self):
+        # The pipeline's Normalize has removed the magnitude: what is left is the direction
+        # of the raw vector truncated to the width, which LTEmbed returns with l2_normalize on.
         bench = load_module()
-        embeddings = bench.embed_texts(
-            FakeModel(bench.PROMPTS),
-            [{"kind": "document", "text": "d"}],
-            output_dimension=bench.RAW_DIM,
-            l2_normalize=False,
+        for width in (768, 512, 256, 128):
+            [embedding] = bench.embed_texts(
+                FakeModel(bench.PROMPTS),
+                [{"kind": "document", "text": "d"}],
+                output_dimension=width,
+            )
+            truncated = RAW["document"][:width]
+            np.testing.assert_allclose(embedding, truncated / np.linalg.norm(truncated),
+                                       rtol=1e-5, atol=1e-7)
+
+    def test_there_is_no_unnormalized_mode(self):
+        bench = load_module()
+        argv = ["bench_pytorch.py", "--mode", "retrieval", "--model-name-or-path", "m",
+                "--l2-normalize", "false"]
+        with mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                self.assertRaises(SystemExit):
+            bench.parse_args()
+        self.assertIn("unrecognized arguments: --l2-normalize false", stderr.getvalue())
+
+    def test_parse_args_accepts_the_orchestrators_command(self):
+        bench = load_module()
+        orchestrator = load_module(ORCHESTRATOR_PATH, "run_embedding_benchmarks")
+        args = SimpleNamespace(
+            model_dir=Path("model"), output_dimension=256, l2_normalize=False, threads=2,
+            warmup=1, iters=2, retrieval_eval_path=Path("cases.json"),
+            resolved_fixture_path=Path("fixture.json"),
         )
-        self.assertEqual(len(embeddings[0]), bench.RAW_DIM)
-        self.assertEqual(embeddings[0][0], 2.0)
+        command = orchestrator.build_benchmark_command("pytorch", "retrieval", args)
+        self.assertEqual(Path(command[1]), MODULE_PATH)
+        with mock.patch.object(sys, "argv", command[1:]):
+            parsed = bench.parse_args()
+        self.assertEqual((parsed.mode, parsed.output_dimension, parsed.threads),
+                         ("retrieval", 256, 2))
+        self.assertEqual(parsed.retrieval_eval_path, Path("cases.json"))
 
     def test_embed_texts_rejects_input_over_max_length_instead_of_truncating(self):
         bench = load_module()

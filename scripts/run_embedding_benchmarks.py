@@ -293,8 +293,6 @@ def _append_shared_benchmark_args(
         [
             "--output-dimension",
             str(args.output_dimension),
-            "--l2-normalize",
-            "true" if args.l2_normalize else "false",
             "--threads",
             str(args.threads),
         ]
@@ -321,8 +319,10 @@ def build_benchmark_command(
 ) -> list[str]:
     if implementation == "ltembed":
         command = ltembed_launch_prefix(getattr(args, "ltembed_cargo_features", ""))
-        command.extend(["--mode", mode, "--bundle-dir", str(args.bundle_dir)])
+        command.extend(["--mode", mode, "--bundle-dir", str(args.bundle_dir),
+                        "--l2-normalize", "true" if args.l2_normalize else "false"])
     else:
+        # bench_pytorch.py has no --l2-normalize: its vectors are always unit-norm.
         command = [
             sys.executable,
             str(ROOT / "scripts" / "bench_pytorch.py"),
@@ -873,7 +873,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional single scenario name to run instead of the full suite.",
     )
     parser.add_argument("--output-dimension", type=int, default=512)
-    parser.add_argument("--l2-normalize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--l2-normalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="LTEmbed's L2 normalization. The PyTorch reference is always unit-norm; every "
+        "comparison with it is by cosine.",
+    )
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument(

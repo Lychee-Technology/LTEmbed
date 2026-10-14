@@ -7,6 +7,14 @@ included, then L2 normalization) in float32 on the CPU, with the model's "query"
 "document" prompts, the same way scripts/generate_fixtures.py builds the golden fixture.
 Outputs machine-readable JSON for retrieval correctness. It never runs LTEmbed or a GGUF.
 
+Every vector it returns is unit-norm. The pipeline's last module is the model's own
+Normalize, so the magnitude is gone before this script sees the vector; it truncates to
+--output-dimension and normalizes again, which gives the direction LTEmbed returns with
+l2_normalize on, at any width. There is no unnormalized mode: the orchestrator compares
+these vectors with LTEmbed's by cosine and normalizes both before ranking. LTEmbed's
+unnormalized output is checked against upstream llama.cpp instead
+(tests/fixtures/llama_cpp_reference.json).
+
 Only the text tower is loaded (`vision_config=None, audio_config=None`).
 
 Requirements (CPU wheels are enough):
@@ -46,19 +54,7 @@ def emit_progress(mode: str, scenario_name: str, state: str) -> None:
     print(progress_label(mode, scenario_name, state), file=sys.stderr, flush=True)
 
 
-def parse_bool_arg(value: str) -> bool:
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise argparse.ArgumentTypeError("expected 'true' or 'false'")
-
-
-def truncate_and_normalize(
-    v: np.ndarray,
-    output_dimension: int = OUTPUT_DIM,
-    l2_normalize: bool = True,
-) -> np.ndarray:
+def truncate_and_normalize(v: np.ndarray, output_dimension: int = OUTPUT_DIM) -> np.ndarray:
     if v.shape[-1] != RAW_DIM:
         raise ValueError(f"expected raw dimension {RAW_DIM}, got {v.shape[-1]}")
     if output_dimension <= 0 or output_dimension > RAW_DIM:
@@ -66,8 +62,6 @@ def truncate_and_normalize(
             f"expected output dimension in [1, {RAW_DIM}], got {output_dimension}"
         )
     truncated = v[..., :output_dimension]
-    if not l2_normalize:
-        return truncated
     norm = np.linalg.norm(truncated, axis=-1, keepdims=True)
     return truncated / np.maximum(norm, 1e-12)
 
@@ -109,9 +103,9 @@ def embed_texts(
     model,
     texts: list[dict[str, str]],
     output_dimension: int = OUTPUT_DIM,
-    l2_normalize: bool = True,
 ) -> list[list[float]]:
-    """Embed each text with its kind's prompt, one at a time (no padding), like LTEmbed.
+    """Embed each text with its kind's prompt, one at a time (no padding), like LTEmbed, as
+    a unit-norm vector of `output_dimension` values.
 
     Raises instead of truncating an input longer than MAX_LENGTH tokens, as LTEmbed does.
     """
@@ -130,12 +124,7 @@ def embed_texts(
             )[0]
             rows.append(np.asarray(embedding, dtype=np.float32))
     pooled = np.stack(rows) if rows else np.zeros((0, RAW_DIM), dtype=np.float32)
-    normalized = truncate_and_normalize(
-        pooled,
-        output_dimension=output_dimension,
-        l2_normalize=l2_normalize,
-    )
-    return normalized.tolist()
+    return truncate_and_normalize(pooled, output_dimension=output_dimension).tolist()
 
 
 def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
@@ -168,7 +157,6 @@ def retrieval_payload(args) -> dict[str, object]:
                             model,
                             [{"kind": "query", "text": str(query["text"])} for query in case["queries"]],
                             output_dimension=args.output_dimension,
-                            l2_normalize=args.l2_normalize,
                         ),
                         strict=True,
                     )
@@ -184,7 +172,6 @@ def retrieval_payload(args) -> dict[str, object]:
                             model,
                             [{"kind": "document", "text": str(document["text"])} for document in case["documents"]],
                             output_dimension=args.output_dimension,
-                            l2_normalize=args.l2_normalize,
                         ),
                         strict=True,
                     )
@@ -208,7 +195,6 @@ def parse_args():
         help="Optional resolved-fixture JSON overriding per-scenario texts.",
     )
     parser.add_argument("--output-dimension", type=int, default=OUTPUT_DIM)
-    parser.add_argument("--l2-normalize", type=parse_bool_arg, default=True)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)

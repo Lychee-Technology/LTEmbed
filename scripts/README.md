@@ -88,7 +88,7 @@ Important assumptions:
 - `--cold-iters` runs the cold-start pass N times per scenario (fresh process each time) and aggregates the latency distribution Python-side
 - `--golden-parity` re-embeds the texts from the immutable `tests/fixtures/test_fixtures.json` golden and reports per-item cosine similarity against the golden truncated to `--output-dimension` (`mode=golden_parity` CSV rows). It is skipped unless `--output-dimension` is one of the fixture's widths (768, 512, 256, 128). The golden file is never written
 - `--emit-reference <path>` runs only the PyTorch retrieval pass, writes its embeddings to `<path>`, and exits. `--reference-path <path>` loads that file instead of running PyTorch, so only LTEmbed runs. The `benchmark-arm64` workflow uses this pair to run PyTorch once for all quants.
-- `--output-dimension` and `--l2-normalize` describe LTEmbed post-processing explicitly
+- `--output-dimension` sets the width of both runners' vectors. `--l2-normalize` sets LTEmbed's normalization only: the PyTorch reference is always unit-norm (see `bench_pytorch.py` below), and every comparison with it is by cosine
 - correctness and golden-parity thresholds (`--correctness-threshold`, `--golden-parity-threshold`, both `0.98` by default) should allow for the drift of a quantized GGUF model from the PyTorch FP32 reference
 - `--threads` is passed to PyTorch as `torch.set_num_threads(...)` and to `benchmark_ltembed --threads`, which sets llama.cpp `n_threads` and `n_threads_batch`; the CSV `threads` column records this requested runner thread count
 - Historical note (ONNX Runtime era): before LTEmbed passed `--threads` to ONNX Runtime's `with_intra_threads(...)`, LTEmbed rows recorded the requested `--threads` value in the CSV while the engine actually ran with 1 intra-op thread; LTEmbed rows with `threads > 1` produced before that fix are mislabeled and must not be compared against later runs (relevant when using `compare_benchmarks.py` across runs)
@@ -100,6 +100,13 @@ PyTorch retrieval-eval reference runner (retrieval-only; other `--mode` values e
 error). It runs EmbeddingGemma 2's SentenceTransformers pipeline in float32 with the model's
 own prompts, one input at a time, and refuses inputs over 8192 tokens instead of truncating
 them. Requires the same packages as `generate_fixtures.py`.
+
+Its vectors are always unit-norm, and it has no `--l2-normalize` flag. The pipeline's last
+module is the model's own `Normalize`, so the magnitude is gone before the script sees a
+vector; it truncates to `--output-dimension` and normalizes again, which gives the direction
+LTEmbed returns with normalization on. LTEmbed's unnormalized output is checked against the
+[llama.cpp reference](../docs/testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson)
+instead.
 
 ### `benchmark_corpus.json`
 

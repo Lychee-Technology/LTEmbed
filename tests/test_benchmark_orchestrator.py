@@ -96,6 +96,16 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn("768", command)
         self.assertNotIn("--bundle-dir", command)
 
+    def test_only_the_ltembed_command_sets_l2_normalize(self):
+        # The PyTorch reference is always unit-norm; bench_pytorch.py has no such flag.
+        bench = load_module()
+        args = ltembed_args(l2_normalize=False)
+        with mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+            for mode in ("warm", "retrieval"):
+                command = bench.build_benchmark_command("ltembed", mode, args)
+                self.assertEqual(command[command.index("--l2-normalize") + 1], "false")
+        self.assertNotIn("--l2-normalize", bench.build_benchmark_command("pytorch", "retrieval", args))
+
     def test_command_appends_fixture_path_for_both_runners(self):
         bench = load_module()
         args = ltembed_args(resolved_fixture_path=Path("artifacts/resolved_fixture.json"))

@@ -6,7 +6,9 @@ a pinned static llama.cpp release. These tests check the generators' pure helper
 the committed fixtures, the generators and the CI pins still name the same artifacts.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import re
 import tempfile
@@ -133,6 +135,72 @@ class LlamaCppReferenceTests(unittest.TestCase):
         for flag in ("-c", "-b", "-ub"):
             self.assertEqual(pairs[flag], str(reference.MAX_LENGTH))
         self.assertIn("--no-escape", args)
+
+    def generate(self, reference, existing, tokens, reset, fail_if_run=False):
+        """generate() of the x86_64-v3 section for one input whose tool run gives `tokens`,
+        without the tool. Returns its result and the texts the tool was given."""
+        golden = {
+            "prompts": {"query": "task: search result | query: ", "document": "d: "},
+            "raw_dim": 2,
+            "fixtures": [{"name": "query_en", "kind": "query", "text": "What is ML? hello",
+                          "tokens": len(tokens)}],
+        }
+        runs = []
+
+        def embed(text):
+            if fail_if_run:
+                self.fail(f"the tool ran on {text!r}")
+            runs.append(text)
+            return list(tokens), [0.5, -1.25]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = reference.generate(golden, existing, "x86_64-v3", embed, reset)
+        return result, runs
+
+    @staticmethod
+    def existing_reference(token_ids, variants=("aarch64-graviton2", "x86_64-v3"),
+                           name="query_en"):
+        section = {"static_release": "old", "archive_sha256": "old",
+                   "embeddings": [{"name": name, "embedding": [1.0, 2.0]}]}
+        return {"inputs": [{"name": name, "token_ids": token_ids}],
+                "variants": {variant: dict(section) for variant in variants}}
+
+    def test_reset_discards_the_token_ids_of_the_reference_it_replaces(self):
+        reference = load("generate_llama_cpp_reference")
+        existing = self.existing_reference([2, 100, 1])
+        (inputs, variants), _ = self.generate(reference, existing, [2, 100, 7, 1], reset=True)
+        self.assertEqual(inputs, [{"name": "query_en", "token_ids": [2, 100, 7, 1]}])
+        self.assertEqual(sorted(variants), ["x86_64-v3"])
+        self.assertEqual(variants["x86_64-v3"]["embeddings"],
+                         [{"name": "query_en", "embedding": [0.5, -1.25]}])
+
+    def test_without_reset_a_kept_section_must_have_the_same_token_ids(self):
+        reference = load("generate_llama_cpp_reference")
+        existing = self.existing_reference([2, 100, 1])
+        with self.assertRaisesRegex(SystemExit, "query_en: token ids differ from the "
+                                                "aarch64-graviton2 run.*--reset"):
+            self.generate(reference, existing, [2, 100, 7, 1], reset=False)
+        (inputs, variants), _ = self.generate(reference, existing, [2, 100, 1], reset=False)
+        self.assertEqual(inputs, existing["inputs"])
+        self.assertEqual(variants["aarch64-graviton2"], existing["variants"]["aarch64-graviton2"])
+        self.assertEqual(variants["x86_64-v3"]["static_release"], reference.STATIC_RELEASE)
+
+    def test_without_another_section_nothing_constrains_the_token_ids(self):
+        # Regenerating the only section replaces it, token ids included.
+        reference = load("generate_llama_cpp_reference")
+        existing = self.existing_reference([2, 100, 1], variants=("x86_64-v3",))
+        (inputs, variants), _ = self.generate(reference, existing, [2, 100, 7, 1], reset=False)
+        self.assertEqual(inputs, [{"name": "query_en", "token_ids": [2, 100, 7, 1]}])
+        self.assertEqual(sorted(variants), ["x86_64-v3"])
+
+    def test_a_section_from_other_inputs_fails_before_the_tool_runs(self):
+        reference = load("generate_llama_cpp_reference")
+        existing = self.existing_reference([2, 100, 1], name="query_old")
+        with self.assertRaisesRegex(SystemExit, "aarch64-graviton2 section was generated "
+                                                "from other inputs"):
+            self.generate(reference, existing, [2, 100, 1], reset=False, fail_if_run=True)
+        _, runs = self.generate(reference, existing, [2, 100, 1], reset=True)
+        self.assertEqual(runs, ["task: search result | query: What is ML? hello"])
 
     def test_static_release_pins_match_ci(self):
         reference = load("generate_llama_cpp_reference")

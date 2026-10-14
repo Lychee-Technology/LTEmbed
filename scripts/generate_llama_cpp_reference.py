@@ -124,6 +124,52 @@ def tool_commit(tool: Path) -> str:
     return match.group(1)
 
 
+def generate(golden: dict, existing: dict, variant: str, embed, reset: bool) -> tuple:
+    """The reference's `inputs` and `variants` once `variant`'s section is (re)generated.
+
+    `embed(text)` returns the token ids and the embedding the tool computes for one input.
+    Without `reset`, every other variant's section of `existing` is kept, so it must come from
+    the same inputs: the same names, checked before anything runs, and the same token ids.
+    With `reset`, nothing of `existing` is kept, neither its sections nor its token ids.
+    """
+    names = [fixture["name"] for fixture in golden["fixtures"]]
+    kept = {} if reset else {other: section
+                             for other, section in existing.get("variants", {}).items()
+                             if other != variant}
+    for other, section in kept.items():
+        if [e["name"] for e in section["embeddings"]] != names:
+            raise SystemExit(f"the {other} section was generated from other inputs: rerun "
+                             f"with --reset, then once more for {other}")
+    # Tokenization does not depend on the variant: the kept sections' token ids must recur.
+    known_tokens = ({case["name"]: case["token_ids"] for case in existing.get("inputs", [])}
+                    if kept else {})
+
+    inputs, embeddings = [], []
+    for fixture in golden["fixtures"]:
+        name = fixture["name"]
+        tokens, embedding = embed(golden["prompts"][fixture["kind"]] + fixture["text"])
+        if len(embedding) != golden["raw_dim"]:
+            raise SystemExit(f"{name}: {len(embedding)} values, expected {golden['raw_dim']}")
+        if len(tokens) != fixture["tokens"]:
+            raise SystemExit(f"{name}: the GGUF tokenizes it to {len(tokens)} tokens, the "
+                             f"PyTorch reference to {fixture['tokens']}")
+        if kept and known_tokens.get(name) != tokens:
+            others = ", ".join(sorted(kept))
+            raise SystemExit(f"{name}: token ids differ from the {others} run: if the inputs "
+                             f"changed, rerun with --reset, then once more for {others}")
+        inputs.append({"name": name, "token_ids": tokens})
+        embeddings.append({"name": name, "embedding": float32_list(embedding)})
+        print(f"  OK: {name} ({len(tokens)} tokens)")
+
+    variants = dict(kept)
+    variants[variant] = {
+        "static_release": STATIC_RELEASE,
+        "archive_sha256": VARIANTS[variant],
+        "embeddings": embeddings,
+    }
+    return inputs, dict(sorted(variants.items()))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--variant", required=True, choices=sorted(VARIANTS))
@@ -132,7 +178,8 @@ def main():
     parser.add_argument("--gguf", required=True, type=Path)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--reset", action="store_true",
-                        help="drop the other variants' sections (after the inputs changed)")
+                        help="keep neither the other variants' sections nor the token ids "
+                             "they were generated with (after the inputs changed)")
     args = parser.parse_args()
 
     gguf_sha256 = hashlib.sha256(args.gguf.read_bytes()).hexdigest()
@@ -143,36 +190,10 @@ def main():
     golden = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
     existing = (json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
                 if OUTPUT_PATH.exists() else {})
-    known_tokens = {case["name"]: case["token_ids"] for case in existing.get("inputs", [])}
-
-    inputs, embeddings = [], []
-    for fixture in golden["fixtures"]:
-        text = golden["prompts"][fixture["kind"]] + fixture["text"]
-        tokens, embedding = run_tool(args.tool, args.gguf, text, args.threads)
-        name = fixture["name"]
-        if len(embedding) != golden["raw_dim"]:
-            raise SystemExit(f"{name}: {len(embedding)} values, expected {golden['raw_dim']}")
-        if len(tokens) != fixture["tokens"]:
-            raise SystemExit(f"{name}: the GGUF tokenizes it to {len(tokens)} tokens, the "
-                             f"PyTorch reference to {fixture['tokens']}")
-        # Tokenization does not depend on the variant: every variant must agree.
-        if name in known_tokens and known_tokens[name] != tokens:
-            raise SystemExit(f"{name}: token ids differ from the other variants' run")
-        inputs.append({"name": name, "token_ids": tokens})
-        embeddings.append({"name": name, "embedding": float32_list(embedding)})
-        print(f"  OK: {name} ({len(tokens)} tokens)")
-
-    variants = {} if args.reset else existing.get("variants", {})
-    names = [entry["name"] for entry in inputs]
-    for variant, section in variants.items():
-        if variant != args.variant and [e["name"] for e in section["embeddings"]] != names:
-            raise SystemExit(f"the {variant} section was generated from other inputs: rerun "
-                             f"with --reset, then once more for {variant}")
-    variants[args.variant] = {
-        "static_release": STATIC_RELEASE,
-        "archive_sha256": VARIANTS[args.variant],
-        "embeddings": embeddings,
-    }
+    inputs, variants = generate(
+        golden, existing, args.variant,
+        lambda text: run_tool(args.tool, args.gguf, text, args.threads), args.reset,
+    )
     output = {
         "generator": "scripts/generate_llama_cpp_reference.py",
         "inputs_from": str(GOLDEN_PATH),
@@ -185,7 +206,7 @@ def main():
         },
         "raw_dim": golden["raw_dim"],
         "inputs": inputs,
-        "variants": dict(sorted(variants.items())),
+        "variants": variants,
     }
     OUTPUT_PATH.write_text(format_json(output) + "\n", encoding="utf-8")
     print(f"\nSaved {len(inputs)} {args.variant} embeddings → {OUTPUT_PATH}")

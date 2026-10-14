@@ -284,9 +284,12 @@ python3 scripts/generate_llama_cpp_reference.py --variant aarch64-graviton2 \
 With podman on an SELinux host, add `--security-opt label=disable` as in
 [development.md](./development.md#container-builds). The generator checks the GGUF's
 sha256, that the tool reports the pinned commit, that each input gives the token count the
-golden recorded, and that both variants saw the same token ids. Use `--reset` when the
-golden inputs change, then generate the other variant. Under qemu on an x86_64 host the
-aarch64 run takes hours: the 4074- and 8192-token inputs dominate.
+golden recorded, and that both variants saw the same token ids. Without `--reset`, a run
+keeps the other variant's section, so that section must come from the same inputs: the
+generator checks its input names before running the tool, and its token ids as each input
+runs. When the golden inputs change, run with `--reset`, which keeps neither the other
+section nor its token ids, then generate the other variant. Under qemu on an x86_64 host
+the aarch64 run takes hours: the 4074- and 8192-token inputs dominate.
 
 ## Token-id fixture: `tests/fixtures/token_ids.json`
 

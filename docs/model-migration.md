@@ -96,4 +96,7 @@ still missing cannot be found.
   named `ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz`.
 - **License.** The model cards of `google/embeddinggemma-2` and of both Unsloth repositories
   the bundle comes from declare `apache-2.0`. The previous model had its own terms. Check
-  that the new license fits your distribution before shipping the bundle.
+  that the new license fits your distribution before shipping the bundle. Release tarballs
+  carry the license text and the model's attribution in `licenses/embeddinggemma-2/`
+  ([NOTICE.md](../licenses/embeddinggemma-2/NOTICE.md)); if you ship the bundle, ship
+  them with it.

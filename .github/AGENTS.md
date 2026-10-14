@@ -58,6 +58,8 @@ Every workflow builds its bundle with `scripts/assemble_gguf_bundle.py`, so CI t
 
 Keep release metadata consistent with the runtime GGUF contract.
 
+The model's Apache-2.0 license requires giving recipients a copy of it. The release archive ships it, with the model's attribution, in `licenses/embeddinggemma-2/`, and `.github/workflows/release-bundles.yml` fails without either file. Keep both when changing packaging, and update them with the model pins.
+
 When bundle structure changes, review the runtime loader, CI bundle generation, release bundle generation, tests, and documentation together.
 
 ## Deployment Claims

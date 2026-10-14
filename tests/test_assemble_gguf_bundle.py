@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "assemble_gguf_bundle.py"
 ENGINE_PATH = ROOT / "src" / "engine" / "mod.rs"
 WORKFLOWS = ROOT / ".github" / "workflows"
+MODEL_LICENSE_DIR = Path("licenses") / "embeddinggemma-2"
+# sha256 of https://www.apache.org/licenses/LICENSE-2.0.txt
+APACHE_2_0_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
 
 
 def load_module():
@@ -202,6 +205,25 @@ class PinTests(unittest.TestCase):
         self.assertRegex(module.TOKENIZER_SHA256, r"^[0-9a-f]{64}$")
         with self.assertRaisesRegex(ValueError, "unknown quant"):
             module.build_info("F16")
+
+    def test_release_ships_the_model_license_and_attribution(self):
+        # Apache-2.0 §4(a): recipients get a copy of the license, not only the identifier
+        # provenance.json records.
+        module = load_module()
+        self.assertEqual(module.MODEL_LICENSE, "apache-2.0")
+        license_text = (ROOT / MODEL_LICENSE_DIR / "LICENSE-APACHE-2.0.txt").read_bytes()
+        self.assertEqual(sha256(license_text), APACHE_2_0_SHA256)
+        notice = (ROOT / MODEL_LICENSE_DIR / "NOTICE.md").read_text(encoding="utf-8")
+        filename, digest = module.GGUF_FILES[module.DEFAULT_QUANT]
+        for pin in (module.UPSTREAM_MODEL, module.GGUF_REPO, module.GGUF_REVISION, filename,
+                    digest):
+            self.assertIn(pin, notice)
+        # The release archive check requires both files, as release-bundles.yml lists them.
+        workflow = (WORKFLOWS / "release-bundles.yml").read_text(encoding="utf-8")
+        loops = [line.strip().removeprefix("for file in ").removesuffix("; do").split()
+                 for line in workflow.splitlines() if line.strip().startswith("for file in ")]
+        self.assertIn([(MODEL_LICENSE_DIR / name).as_posix()
+                       for name in ("LICENSE-APACHE-2.0.txt", "NOTICE.md")], loops)
 
     def test_workflows_assemble_bundles_with_this_script_only(self):
         for name in ("ci.yml", "release-bundles.yml", "benchmark-arm64.yml"):

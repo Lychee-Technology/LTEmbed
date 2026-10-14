@@ -16,6 +16,9 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz
 ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.sha256
 └── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64/
     ├── <source tree>      git archive of the commit being built
+    │   └── licenses/embeddinggemma-2/
+    │       ├── LICENSE-APACHE-2.0.txt   the model's license
+    │       └── NOTICE.md                the model's attribution
     └── gguf_bundle/
         ├── model.gguf         embeddinggemma-2-UD-Q5_K_XL.gguf
         ├── build-info.json
@@ -29,10 +32,14 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.s
   checked against its pinned sha256, which is the file CI tests on both architectures.
   `provenance.json` records each file's repository, revision, URL and sha256, the upstream
   model and its license, and the LTEmbed commit and workflow run.
-- The workflow fails if the bundle holds any file but these four, or if the archive
-  contains an `mmproj` (vision or audio projector) file or any `tokenizer.json`. The engine
-  tokenizes with the GGUF's own vocabulary
-  ([bundle-format.md](./bundle-format.md#tokenization)).
+- The model is licensed under Apache-2.0, which requires giving recipients a copy of the
+  license. `licenses/embeddinggemma-2/` holds its text and the model's attribution
+  ([NOTICE.md](../licenses/embeddinggemma-2/NOTICE.md)). They are source-tree files, so the
+  bundle keeps its four files; whoever passes `gguf_bundle/` on alone passes them on with it.
+- The workflow fails if the bundle holds any file but these four, if the archive lacks
+  either file of `licenses/embeddinggemma-2/`, or if it contains an `mmproj` (vision or
+  audio projector) file or any `tokenizer.json`. The engine tokenizes with the GGUF's own
+  vocabulary ([bundle-format.md](./bundle-format.md#tokenization)).
 - The tarball contains **no compiled binary and no static llama.cpp archives**. To build
   from it, you still need aarch64 Linux or x86-64-v3 Linux and `STATIC_LLAMA_DIR`; see
   [development.md](./development.md).

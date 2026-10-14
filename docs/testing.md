@@ -440,7 +440,8 @@ the ONNX-era `compare_q4f16_onnx_vs_pytorch.py`. They do not build LTEmbed or ne
 or model weights. The orchestrator tests check the `cargo run` command line without running
 it. `tests/test_assemble_gguf_bundle.py` and `tests/test_reference_generators.py` also check
 that the committed fixtures, the generators, the bundle pins and the static release pins in
-`ci.yml` still name the same files.
+`ci.yml` still name the same files, and that the release archive check requires the model's
+license text and attribution in `licenses/embeddinggemma-2/`, which name the pinned GGUF.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
 
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in

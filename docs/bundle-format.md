@@ -146,7 +146,9 @@ training (see [testing.md](./testing.md#how-sensitive-the-gates-are)).
 - `provenance.json`: for each file, the Hugging Face repository, revision, file name, URL
   and sha256, plus the upstream model (`google/embeddinggemma-2`), its license
   (`apache-2.0`), the quant, the LTEmbed commit that assembled the bundle and, in GitHub
-  Actions, the workflow run.
+  Actions, the workflow run. The license text itself is not a bundle file: it is in
+  [`licenses/embeddinggemma-2/`](../licenses/embeddinggemma-2/NOTICE.md), which release
+  tarballs ship next to the bundle.
 
 To check a downloaded bundle:
 

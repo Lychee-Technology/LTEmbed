@@ -76,6 +76,8 @@ TOKENIZER_SHA256 = "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c39350482
 
 UPSTREAM_MODEL = "google/embeddinggemma-2"
 # The `license` in the model card front matter of both repositories at the pinned revisions.
+# Its text and the model's attribution are in licenses/embeddinggemma-2/, which the release
+# tarball ships outside the bundle; update them when a pin above changes.
 MODEL_LICENSE = "apache-2.0"
 
 # The values below must equal the constants in src/engine/mod.rs; the bundle loader rejects

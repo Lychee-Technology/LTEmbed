@@ -4,7 +4,8 @@ name: release-bundles
 # with SHA256SUMS and provenance.json) into a release tarball. Mirrors the runtime's bundle
 # contract: the engine tokenizes with the GGUF's own vocabulary, so the bundle has no
 # tokenizer.json. The old ORT (model.ort + libonnxruntime.so) layout was removed with the
-# llama.cpp/GGUF migration.
+# llama.cpp/GGUF migration. The model's license text and attribution are source-tree files
+# (licenses/embeddinggemma-2/), so they reach the tarball outside the bundle.
 #
 # The bundle comes from scripts/assemble_gguf_bundle.py, which downloads the GGUF from a
 # pinned Hugging Face revision and checks its sha256, the same file the CI Test jobs run on
@@ -102,6 +103,14 @@ jobs:
           tar -tzf "artifacts/package/${OUTPUT_NAME}" > artifacts/package/archive-contents.txt
           for file in model.gguf build-info.json SHA256SUMS provenance.json; do
             grep -F -x -q "${ROOT_NAME}/gguf_bundle/${file}" artifacts/package/archive-contents.txt
+          done
+          # The model's Apache-2.0 license requires giving recipients a copy of it: the license
+          # text and the model's attribution ship in the source tree, outside the bundle.
+          for file in licenses/embeddinggemma-2/LICENSE-APACHE-2.0.txt licenses/embeddinggemma-2/NOTICE.md; do
+            if ! grep -F -x -q "${ROOT_NAME}/${file}" artifacts/package/archive-contents.txt; then
+              echo "::error::the release archive lacks ${file}"
+              exit 1
+            fi
           done
           if grep -i -q mmproj artifacts/package/archive-contents.txt; then
             echo "::error::the release archive contains an mmproj file"

@@ -107,7 +107,8 @@ the CPU passes the x86-64-v3 check in `.github/scripts/x86-64-v3.sh`, which
 than `5`, and any `target_triple` other than that of the variant they expect. When bumping
 the release, update the tag, the llama.cpp commit and both SHA-256 pins in `ci.yml`, and
 the same variables in `benchmark-arm64.yml`. Update the script and the hook if the new
-release changes an asset name, a variant or the contract version.
+release changes an asset name, a variant or the contract version; `tests/test_pre_push_hook.py`
+fails if the hook's `expected_contract` differs from the script's `EXPECTED_CONTRACT`.
 
 ## Native builds
 

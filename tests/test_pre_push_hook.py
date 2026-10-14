@@ -9,6 +9,7 @@ covers the real check against a fake dynamic loader and `/proc/cpuinfo`.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / ".githooks" / "pre-push"
 X86_64_V3_CHECK = ROOT / ".github" / "scripts" / "x86-64-v3.sh"
+FETCH_STATIC_LLAMA = ROOT / ".github" / "scripts" / "fetch-static-llama.sh"
 
 AARCH64_TRIPLE = "aarch64-unknown-linux-gnu"
 X86_64_TRIPLE = "x86_64-unknown-linux-gnu"
@@ -32,6 +34,17 @@ RELEASE_FILES = (
 )
 NATIVE_CLIPPY = "cargo clippy --all-targets -- -D warnings"
 CONTAINER_CLIPPY = "rust:1.94.0 cargo clippy --all-targets -- -D warnings"
+
+
+def ci_artifact_contract():
+    """The artifact contract CI accepts: fetch-static-llama.sh's EXPECTED_CONTRACT."""
+    text = FETCH_STATIC_LLAMA.read_text(encoding="utf-8")
+    [version] = re.findall(r"^readonly EXPECTED_CONTRACT=(\d+)$", text, re.MULTILINE)
+    return version
+
+
+# The hook must accept the release CI accepts, so every test's release carries this contract.
+EXPECTED_CONTRACT = ci_artifact_contract()
 
 # A command line per stub call, appended to $STUB_LOG.
 STUB = """#!/bin/sh
@@ -59,7 +72,7 @@ def write_executable(path, text):
     path.chmod(0o755)
 
 
-def write_release(directory, triple, contract="5", omit=()):
+def write_release(directory, triple, contract=EXPECTED_CONTRACT, omit=()):
     """An extracted static llama.cpp release: empty files and a build-info.json."""
     for name in RELEASE_FILES:
         if name not in omit:
@@ -205,9 +218,16 @@ class PrePushHookTests(unittest.TestCase):
                 self.assertFalse([c for c in calls if c.startswith(("cargo ", "docker "))])
 
     def test_native_branches_reject_another_contract_or_an_incomplete_release(self):
-        bad_contract = "unexpected artifact_contract_version '{}' in {}/build-info.json"
+        bad_contract = (
+            "unexpected artifact_contract_version '{}' in {}/build-info.json\n"
+            f"(expected {EXPECTED_CONTRACT}) — re-download the pinned release"
+        )
+        previous = str(int(EXPECTED_CONTRACT) - 1)
         defects = {
-            "contract 4": (dict(contract="4"), bad_contract.format("4", "{}")),
+            f"contract {previous}": (
+                dict(contract=previous),
+                bad_contract.format(previous, "{}"),
+            ),
             "no contract": (dict(contract=""), bad_contract.format("<missing>", "{}")),
             "no libggml.a": (dict(omit=("lib/libggml.a",)), "{}/lib/libggml.a not found"),
         }

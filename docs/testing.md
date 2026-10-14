@@ -451,8 +451,10 @@ license text and attribution in `licenses/embeddinggemma-2/`, which name the pin
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub
 `uname`, `cargo` and `docker` commands and a stub CPU check, so on any machine it checks
 which hosts run clippy natively and which use the container, without compiling anything.
-The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs `bash`
-and `git`.
+Its releases carry the artifact contract `.github/scripts/fetch-static-llama.sh` accepts
+(`EXPECTED_CONTRACT`), so it fails if the hook expects another one or names another in its
+error. The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs
+`bash` and `git`.
 
 ## Documentation references
 

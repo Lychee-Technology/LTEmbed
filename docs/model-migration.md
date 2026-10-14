@@ -21,9 +21,43 @@ results are archived in
 | Maximum input | 8192 tokens | 8192 tokens |
 | Peak memory for an 8k input | not measured | about 10 GB ([architecture.md](./architecture.md#long-inputs-and-memory)) |
 
-The public API is unchanged: `EmbeddingEngine`, `EmbeddingInput::query` /
+## Rust API
+
+The embedding API keeps its signatures: `EmbeddingEngine`, `EmbeddingInput::query` /
 `EmbeddingInput::document` and `EngineConfig` work as before, and the engine still adds the
-prefix itself. Code that passes raw text needs no change.
+prefix itself. Code that embeds raw text only through them compiles unchanged; it needs a
+new bundle, and its stored vectors must be recomputed (below). Two other public items
+changed:
+
+- **`ltembed::traits::tokenizer::HFTokenizer` is removed**, with its `from_file` and
+  `encode_batch`. Code that names it no longer compiles. The engine tokenizes with the GGUF's
+  own vocabulary, the library no longer depends on `tokenizers`, and nothing replaces
+  `HFTokenizer`. The `Tokenizer` trait and `TokenizerOutput` are still exported, but nothing
+  in the library implements them.
+- **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
+  from the table above. Code that reads them still compiles and gets the new strings.
+
+Code that used `HFTokenizer` to count or inspect tokens, for example to chunk text under the
+token limit, can load the model's pinned `tokenizer.json` with the
+[`tokenizers`](https://crates.io/crates/tokenizers) crate directly.
+`scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes that file outside the
+bundle. Encode the text with the prefix the engine adds, the bundle's `query_prefix` or
+`document_prefix` (in a release bundle, `QUERY_PREFIX` and `DOCUMENT_PREFIX`), and with
+special tokens, which adds `<bos>` and `<eos>` as the engine does:
+
+```rust
+use ltembed::engine::QUERY_PREFIX; // DOCUMENT_PREFIX for a document
+
+let tokenizer = tokenizers::Tokenizer::from_file("reference-tokenizer.json")?;
+let encoding = tokenizer.encode(format!("{QUERY_PREFIX}{text}"), true)?;
+// The count the engine compares with the bundle's `max_length` (`InputTooLong`).
+let token_count = encoding.get_ids().len();
+```
+
+These ids equal the GGUF vocabulary's on the [tokenizer parity](./testing.md#tokenizer-parity)
+corpus. That covers the corpus, not every possible input. Load the tokenizer once and reuse
+it: `tokenizers` 0.23 keeps each loaded tokenizer's BPE word cache in thread-locals that
+dropping it does not free, which `HFTokenizer` avoided by turning that cache off.
 
 ## Old vectors cannot be reused
 
@@ -68,11 +102,9 @@ still missing cannot be found.
 - **Token budgets and chunking.** The limit is still 8192 tokens, but counted with a
   different tokenizer, so the same text can have a different count. Inputs over the limit
   fail with `InputTooLong`; nothing is truncated. A chunker that counts tokens must count
-  them with the new model's tokenizer, which the bundle no longer contains. The pinned
-  `tokenizer.json` that `scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes
-  gives the same ids as the GGUF's vocabulary on the
-  [tokenizer parity](./testing.md#tokenizer-parity) corpus; the engine's count includes
-  `<bos>` and `<eos>` and the prefix.
+  them with the new model's tokenizer, which the bundle no longer contains; the
+  [Rust API](#rust-api) section shows how. The engine's count includes `<bos>` and `<eos>`
+  and the prefix.
 - **Memory.** llama.cpp reserves about 1 MiB per input token for this model's 262144-token
   vocabulary, and keeps the largest reservation for the engine's lifetime: an 8192-token
   input needs about 10 GB. Size hosts for the longest input you accept, or set a lower

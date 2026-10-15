@@ -1,30 +1,48 @@
 #!/usr/bin/env python3
 """
-PyTorch benchmark runner for jina-embeddings-v5-text-nano-retrieval.
+PyTorch retrieval reference runner for EmbeddingGemma 2 (unsloth/embeddinggemma-2).
 
-Outputs machine-readable JSON for retrieval correctness.
+Runs the model's own SentenceTransformers pipeline (mean pooling over every token, prompt
+included, then L2 normalization) in float32 on the CPU, with the model's "query" and
+"document" prompts, the same way scripts/generate_fixtures.py builds the golden fixture.
+Outputs machine-readable JSON for retrieval correctness. It never runs LTEmbed or a GGUF.
+
+Every vector it returns is unit-norm. The pipeline's last module is the model's own
+Normalize, so the magnitude is gone before this script sees the vector; it truncates to
+--output-dimension and normalizes again, which gives the direction LTEmbed returns with
+l2_normalize on, at any width. There is no unnormalized mode: the orchestrator compares
+these vectors with LTEmbed's by cosine and normalizes both before ranking. LTEmbed's
+unnormalized output is checked against upstream llama.cpp instead
+(tests/fixtures/llama_cpp_reference.json).
+
+Only the text tower is loaded (`vision_config=None, audio_config=None`).
+
+Requirements (CPU wheels are enough):
+    pip install "sentence-transformers>=6.1.0" "transformers>=5.19" torch torchvision pillow numpy
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
-import io
 import json
 import statistics
 import sys
 
 import numpy as np
+import sentence_transformers
 import torch
 import transformers
 from pathlib import Path
-from transformers import AutoModel, AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
 
 RAW_DIM = 768
 OUTPUT_DIM = 512
 MAX_LENGTH = 8192
+# The model's prompts, which LTEmbed applies as QUERY_PREFIX and DOCUMENT_PREFIX
+# (src/engine/mod.rs). load_model refuses a model whose prompts differ.
+PROMPTS = {"query": "task: search result | query: ", "document": "title: none | text: "}
 DEFAULT_RETRIEVAL_EVAL_PATH = Path(__file__).resolve().with_name("retrieval_eval_cases.json")
 
 
@@ -36,24 +54,7 @@ def emit_progress(mode: str, scenario_name: str, state: str) -> None:
     print(progress_label(mode, scenario_name, state), file=sys.stderr, flush=True)
 
 
-def prefixed_text(item: dict[str, str]) -> str:
-    prefix = "Query: " if item["kind"] == "query" else "Document: "
-    return prefix + item["text"]
-
-
-def parse_bool_arg(value: str) -> bool:
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise argparse.ArgumentTypeError("expected 'true' or 'false'")
-
-
-def truncate_and_normalize(
-    v: np.ndarray,
-    output_dimension: int = OUTPUT_DIM,
-    l2_normalize: bool = True,
-) -> np.ndarray:
+def truncate_and_normalize(v: np.ndarray, output_dimension: int = OUTPUT_DIM) -> np.ndarray:
     if v.shape[-1] != RAW_DIM:
         raise ValueError(f"expected raw dimension {RAW_DIM}, got {v.shape[-1]}")
     if output_dimension <= 0 or output_dimension > RAW_DIM:
@@ -61,16 +62,8 @@ def truncate_and_normalize(
             f"expected output dimension in [1, {RAW_DIM}], got {output_dimension}"
         )
     truncated = v[..., :output_dimension]
-    if not l2_normalize:
-        return truncated
     norm = np.linalg.norm(truncated, axis=-1, keepdims=True)
     return truncated / np.maximum(norm, 1e-12)
-
-
-def last_token_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    last_token_index = attention_mask.sum(dim=1) - 1
-    batch_index = torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device)
-    return last_hidden_state[batch_index, last_token_index]
 
 
 def compute_stats(samples_ms: list[float]) -> dict[str, float]:
@@ -85,47 +78,53 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
 
 
 def load_model(model_name_or_path: str):
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-        model = AutoModel.from_pretrained(
+    # stdout carries only the JSON payload.
+    with contextlib.redirect_stdout(sys.stderr):
+        model = sentence_transformers.SentenceTransformer(
             model_name_or_path,
-            trust_remote_code=True,
-            torch_dtype=torch.float32,
+            device="cpu",
+            model_kwargs={"dtype": torch.float32},
+            config_kwargs={"vision_config": None, "audio_config": None},
         )
-    model.to("cpu")
-    model.to(dtype=torch.float32)
     model.eval()
-    return model, tokenizer
+    prompts = {kind: model.prompts.get(kind) for kind in PROMPTS}
+    if prompts != PROMPTS:
+        raise ValueError(f"the model's prompts {prompts} differ from LTEmbed's {PROMPTS}")
+    if next(model[0].auto_model.parameters()).dtype != torch.float32:
+        raise ValueError("the model did not load in float32")
+    return model
+
+
+def count_tokens(model, kind: str, text: str) -> int:
+    return int(model.preprocess([PROMPTS[kind] + text])["input_ids"].shape[1])
 
 
 def embed_texts(
     model,
-    tokenizer,
     texts: list[dict[str, str]],
     output_dimension: int = OUTPUT_DIM,
-    l2_normalize: bool = True,
 ) -> list[list[float]]:
-    encoded = tokenizer(
-        [prefixed_text(item) for item in texts],
-        return_tensors="pt",
-        max_length=MAX_LENGTH,
-        truncation=True,
-        padding=True,
-    )
-    with torch.no_grad():
-        output = model(**encoded)
-    pooled = (
-        last_token_pool(output.last_hidden_state, encoded["attention_mask"])
-        .to(dtype=torch.float32)
-        .cpu()
-        .numpy()
-    )
-    normalized = truncate_and_normalize(
-        pooled,
-        output_dimension=output_dimension,
-        l2_normalize=l2_normalize,
-    )
-    return normalized.tolist()
+    """Embed each text with its kind's prompt, one at a time (no padding), like LTEmbed, as
+    a unit-norm vector of `output_dimension` values.
+
+    Raises instead of truncating an input longer than MAX_LENGTH tokens, as LTEmbed does.
+    """
+    rows = []
+    with torch.inference_mode():
+        for item in texts:
+            kind = item["kind"]
+            tokens = count_tokens(model, kind, item["text"])
+            if tokens > MAX_LENGTH:
+                raise ValueError(f"input of {tokens} tokens exceeds MAX_LENGTH {MAX_LENGTH}")
+            embedding = model.encode(
+                [item["text"]],
+                prompt_name=kind,
+                batch_size=1,
+                convert_to_numpy=True,
+            )[0]
+            rows.append(np.asarray(embedding, dtype=np.float32))
+    pooled = np.stack(rows) if rows else np.zeros((0, RAW_DIM), dtype=np.float32)
+    return truncate_and_normalize(pooled, output_dimension=output_dimension).tolist()
 
 
 def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
@@ -137,12 +136,13 @@ def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
 
 def retrieval_payload(args) -> dict[str, object]:
     cases = load_retrieval_eval_cases(args.retrieval_eval_path)
-    model, tokenizer = load_model(args.model_name_or_path)
+    model = load_model(args.model_name_or_path)
 
     return {
         "implementation": "pytorch",
         "implementation_version": torch.__version__,
         "transformers_version": transformers.__version__,
+        "sentence_transformers_version": sentence_transformers.__version__,
         "results": [
             {
                 "dataset_name": str(case["name"]),
@@ -155,10 +155,8 @@ def retrieval_payload(args) -> dict[str, object]:
                         case["queries"],
                         embed_texts(
                             model,
-                            tokenizer,
                             [{"kind": "query", "text": str(query["text"])} for query in case["queries"]],
                             output_dimension=args.output_dimension,
-                            l2_normalize=args.l2_normalize,
                         ),
                         strict=True,
                     )
@@ -172,10 +170,8 @@ def retrieval_payload(args) -> dict[str, object]:
                         case["documents"],
                         embed_texts(
                             model,
-                            tokenizer,
                             [{"kind": "document", "text": str(document["text"])} for document in case["documents"]],
                             output_dimension=args.output_dimension,
-                            l2_normalize=args.l2_normalize,
                         ),
                         strict=True,
                     )
@@ -199,7 +195,6 @@ def parse_args():
         help="Optional resolved-fixture JSON overriding per-scenario texts.",
     )
     parser.add_argument("--output-dimension", type=int, default=OUTPUT_DIM)
-    parser.add_argument("--l2-normalize", type=parse_bool_arg, default=True)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)

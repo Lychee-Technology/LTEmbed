@@ -6,6 +6,10 @@ cd "$repo_root"
 
 clippy_cmd=(cargo clippy --all-targets -- -D warnings)
 
+# The artifact contract .github/scripts/fetch-static-llama.sh accepts (EXPECTED_CONTRACT).
+# tests/test_pre_push_hook.py fails when the two differ.
+readonly expected_contract=5
+
 # check_release DIR NAME VARIANT TRIPLE
 #
 # Exit unless DIR (called NAME in messages) holds everything build.rs consumes from the
@@ -27,9 +31,9 @@ check_release() {
     # against a different artifact contract, or on the other architecture's variant, which
     # this build cannot link.
     contract="$(grep -o '"artifact_contract_version": *"[0-9]*"' "$dir/build-info.json" | grep -o '[0-9]*' || true)"
-    if [[ "$contract" != "4" ]]; then
+    if [[ "$contract" != "$expected_contract" ]]; then
         echo "pre-push: unexpected artifact_contract_version '${contract:-<missing>}' in $dir/build-info.json" >&2
-        echo "(expected 4) — re-download the pinned release (see docs/development.md)" >&2
+        echo "(expected $expected_contract) — re-download the pinned release (see docs/development.md)" >&2
         exit 1
     fi
     actual_triple="$(grep -o '"target_triple": *"[^"]*"' "$dir/build-info.json" | cut -d'"' -f4 || true)"

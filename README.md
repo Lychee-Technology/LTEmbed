@@ -1,9 +1,15 @@
 # LTEmbed
 
 LTEmbed is a Rust library that turns text into embedding vectors for retrieval. It runs
-[`jinaai/jina-embeddings-v5-text-nano-retrieval`](https://huggingface.co/jinaai/jina-embeddings-v5-text-nano-retrieval)
-on the CPU through **llama.cpp**, using a quantized **GGUF** model. Its entry point is
-[`EmbeddingEngine`](./src/engine/mod.rs).
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) on the CPU through
+**llama.cpp**, using the 5-bit **GGUF** `embeddinggemma-2-UD-Q5_K_XL.gguf` from
+[`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF). Its
+entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
+
+> [!IMPORTANT]
+> EmbeddingGemma 2 replaced `jinaai/jina-embeddings-v5-text-nano-retrieval`. Vectors from
+> the two models are not comparable: re-embed stored vectors before switching. See
+> [docs/model-migration.md](./docs/model-migration.md).
 
 - **Backend:** llama.cpp, statically linked from the prebuilt archives of
   [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
@@ -13,21 +19,27 @@ on the CPU through **llama.cpp**, using a quantized **GGUF** model. Its entry po
   for Graviton2 / Neoverse N1. `x86_64-unknown-linux-gnu` uses archives built for
   x86-64-v3 (AVX2, FMA, BMI2). x86-64 CPUs below v3 are not supported: the code faults
   with `SIGILL`. On macOS or such CPUs, build inside a `linux/arm64` container.
-- **Output:** 768 raw dimensions, truncated to 512 and L2-normalized by default.
-- **Max input:** 8192 tokens. Longer inputs return an error; nothing is truncated.
+- **Output:** mean pooling, projected from the 512-wide hidden state to 768 raw dimensions;
+  truncated to 512 and L2-normalized by default. The model is trained for 768, 512, 256
+  and 128.
+- **Max input:** 8192 tokens. Longer inputs return an error; nothing is truncated. Memory
+  grows with input length, to about 10 GB for an 8192-token input; a bundle can set a lower
+  limit (see [docs/architecture.md](./docs/architecture.md#long-inputs-and-memory)).
 
 ## Model bundle
 
-The engine loads a directory with three files:
+The engine loads a directory with two files:
 
 | File | Contents |
 |---|---|
-| `model.gguf` | The GGUF model. CI and releases use the `Q5_K_M` quant. |
-| `tokenizer.json` | The model's own Hugging Face tokenizer |
+| `model.gguf` | The GGUF model. CI and releases use the `UD-Q5_K_XL` quant. |
 | `build-info.json` | Metadata: format, pooling, query/document prefixes, dimensions, max length |
 
-The release workflow packages a ready-made `gguf_bundle/`, or you can assemble one with
-`curl`. See [docs/bundle-format.md](./docs/bundle-format.md).
+Inputs are tokenized with the GGUF's own vocabulary; the bundle has no `tokenizer.json`.
+
+The release workflow packages a ready-made `gguf_bundle/`, or you can assemble one from the
+pinned Hugging Face revisions with `python3 scripts/assemble_gguf_bundle.py gguf_bundle`.
+See [docs/bundle-format.md](./docs/bundle-format.md).
 
 ## Licensing
 
@@ -76,8 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 A runnable version is in [`examples/api_usage.rs`](./examples/api_usage.rs).
 
 **Queries vs. documents.** Wrap search text in `EmbeddingInput::query` and the passages
-you search over in `EmbeddingInput::document`. The engine adds the `Query: ` or
-`Document: ` prefix from `build-info.json`; pass raw text.
+you search over in `EmbeddingInput::document`. The engine adds the model's prompt from
+`build-info.json` (`task: search result | query: ` or `title: none | text: `); pass raw
+text.
 
 `EngineConfig` picks the output dimension (1–768) and whether to L2-normalize.
 `from_gguf_bundle_dir_with_threads` sets the llama.cpp thread count (default 1). One engine
@@ -87,7 +100,7 @@ handles one call at a time.
 
 Every `cargo build`, `test`, `clippy` or `run` needs `STATIC_LLAMA_DIR` set to the
 extracted, checksum-verified static llama.cpp release that `.github/workflows/ci.yml`
-pins (`v0.1.159-1`, llama.cpp `v0.6.0`), in the variant for the host: `aarch64-graviton2`
+pins (`v0.1.159-2`, llama.cpp `b11577`), in the variant for the host: `aarch64-graviton2`
 or `x86_64-v3`.
 
 ```bash
@@ -113,7 +126,8 @@ Download steps and the container setup for other hosts are in
 | [Development](./docs/development.md) | Toolchain, static llama.cpp release, containers, hooks |
 | [Testing](./docs/testing.md) | Test suites, fixtures, what CI runs |
 | [Benchmarking](./docs/benchmarking.md) | Latency, parity and retrieval benchmarks, recorded results |
-| [Releases](./docs/releases.md) | Release tarballs, why Q5_K_M |
+| [Releases](./docs/releases.md) | Release tarballs, why UD-Q5_K_XL |
+| [Model migration](./docs/model-migration.md) | Moving an index from the previous model; the Rust API changes (`HFTokenizer` removed) |
 | [Scripts](./scripts/README.md) | Python benchmark and fixture tools |
 
 The full index, including archived design documents, is [docs/README.md](./docs/README.md).

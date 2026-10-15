@@ -33,7 +33,7 @@ The CI Test job sets:
 LTEMBED_REQUIRE_TEST_BUNDLE=1
 ```
 
-so bundle-gated integration tests fail instead of silently skipping if `LTEMBED_TEST_BUNDLE_DIR` or required files are missing.
+so bundle-gated integration tests, and the tokenizer parity tests (`cargo test --lib tokenizer_parity -- --ignored`), fail instead of silently skipping if `LTEMBED_TEST_BUNDLE_DIR`, `LTEMBED_TEST_REFERENCE_TOKENIZER` or required files are missing.
 
 Preserve that fail-closed behavior when changing bundle assembly or test invocation.
 
@@ -54,7 +54,11 @@ When modifying a workflow:
 
 Treat the current release workflow as authoritative for distributable bundle assembly.
 
+Every workflow builds its bundle with `scripts/assemble_gguf_bundle.py`, so CI tests the files a release ships. Do not download model files in a workflow by other means, and never from a floating revision such as `resolve/main`; `tests/test_assemble_gguf_bundle.py` checks this. A text bundle never contains an `mmproj` projector.
+
 Keep release metadata consistent with the runtime GGUF contract.
+
+The model's Apache-2.0 license requires giving recipients a copy of it. The release archive ships it, with the model's attribution, in `licenses/embeddinggemma-2/`, and `.github/workflows/release-bundles.yml` fails without either file. Keep both when changing packaging, and update them with the model pins.
 
 When bundle structure changes, review the runtime loader, CI bundle generation, release bundle generation, tests, and documentation together.
 

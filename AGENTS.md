@@ -10,13 +10,15 @@ LTEmbed is a Rust text-embedding library centered on `EmbeddingEngine`.
 
 The current `main` branch uses:
 
-- llama.cpp / GGUF for inference;
+- llama.cpp / GGUF for inference, running EmbeddingGemma 2 (`unsloth/embeddinggemma-2-GGUF`, `UD-Q5_K_XL`);
 - statically linked llama.cpp/ggml artifacts;
-- Hugging Face `tokenizer.json`;
+- tokenization with the GGUF's own vocabulary (llama.cpp `llama_tokenize`): the library has no `tokenizer.json` and no `tokenizers` dependency;
 - typed query/document retrieval inputs;
-- last-token pooling;
+- mean pooling, then the model's 512→768 projection;
 - Matryoshka output truncation;
 - optional L2 normalization.
+
+It supports one model. The previous one, `jinaai/jina-embeddings-v5-text-nano-retrieval`, is archived under `docs/history/models/`; do not reintroduce it or a second model path.
 
 ONNX Runtime and matrixmultiply implementations belong to earlier architecture phases or other branches and are not the current `main` runtime.
 
@@ -40,8 +42,9 @@ Do not casually change these semantics:
 - callers use `EmbeddingInput::query(...)` or `EmbeddingInput::document(...)`;
 - retrieval prefixes are applied internally;
 - the current backend is llama.cpp/GGUF;
-- a runtime bundle's `tokenizer.json` is the model's own tokenizer. Loading checks only that its vocabulary size equals the GGUF's: a mismatched tokenizer of the same size loads and produces wrong embeddings;
-- the bundle checks made at load time (required files, `build-info.json` metadata, GGUF embedding width, tokenizer vocabulary size; see `docs/bundle-format.md`) fail explicitly. Do not weaken them, and do not describe a check the loader does not make;
+- a runtime bundle is `model.gguf` and `build-info.json`; the engine tokenizes with the GGUF's vocabulary and reads no `tokenizer.json`. Loading checks only that this tokenization adds BOS and EOS: a GGUF whose vocabulary splits text differently from the model's own tokenizer still loads and produces wrong embeddings. Only the tokenizer parity tests compare the pinned GGUF's vocabulary with the model's `tokenizer.json` and recorded token ids;
+- bundle model files come from the Hugging Face revisions and sha256 pinned in `scripts/assemble_gguf_bundle.py`, never from a branch such as `main`;
+- the bundle checks made at load time (required files, `build-info.json` metadata, GGUF embedding width and declared pooling, BOS and EOS added by the GGUF's tokenization; see `docs/bundle-format.md`) fail explicitly. Do not weaken them, and do not describe a check the loader does not make;
 - correctness fixtures are independent reference data, not output captured from the implementation being tested.
 
 If one of these contracts intentionally changes, update implementation, tests, examples, workflows, and documentation together.
@@ -72,9 +75,9 @@ Raise unrelated problems separately.
 
 ## Baseline Validation
 
-The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: the Markdown link and `AGENTS.md` path check, formatting, Clippy, rustdoc, the Rust test targets, the example build, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
+The baseline is the command list in `docs/development.md` § "Checks before pushing". It mirrors the CI `Test`, `Lint`, and `Python script tests` jobs: the Markdown link and `AGENTS.md` path check, formatting, Clippy, rustdoc, the Rust test targets, the example build, the tokenizer parity tests, the model-backed integration tests, and the Python script tests. For code changes, run as much of it as the environment supports, and do not present a subset as the full baseline.
 
-Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The model-backed integration tests also need a GGUF bundle.
+Every cargo command in the baseline except `cargo fmt --check` compiles the crate, so it needs the setup under "Build Environment". The tokenizer parity tests and the model-backed integration tests also need a GGUF bundle, and the parity tests the model's reference `tokenizer.json`, which `scripts/assemble_gguf_bundle.py` writes outside the bundle.
 
 Never report a command as passing unless it actually ran successfully. A model-backed test that skipped because no bundle was available did not pass. If validation cannot run because of architecture, artifacts, model weights, Docker, or another environmental limitation, state that explicitly.
 

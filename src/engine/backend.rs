@@ -1,5 +1,4 @@
 use crate::error::LTEmbedError;
-use crate::traits::tokenizer::TokenizerOutput;
 
 /// Timing breakdown for one backend inference pass (populated only when profiling is
 /// requested). Field names mirror the backend-relevant stages of [`super::EmbedBatchProfile`].
@@ -16,24 +15,29 @@ pub(crate) struct BackendRunProfile {
 /// An embedding inference backend.
 ///
 /// Implementations own a loaded model and return, for each already-tokenized input, the
-/// **raw, un-normalized, last-token-pooled** embedding of length `raw_embedding_dimension()`.
-/// The shared engine layer ([`super::EmbeddingEngine`]) owns prefixing, tokenization, and
-/// the Matryoshka truncation + optional L2 normalization applied on top.
+/// **raw, un-normalized, mean-pooled** embedding of length `raw_embedding_dimension()`.
+/// The shared engine layer ([`super::EmbeddingEngine`]) owns prefixing, the input length
+/// limit, and the Matryoshka truncation + optional L2 normalization applied on top. The
+/// model's own vocabulary tokenizes, so the backend provides tokenization
+/// ([`EmbeddingBackend::tokenize`]) and the engine calls it.
 ///
 /// This trait is the sole seam for adding future backends; today `LlamaBackend` is the only
 /// implementation.
 pub(crate) trait EmbeddingBackend: Send + Sync {
-    /// Raw embedding width the backend emits before truncation (e.g. 768).
+    /// Raw embedding width the backend emits before truncation (768 for EmbeddingGemma 2:
+    /// its projected output, not its 512-wide hidden state).
     fn raw_embedding_dimension(&self) -> usize;
 
-    /// Number of tokens in the model's own vocabulary, i.e. the token ids it accepts.
-    fn vocab_size(&self) -> usize;
+    /// The token ids of the whole of `text` in the model's own vocabulary, with the special
+    /// tokens the model adds (EmbeddingGemma 2: BOS and EOS). Never truncated: the engine
+    /// enforces the length limit.
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError>;
 
     /// One raw, un-normalized pooled embedding (length = `raw_embedding_dimension()`) per
     /// tokenized input, in input order.
     fn embed(
         &self,
-        tokenized: &[TokenizerOutput],
+        tokenized: &[Vec<u32>],
         collect_profile: bool,
     ) -> Result<(Vec<Vec<f32>>, Option<BackendRunProfile>), LTEmbedError>;
 }

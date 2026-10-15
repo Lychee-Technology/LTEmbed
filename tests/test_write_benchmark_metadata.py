@@ -29,7 +29,6 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
         bundle = tmp / "bundle"
         bundle.mkdir()
         (bundle / "model.gguf").write_bytes(b"g" * 1000)
-        (bundle / "tokenizer.json").write_bytes(b"t" * 300)
         (bundle / "build-info.json").write_bytes(b"b" * 50)
         static_dir = tmp / "static"
         static_dir.mkdir()
@@ -42,9 +41,9 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
 
     def _argv(self, tmp: Path, env: dict[str, Path], **overrides) -> list[str]:
         options = {
-            "--quant": "Q5_K_M",
+            "--quant": "UD-Q4_K_XL",
             "--model-id": "test/model",
-            "--model-file": "v5-nano-retrieval-Q5_K_M.gguf",
+            "--model-file": "embeddinggemma-2-UD-Q4_K_XL.gguf",
             "--bundle-dir": str(env["bundle"]),
             "--static-llama-dir": str(env["static"]),
             "--static-llama-tag": "v0.1.151-1",
@@ -94,7 +93,7 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
             tmp = Path(tmpdir)
             metadata = self._write(tmp, self._make_env(tmp))
         self.assertEqual(metadata["model_size_bytes"], 1000)
-        self.assertEqual(metadata["bundle_size_bytes"], 1000 + 300 + 50)
+        self.assertEqual(metadata["bundle_size_bytes"], 1000 + 50)
 
     def test_model_sha256_matches_content(self):
         import hashlib
@@ -156,8 +155,8 @@ class WriteBenchmarkMetadataTests(unittest.TestCase):
             tmp = Path(tmpdir)
             metadata = self._write(tmp, self._make_env(tmp))
         self.assertEqual(metadata["backend"], "llama.cpp")
-        self.assertEqual(metadata["quant"], "Q5_K_M")
-        self.assertEqual(metadata["model_file"], "v5-nano-retrieval-Q5_K_M.gguf")
+        self.assertEqual(metadata["quant"], "UD-Q4_K_XL")
+        self.assertEqual(metadata["model_file"], "embeddinggemma-2-UD-Q4_K_XL.gguf")
         self.assertEqual(metadata["git_sha"], "deadbeef")
         self.assertEqual(metadata["runner_labels"], "ubuntu-24.04-arm")
 

@@ -34,7 +34,7 @@ __pycache__/
 # Large BERT weight file — download separately, do not commit
 assets/model.safetensors
 
-# Extra HuggingFace snapshot files — only config.json and tokenizer.json are committed
+# Extra HuggingFace snapshot files; nothing under assets/ is committed
 assets/*.gitattributes
 assets/1_Pooling/
 assets/README.md
@@ -56,6 +56,10 @@ perf-results/
 # llama.cpp migration: prebuilt static-lib artifacts + GGUF models (download + SHA-verify, never commit)
 .llama-artifacts/
 *.gguf
+# Local bundle from scripts/assemble_gguf_bundle.py (docs/development.md), and the 32 MB
+# reference tokenizer.json its --reference-tokenizer writes for the tokenizer tests
+/gguf_bundle/
+/reference-tokenizer.json
 
 docs/superpowers/
 .ruff_cache/

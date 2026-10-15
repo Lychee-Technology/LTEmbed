@@ -7,8 +7,9 @@ from unittest import mock
 
 import numpy as np
 
-# The script under test loads bench_pytorch (and thus torch) at import time; torch is a
-# heavy optional dep the CI python-tests job does not install.
+# These tests no longer need torch: bench_pytorch.py, which the script under test loads,
+# imports it only where it runs the model. They stay gated on it until #185 removes this
+# ONNX-era script and its tests.
 try:
     import torch  # noqa: F401
 except ModuleNotFoundError:

@@ -30,11 +30,10 @@ import statistics
 import sys
 
 import numpy as np
-import sentence_transformers
-import torch
-import transformers
 from pathlib import Path
-from transformers.utils import logging as transformers_logging
+
+# torch, transformers and sentence_transformers are imported only in the functions that load
+# and run the model, so the rest of the module, and its tests, need only numpy.
 
 
 RAW_DIM = 768
@@ -78,6 +77,9 @@ def compute_stats(samples_ms: list[float]) -> dict[str, float]:
 
 
 def load_model(model_name_or_path: str):
+    import sentence_transformers
+    import torch
+
     # stdout carries only the JSON payload.
     with contextlib.redirect_stdout(sys.stderr):
         model = sentence_transformers.SentenceTransformer(
@@ -110,19 +112,18 @@ def embed_texts(
     Raises instead of truncating an input longer than MAX_LENGTH tokens, as LTEmbed does.
     """
     rows = []
-    with torch.inference_mode():
-        for item in texts:
-            kind = item["kind"]
-            tokens = count_tokens(model, kind, item["text"])
-            if tokens > MAX_LENGTH:
-                raise ValueError(f"input of {tokens} tokens exceeds MAX_LENGTH {MAX_LENGTH}")
-            embedding = model.encode(
-                [item["text"]],
-                prompt_name=kind,
-                batch_size=1,
-                convert_to_numpy=True,
-            )[0]
-            rows.append(np.asarray(embedding, dtype=np.float32))
+    for item in texts:
+        kind = item["kind"]
+        tokens = count_tokens(model, kind, item["text"])
+        if tokens > MAX_LENGTH:
+            raise ValueError(f"input of {tokens} tokens exceeds MAX_LENGTH {MAX_LENGTH}")
+        embedding = model.encode(
+            [item["text"]],
+            prompt_name=kind,
+            batch_size=1,
+            convert_to_numpy=True,
+        )[0]
+        rows.append(np.asarray(embedding, dtype=np.float32))
     pooled = np.stack(rows) if rows else np.zeros((0, RAW_DIM), dtype=np.float32)
     return truncate_and_normalize(pooled, output_dimension=output_dimension).tolist()
 
@@ -135,15 +136,15 @@ def load_retrieval_eval_cases(path: Path) -> list[dict[str, object]]:
 
 
 def retrieval_payload(args) -> dict[str, object]:
+    import sentence_transformers
+    import torch
+    import transformers
+
     cases = load_retrieval_eval_cases(args.retrieval_eval_path)
     model = load_model(args.model_name_or_path)
 
-    return {
-        "implementation": "pytorch",
-        "implementation_version": torch.__version__,
-        "transformers_version": transformers.__version__,
-        "sentence_transformers_version": sentence_transformers.__version__,
-        "results": [
+    with torch.inference_mode():
+        results = [
             {
                 "dataset_name": str(case["name"]),
                 "queries": [
@@ -178,7 +179,13 @@ def retrieval_payload(args) -> dict[str, object]:
                 ],
             }
             for case in cases
-        ],
+        ]
+    return {
+        "implementation": "pytorch",
+        "implementation_version": torch.__version__,
+        "transformers_version": transformers.__version__,
+        "sentence_transformers_version": sentence_transformers.__version__,
+        "results": results,
     }
 
 
@@ -202,6 +209,9 @@ def parse_args():
 
 
 def main() -> None:
+    import torch
+    from transformers.utils import logging as transformers_logging
+
     args = parse_args()
     torch.set_num_threads(args.threads)
     transformers_logging.set_verbosity_error()

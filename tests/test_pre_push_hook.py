@@ -150,6 +150,15 @@ class PrePushHookTests(unittest.TestCase):
         self.assertIn(f"-v {self.container_release}:/opt/static-llama", run)
         self.assertTrue(run.endswith(CONTAINER_CLIPPY), run)
 
+    def assert_refuses_container(self, result, calls, reason):
+        """The hook fails for `reason` instead of running the container under emulation."""
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"not running clippy natively: {reason}\n", result.stderr)
+        self.assertIn(
+            "nor in the linux/arm64 container, which would run under emulation", result.stderr
+        )
+        self.assertFalse([c for c in calls if c.startswith(("cargo ", "docker "))], calls)
+
     # x86_64 Linux.
 
     def test_x86_64_v3_runs_clippy_natively_without_docker_or_container_release(self):
@@ -159,24 +168,28 @@ class PrePushHookTests(unittest.TestCase):
         self.assertIn("x86_64_v3_check", calls)
         self.assertFalse(self.container_release.exists())
 
-    def test_x86_64_below_v3_uses_container(self):
+    # The container's release is in place and Docker is reachable in the tests that refuse the
+    # container, so only the host's CPU can make the hook refuse it.
+
+    def test_x86_64_below_v3_refuses_the_emulated_container(self):
         release = write_release(self.tmp / "extracted-x86_64-v3", X86_64_TRIPLE)
         write_release(self.container_release, AARCH64_TRIPLE)
         result, calls = self.run_hook(
             "Linux x86_64", release, STUB_V3_UNSUPPORTED="no x86-64-v3 here"
         )
-        self.assert_container(result, calls)
-        self.assertIn("not running clippy natively: no x86-64-v3 here", result.stdout)
+        self.assert_refuses_container(result, calls, "no x86-64-v3 here")
 
-    def test_x86_64_without_static_llama_dir_uses_container(self):
+    def test_x86_64_without_static_llama_dir_refuses_the_emulated_container(self):
         write_release(self.container_release, AARCH64_TRIPLE)
         for static_llama_dir in (None, ""):
             with self.subTest(STATIC_LLAMA_DIR=static_llama_dir):
                 result, calls = self.run_hook("Linux x86_64", static_llama_dir)
-                self.assert_container(result, calls)
+                self.assert_refuses_container(
+                    result, calls, "STATIC_LLAMA_DIR is unset or empty"
+                )
                 self.assertNotIn("x86_64_v3_check", calls)
 
-    # aarch64 Linux and macOS.
+    # aarch64 Linux, macOS and other hosts.
 
     def test_aarch64_runs_clippy_natively_without_the_x86_64_check(self):
         release = write_release(self.tmp / "extracted", AARCH64_TRIPLE)
@@ -191,14 +204,25 @@ class PrePushHookTests(unittest.TestCase):
         result, calls = self.run_hook("Linux aarch64")
         self.assert_container(result, calls)
 
-    def test_macos_uses_container_even_with_static_llama_dir(self):
+    def test_macos_arm64_uses_container_even_with_static_llama_dir(self):
+        write_release(self.container_release, AARCH64_TRIPLE)
+        release = write_release(self.tmp / "extracted", AARCH64_TRIPLE)
+        result, calls = self.run_hook("Darwin arm64", release)
+        self.assert_container(result, calls)
+        self.assertNotIn("x86_64_v3_check", calls)
+
+    def test_other_cpus_refuse_the_emulated_container(self):
         write_release(self.container_release, AARCH64_TRIPLE)
         release = write_release(self.tmp / "extracted-x86_64-v3", X86_64_TRIPLE)
-        for uname in ("Darwin arm64", "Darwin x86_64"):
-            with self.subTest(uname=uname):
-                result, calls = self.run_hook(uname, release)
-                self.assert_container(result, calls)
-                self.assertNotIn("x86_64_v3_check", calls)
+        for uname in ("Darwin x86_64", "Linux riscv64"):
+            for static_llama_dir, reason in (
+                (release, f"no static llama.cpp variant runs natively on {uname}"),
+                (None, "STATIC_LLAMA_DIR is unset or empty"),
+            ):
+                with self.subTest(uname=uname, STATIC_LLAMA_DIR=static_llama_dir):
+                    result, calls = self.run_hook(uname, static_llama_dir)
+                    self.assert_refuses_container(result, calls, reason)
+                    self.assertNotIn("x86_64_v3_check", calls)
 
     # The checks before clippy runs.
 

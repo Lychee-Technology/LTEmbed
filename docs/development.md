@@ -9,7 +9,7 @@ for the design see [architecture.md](./architecture.md).
 | Need | Why | Source of truth |
 |---|---|---|
 | Rust `1.94.0` with `clippy` and `rustfmt` | Pinned so local `rustfmt`/`clippy` match CI | `rust-toolchain.toml` |
-| Linux on aarch64 (Graviton2 / Neoverse N1 or newer) or on an x86-64-v3 CPU; elsewhere a `linux/arm64` container | The static llama.cpp archives are Linux objects with a fixed CPU baseline per variant | `build.rs`, `.github/scripts/fetch-static-llama.sh` |
+| Linux on aarch64 (Graviton2 / Neoverse N1 or newer) or on an x86-64-v3 CPU; on another ARM64 host, a `linux/arm64` container | The static llama.cpp archives are Linux objects with a fixed CPU baseline per variant | `build.rs`, `.github/scripts/fetch-static-llama.sh` |
 | Extracted static llama.cpp release in `STATIC_LLAMA_DIR` | `build.rs` links it; every `cargo build/test/clippy` needs it | `build.rs`, `.github/workflows/ci.yml` |
 | A GGUF bundle | Only to run inference (Tier 2 tests, example, benchmarks) | [bundle-format.md](./bundle-format.md) |
 | Python 3.13 with `pytest`, `numpy` | Script tests; CI uses 3.13 | `.github/workflows/ci.yml` |
@@ -58,8 +58,8 @@ To download and verify the release into `.llama-artifacts/`, follow the same ste
 `.github/scripts/fetch-static-llama.sh`. Pick the variant for the machine that will run
 cargo: `aarch64-graviton2` on aarch64 Linux and inside the `linux/arm64` container,
 `x86_64-v3` on an x86-64-v3 Linux host. The `pre-push` hook builds against
-`STATIC_LLAMA_DIR` when it runs natively; its container path needs the `aarch64-graviton2`
-variant in `.llama-artifacts/extracted/`.
+`STATIC_LLAMA_DIR` when it runs natively; its container path, on ARM64 hosts only, needs the
+`aarch64-graviton2` variant in `.llama-artifacts/extracted/`.
 
 ```bash
 STATIC_LLAMA_REPO=Lychee-Technology/static-llama-cpp-rs-builder
@@ -138,11 +138,15 @@ fails at link time (`rust-lld: error: … is incompatible with elf64-x86-64` on 
 
 ## Container builds
 
-On macOS, or on an x86_64 host whose CPU is below x86-64-v3, run cargo inside a
-`linux/arm64` `rust:1.94.0` container with the `aarch64-graviton2` variant. The `pre-push`
-hook uses this container whenever it cannot run clippy natively: on those hosts, and on any
-host where `STATIC_LLAMA_DIR` is unset or empty (see [Git hooks](#git-hooks)). From the
-repository root:
+On an ARM64 host that cannot run the archives itself, such as macOS on Apple silicon, run
+cargo inside a `linux/arm64` `rust:1.94.0` container with the `aarch64-graviton2` variant.
+The `pre-push` hook uses this container on ARM64 hosts where it cannot run clippy natively
+(see [Git hooks](#git-hooks)). Use it only on an ARM64 CPU: on x86_64,
+`--platform linux/arm64` runs every build and test under qemu emulation, many times slower
+than natively. On x86_64, build against the `x86_64-v3` variant
+([Native builds](#native-builds)) and run aarch64 work on ARM64 hardware, such as an ARM64
+Linux machine or CI's `ubuntu-24.04-arm` runners. An x86_64 CPU below v3 has no supported
+build. From the repository root:
 
 ```bash
 docker run --rm --platform linux/arm64 \
@@ -163,9 +167,6 @@ docker run --rm --platform linux/arm64 \
   `target-linux-arm64/` (gitignored) keeps container builds apart from the host `target/`.
 - To run Tier 2 tests, put a bundle under the repo and pass its container path, for
   example `-e LTEMBED_TEST_BUNDLE_DIR=/work/gguf_bundle`.
-- On an x86_64 host, `--platform linux/arm64` runs under qemu emulation, which is slow; the
-  llama.cpp reference test embeds about 13,500 tokens of long input and takes far longer
-  than natively.
 - With Podman on an SELinux host, add `--security-opt label=disable` so the container can
   read the bind mounts.
 
@@ -184,13 +185,20 @@ docker run --rm --platform linux/arm64 \
     needed. `STATIC_LLAMA_DIR` must hold the host's variant, with `target_triple`
     `aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-gnu`; a wrong variant fails the
     push instead of falling back to the container;
-  - otherwise in the container above, against `.llama-artifacts/extracted/`, which must
-    hold the `aarch64-graviton2` variant (`target_triple` `aarch64-unknown-linux-gnu`): on
-    macOS, on an x86_64 CPU below v3 (the hook prints which part of the check failed), and
-    wherever `STATIC_LLAMA_DIR` is unset or empty. To use the container on a host that
-    would run natively, push with `STATIC_LLAMA_DIR= git push`.
+  - otherwise, on an ARM64 host, in the container above, against
+    `.llama-artifacts/extracted/`, which must hold the `aarch64-graviton2` variant
+    (`target_triple` `aarch64-unknown-linux-gnu`): on macOS on Apple silicon, and on Linux
+    aarch64 where `STATIC_LLAMA_DIR` is unset or empty. To use the container on Linux
+    aarch64, push with `STATIC_LLAMA_DIR= git push`.
 
-  Either way, the hook first fails fast if that release directory lacks any of
+  On any other host the container would run under emulation, so the hook fails and says
+  why clippy cannot run natively: on x86_64 Linux where `STATIC_LLAMA_DIR` is unset or
+  empty (set it to the `x86_64-v3` release), on an x86_64 CPU below v3 (the hook prints
+  which part of the check failed), and on an Intel Mac or any other CPU. Of these, only the
+  first can lint locally; from the others, `git push --no-verify` skips the hook, and CI's
+  `Lint` job still runs clippy.
+
+  Before clippy runs, the hook fails fast if that release directory lacks any of
   `lib/libllama.a`, `lib/libggml.a`, `lib/libggml-cpu.a`, `lib/libggml-base.a`,
   `bindings.rs` or `build-info.json`, if its contract version is not `6`, or if its
   `target_triple` is not the one above; in the container case, also if `docker info` fails.

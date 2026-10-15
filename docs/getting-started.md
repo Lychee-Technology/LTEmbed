@@ -14,8 +14,9 @@ CPU baselines:
   `SIGILL` rather than fall back. `/lib64/ld-linux-x86-64.so.2 --help` must list
   `x86-64-v3 (supported, searched)`.
 
-On macOS, or on an x86_64 CPU below v3, run the commands below inside a `linux/arm64`
-container; see [development.md](./development.md#container-builds).
+On macOS on Apple silicon, run the commands below inside a `linux/arm64` container; see
+[development.md](./development.md#container-builds). An Intel Mac, like an x86_64 CPU
+below v3, has no supported build: there the container would run under emulation.
 
 You also need:
 

@@ -18,7 +18,8 @@ entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
 - **Platform:** Linux on two CPU baselines. `aarch64-unknown-linux-gnu` uses archives built
   for Graviton2 / Neoverse N1. `x86_64-unknown-linux-gnu` uses archives built for
   x86-64-v3 (AVX2, FMA, BMI2). x86-64 CPUs below v3 are not supported: the code faults
-  with `SIGILL`. On macOS or such CPUs, build inside a `linux/arm64` container.
+  with `SIGILL`. On macOS on Apple silicon, build inside a `linux/arm64` container. Intel
+  Macs are not supported: there that container would run under emulation.
 - **Output:** mean pooling, projected from the 512-wide hidden state to 768 raw dimensions;
   truncated to 512 and L2-normalized by default. The model is trained for 768, 512, 256
   and 128.
@@ -120,7 +121,7 @@ cargo run --example api_usage        # needs ./gguf_bundle
 ```
 
 Step-by-step instructions are in [docs/getting-started.md](./docs/getting-started.md).
-Download steps and the container setup for other hosts are in
+Download steps and the container setup for other ARM64 hosts are in
 [docs/development.md](./docs/development.md).
 
 ## Documentation

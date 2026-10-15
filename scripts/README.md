@@ -70,8 +70,8 @@ needs the tool, built by `build_llama_cpp_reference_tool.sh`, and the release GG
 Builds `llama-embedding` from a llama.cpp checkout at the commit the pinned static release
 was built from, linked against that release's own archives, for
 `generate_llama_cpp_reference.py`. It refuses a checkout at another commit or a release for
-another architecture. `--static` links a fully static binary, for an aarch64 build made in
-the `linux/arm64` container that must also run under qemu.
+another architecture. `--static` links a fully static binary, so that a build made in the
+`linux/arm64` container on an ARM64 host also runs on the host outside it.
 
 ## Benchmarks
 

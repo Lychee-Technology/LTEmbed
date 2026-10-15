@@ -8,7 +8,7 @@ clippy_cmd=(cargo clippy --all-targets -- -D warnings)
 
 # The artifact contract .github/scripts/fetch-static-llama.sh accepts (EXPECTED_CONTRACT).
 # tests/test_pre_push_hook.py fails when the two differ.
-readonly expected_contract=5
+readonly expected_contract=6
 
 # check_release DIR NAME VARIANT TRIPLE
 #
@@ -46,12 +46,15 @@ check_release() {
 
 # Native cargo needs STATIC_LLAMA_DIR (build.rs requires it) and a host that can run one of
 # the release's variants: aarch64 Linux, or x86_64 Linux whose CPU passes the same x86-64-v3
-# check as CI. On any other host, run the same check in a linux/arm64 container against
-# .llama-artifacts/extracted/.
+# check as CI. Otherwise an ARM64 host, such as macOS on Apple silicon, runs the same check in
+# a linux/arm64 container against .llama-artifacts/extracted/. On any other CPU that
+# container would run under emulation, which AGENTS.md forbids, so the hook fails instead.
+host="$(uname -sm)"
 native_variant=
 native_triple=
+not_native="STATIC_LLAMA_DIR is unset or empty"
 if [[ -n "${STATIC_LLAMA_DIR:-}" ]]; then
-    case "$(uname -sm)" in
+    case "$host" in
         "Linux aarch64")
             native_variant=aarch64-graviton2
             native_triple=aarch64-unknown-linux-gnu
@@ -63,8 +66,11 @@ if [[ -n "${STATIC_LLAMA_DIR:-}" ]]; then
                 native_variant=x86_64-v3
                 native_triple=x86_64-unknown-linux-gnu
             else
-                echo "pre-push: not running clippy natively: $cpu_check"
+                not_native="$cpu_check"
             fi
+            ;;
+        *)
+            not_native="no static llama.cpp variant runs natively on $host"
             ;;
     esac
 fi
@@ -74,6 +80,16 @@ if [[ -n "$native_triple" ]]; then
     echo "pre-push: running ${clippy_cmd[*]}"
     "${clippy_cmd[@]}"
 else
+    case "${host##* }" in
+        aarch64 | arm64) ;;
+        *)
+            echo "pre-push: not running clippy natively: $not_native" >&2
+            echo "pre-push: nor in the linux/arm64 container, which would run under emulation on ${host##* }" >&2
+            echo "Lint on x86-64-v3 Linux with STATIC_LLAMA_DIR set to the x86_64-v3 release, or on ARM64" >&2
+            echo "hardware (see docs/development.md § \"Git hooks\")." >&2
+            exit 1
+            ;;
+    esac
     artifacts="$repo_root/.llama-artifacts/extracted"
     check_release "$artifacts" .llama-artifacts/extracted/ aarch64-graviton2 aarch64-unknown-linux-gnu
     if ! docker info >/dev/null 2>&1; then

@@ -3,8 +3,8 @@
 What each test suite checks, what it needs, and exactly what CI runs. Every Rust target
 links the static llama.cpp archives, so all `cargo test` and `cargo clippy` commands need
 aarch64 Linux or x86-64-v3 Linux, with `STATIC_LLAMA_DIR` set to the matching variant. On
-other hosts, run them in the container from
-[development.md](./development.md#container-builds).
+another ARM64 host, such as macOS on Apple silicon, run them in the container from
+[development.md](./development.md#container-builds), never under emulation on x86_64.
 
 ## Suites
 
@@ -49,9 +49,9 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    [tokenizer parity tests](#tokenizer-parity), which
    plain `cargo test --lib` (step 3) skips as ignored.
 8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
-   8192-token input, which takes about 10 GB of memory
-   ([architecture.md](./architecture.md#long-inputs-and-memory)); GitHub's standard Linux
-   runners have 16 GB.
+   8192-token input while other tests run their own engines; the whole test process peaks
+   at about 2.3 GiB on x86-64-v3
+   ([architecture.md](./architecture.md#long-inputs-and-memory)).
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
@@ -141,9 +141,6 @@ cargo test --test integration_tests
 LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
   cargo test --test integration_tests
 ```
-
-Under qemu emulation the model-backed tests are slow: the llama.cpp reference test alone
-embeds about 13,500 tokens of long input.
 
 ## Golden fixture: `tests/fixtures/test_fixtures.json`
 
@@ -262,7 +259,7 @@ checkout at the release's commit and an extracted release (see its header for th
 details):
 
 ```bash
-COMMIT=cbe28bb3cb0758f0c566a9a3561766821aeb0748   # STATIC_LLAMA_LLAMA_CPP_COMMIT
+COMMIT=6868a52cb337450658006ad2f9281c2eb63f1666   # STATIC_LLAMA_LLAMA_CPP_COMMIT
 git init .llama-artifacts/llama.cpp && git -C .llama-artifacts/llama.cpp fetch --depth 1 \
   https://github.com/ggml-org/llama.cpp "$COMMIT" && git -C .llama-artifacts/llama.cpp checkout FETCH_HEAD
 python3 scripts/assemble_gguf_bundle.py .llama-artifacts/bundle
@@ -273,23 +270,21 @@ scripts/build_llama_cpp_reference_tool.sh .llama-artifacts/llama.cpp \
 python3 scripts/generate_llama_cpp_reference.py --variant x86_64-v3 \
   --tool .llama-artifacts/reftool-x86_64-v3/llama-embedding --gguf .llama-artifacts/bundle/model.gguf
 
-# aarch64: build in the linux/arm64 container, statically so that it also runs under qemu.
-docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work rust:1.94.0 \
-  scripts/build_llama_cpp_reference_tool.sh --static .llama-artifacts/llama.cpp \
+# aarch64 Linux host, aarch64-graviton2 release in .llama-artifacts/extracted:
+scripts/build_llama_cpp_reference_tool.sh .llama-artifacts/llama.cpp \
   .llama-artifacts/extracted .llama-artifacts/reftool-aarch64
 python3 scripts/generate_llama_cpp_reference.py --variant aarch64-graviton2 \
   --tool .llama-artifacts/reftool-aarch64/llama-embedding --gguf .llama-artifacts/bundle/model.gguf
 ```
 
-With podman on an SELinux host, add `--security-opt label=disable` as in
-[development.md](./development.md#container-builds). The generator checks the GGUF's
-sha256, that the tool reports the pinned commit, that each input gives the token count the
-golden recorded, and that both variants saw the same token ids. Without `--reset`, a run
-keeps the other variant's section, so that section must come from the same inputs: the
-generator checks its input names before running the tool, and its token ids as each input
-runs. When the golden inputs change, run with `--reset`, which keeps neither the other
-section nor its token ids, then generate the other variant. Under qemu on an x86_64 host
-the aarch64 run takes hours: the 4074- and 8192-token inputs dominate.
+The aarch64 section needs ARM64 hardware, such as a Raspberry Pi 5: never build or run the
+tool under emulation on an x86_64 host. The generator checks the GGUF's sha256, that the
+tool reports the pinned commit, that each input gives the token count the golden recorded,
+and that both variants saw the same token ids. Without `--reset`, a run keeps the other
+variant's section, so that section must come from the same inputs: the generator checks its
+input names before running the tool, and its token ids as each input runs. When the golden
+inputs change, run with `--reset`, which keeps neither the other section nor its token ids,
+then generate the other variant.
 
 ## Token-id fixture: `tests/fixtures/token_ids.json`
 
@@ -453,7 +448,8 @@ sha256 it records.
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub
 `uname`, `cargo` and `docker` commands and a stub CPU check, so on any machine it checks
-which hosts run clippy natively and which use the container, without compiling anything.
+which hosts run clippy natively, which use the container, and which the hook refuses
+because the container would run under emulation, without compiling anything.
 Its releases carry the artifact contract `.github/scripts/fetch-static-llama.sh` accepts
 (`EXPECTED_CONTRACT`), so it fails if the hook expects another one or names another in its
 error. The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs

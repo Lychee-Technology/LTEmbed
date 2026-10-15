@@ -17,11 +17,11 @@
 #   STATIC_LLAMA_DIR  the extracted, verified release for this machine's architecture
 #                     (docs/development.md § "Static llama.cpp artifacts")
 #   OUT_DIR           where the objects and OUT_DIR/llama-embedding go
-#   --static          link statically, so that an aarch64 binary built in the linux/arm64
-#                     container also runs under qemu-user on an x86_64 host
+#   --static          link statically, so that a binary built in the linux/arm64 container
+#                     on an ARM64 host also runs on the host outside the container
 #
-# Needs g++ (C++17), git, python3 and the release's architecture: run it natively, or for
-# aarch64 inside the linux/arm64 container (docs/development.md § "Container builds").
+# Needs g++ (C++17), git, python3 and the release's architecture, natively: never run it
+# under emulation (docs/development.md § "Container builds").
 set -euo pipefail
 
 static=()

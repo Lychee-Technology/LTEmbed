@@ -14,14 +14,15 @@ CPU baselines:
   `SIGILL` rather than fall back. `/lib64/ld-linux-x86-64.so.2 --help` must list
   `x86-64-v3 (supported, searched)`.
 
-On macOS, or on an x86_64 CPU below v3, run the commands below inside a `linux/arm64`
-container; see [development.md](./development.md#container-builds).
+On macOS on Apple silicon, run the commands below inside a `linux/arm64` container; see
+[development.md](./development.md#container-builds). An Intel Mac, like an x86_64 CPU
+below v3, has no supported build: there the container would run under emulation.
 
 You also need:
 
 - Rust `1.94.0` (pinned in `rust-toolchain.toml`; `rustup` installs it automatically)
 - `gh` (the GitHub CLI), `curl`, `sha256sum`, `tar` and Python 3
-- about 0.35 GB of memory for short inputs, and up to about 10 GB for an 8192-token input
+- about 0.45 GB of memory for short inputs, and up to about 1.6 GB for an 8192-token input
   (see [architecture.md](./architecture.md#long-inputs-and-memory))
 
 ## 2. Fetch the static llama.cpp release

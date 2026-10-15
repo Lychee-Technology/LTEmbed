@@ -10,7 +10,7 @@ llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README]
 | Build LTEmbed and get my first embedding | [getting-started.md](./getting-started.md) |
 | Understand how text becomes a vector | [architecture.md](./architecture.md) |
 | Make or check a model bundle | [bundle-format.md](./bundle-format.md) |
-| Set up a dev environment, including on macOS or x86_64 | [development.md](./development.md) |
+| Set up a dev environment, including on Apple silicon macOS or x86-64-v3 Linux | [development.md](./development.md) |
 | Know what the tests cover and what CI runs | [testing.md](./testing.md) |
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
 | Cut a release or see why UD-Q5_K_XL was chosen | [releases.md](./releases.md) |

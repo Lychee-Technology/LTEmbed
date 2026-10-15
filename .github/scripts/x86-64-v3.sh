@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # The CPU check for the x86_64-v3 static llama.cpp archives. Sourced, not run, by
 # .github/scripts/fetch-static-llama.sh, which fails the CI job when the check fails, and by
-# .githooks/pre-push, which falls back to the linux/arm64 container. The archives execute
-# x86-64-v3 instructions unconditionally (no runtime dispatch), so a CPU below that level
-# faults with SIGILL.
+# .githooks/pre-push, which fails too rather than run the linux/arm64 container under
+# emulation. The archives execute x86-64-v3 instructions unconditionally (no runtime
+# dispatch), so a CPU below that level faults with SIGILL.
 
 # x86_64_v3_check [LDSO] [CPUINFO]
 #

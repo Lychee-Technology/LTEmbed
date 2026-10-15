@@ -42,8 +42,8 @@ from pathlib import Path
 
 GOLDEN_PATH = Path("tests/fixtures/test_fixtures.json")
 OUTPUT_PATH = Path("tests/fixtures/llama_cpp_reference.json")
-LLAMA_CPP_COMMIT = "cbe28bb3cb0758f0c566a9a3561766821aeb0748"
-STATIC_RELEASE = "v0.1.159-2"
+LLAMA_CPP_COMMIT = "6868a52cb337450658006ad2f9281c2eb63f1666"
+STATIC_RELEASE = "v0.1.159-3"
 GGUF = {
     "repo": "unsloth/embeddinggemma-2-GGUF",
     "revision": "031f0d4b35536f69ab3509d4893c923264fcf253",
@@ -53,8 +53,8 @@ GGUF = {
 # SHA-256 of each variant's release archive, as pinned in .github/workflows/ci.yml
 # (tests/test_reference_generators.py checks that they agree).
 VARIANTS = {
-    "x86_64-v3": "12c16eba8a756025d8ae2721544cef7b13decaf1b04e04ef1371dfeead50113d",
-    "aarch64-graviton2": "720b395930962c9c7a17e1f2828b41fc8fc188db075e44b8583fb402bcdee5a3",
+    "x86_64-v3": "448448f0548ef7d69737042ecd781dcd2c5f25d8c14debd66db455e00a58644c",
+    "aarch64-graviton2": "87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b",
 }
 MAX_LENGTH = 8192
 # Never occurs in an input, so the tool treats each file as one prompt rather than one per line.

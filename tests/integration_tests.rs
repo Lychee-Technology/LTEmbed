@@ -803,8 +803,8 @@ fn test_golden_parity_at_every_trained_dimension() {
 /// `test_gguf_vocabulary_matches_reference_token_ids` (src/engine/tokenizer_parity.rs). Each
 /// raw vector is also checked against the F32 golden at full and default width.
 ///
-/// The inputs run one after another in this one test because the longest needs about 10 GB:
-/// llama.cpp sizes its output buffer by the input's token count (docs/architecture.md).
+/// The inputs run one after another on one engine, which holds the memory the longest needed
+/// (about 1.4 GiB at 8192 tokens) until it is dropped (docs/architecture.md).
 #[test]
 fn test_llama_cpp_reference_parity() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {

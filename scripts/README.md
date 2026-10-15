@@ -5,26 +5,73 @@ installer. How the pieces fit together is described in
 [docs/benchmarking.md](../docs/benchmarking.md) and [docs/testing.md](../docs/testing.md).
 The script tests in `tests/test_*.py` cover most of these files.
 
+## Bundles
+
+### `assemble_gguf_bundle.py`
+
+Assembles a GGUF bundle (`model.gguf`, `build-info.json`, plus `SHA256SUMS` and
+`provenance.json`) for EmbeddingGemma 2. It is the single place that pins the bundle's
+sources: `GGUF_REPO` / `GGUF_REVISION` and one sha256 per quant in `GGUF_FILES`, and the
+`build-info.json` it writes. It also pins `TOKENIZER_REPO` / `TOKENIZER_REVISION` /
+`TOKENIZER_SHA256`, the model's `tokenizer.json` that the tokenizer parity tests compare the
+GGUF's vocabulary with; the bundle does not contain it, and `--reference-tokenizer PATH`
+writes it to `PATH` outside the bundle. CI, the release workflow and the ARM64 benchmark all
+call it. Python 3 standard library only.
+
+```bash
+python3 scripts/assemble_gguf_bundle.py gguf_bundle                  # UD-Q5_K_XL
+python3 scripts/assemble_gguf_bundle.py gguf_bundle-q8 --quant Q8_0
+python3 scripts/assemble_gguf_bundle.py gguf_bundle --gguf PATH      # local copy of the GGUF
+python3 scripts/assemble_gguf_bundle.py gguf_bundle \
+  --reference-tokenizer reference-tokenizer.json [--tokenizer PATH]  # plus the test reference
+```
+
+It downloads from `resolve/<revision>` only, rejects any file whose sha256 differs from its
+pin, and leaves no partial bundle on failure. Details are in
+[docs/bundle-format.md](../docs/bundle-format.md#assembling-a-bundle).
+
 ## Fixtures
 
 ### `generate_fixtures.py`
 
-Regenerates `tests/fixtures/test_fixtures.json` for `jinaai/jina-embeddings-v5-text-nano-retrieval`.
-This is the immutable PyTorch FP32 golden; never regenerate it from GGUF or LTEmbed output.
-Requires `pip install transformers torch numpy`.
+Regenerates `tests/fixtures/test_fixtures.json`, the immutable PyTorch F32 golden for
+EmbeddingGemma 2, from the safetensors model `unsloth/embeddinggemma-2` at the pinned
+`REVISION` (which must equal `TOKENIZER_REVISION` in `assemble_gguf_bundle.py`). Never
+regenerate it from GGUF or LTEmbed output. Requires `sentence-transformers`, `transformers`,
+`torch`, `torchvision`, `pillow` and `numpy`; the docstring has the exact command.
 
-- input schema: `kind + text`
-- pooling: last token
-- post-processing: truncate `768 -> 512`, then normalize
+- runs the model's own SentenceTransformers pipeline in float32 on the CPU, text tower only
+- prompts: the model's `query` and `document` prompts, applied by SentenceTransformers
+- pooling: mean over every token, then the 512→768 projection, then L2 normalization
+- stores the full 768-wide vector of each of 25 inputs (21 short, 4 of 89 to 8192 tokens);
+  the tests derive 512, 256 and 128 by truncating and renormalizing
 
 ### `generate_token_ids.py`
 
-Regenerates `tests/fixtures/token_ids.json`, the token-id parity fixture for `HFTokenizer`
-(`pip install tokenizers==<version>` with the Rust `tokenizers` version from `Cargo.lock`,
-which the script checks; no model weights). It downloads `tokenizer.json` at the pinned
-`REVISION`, which must equal `HF_REVISION` in `.github/workflows/ci.yml`, and records
-single and batch encodings plus the file's sha256. Rerun it after changing its inputs,
-bumping the revision, or bumping `tokenizers` in `Cargo.lock`.
+Regenerates `tests/fixtures/token_ids.json`: the model's `tokenizer.json` encoded by Python
+`tokenizers`, the ids that `test_gguf_vocabulary_matches_reference_token_ids` compares the
+GGUF's vocabulary with (`pip install tokenizers==<version>` with the version of the Rust
+`tokenizers` dev-dependency in `Cargo.lock`, which the script checks; no model weights). It
+downloads `tokenizer.json` at the pinned `REVISION`, which must equal `TOKENIZER_REVISION` in
+`assemble_gguf_bundle.py`, and records the single encodings, after checking that a batch
+encoding pads nothing, plus the file's sha256. Rerun it after changing its inputs, bumping
+the revision, or bumping `tokenizers` in `Cargo.lock`.
+
+### `generate_llama_cpp_reference.py`
+
+Regenerates one variant's section of `tests/fixtures/llama_cpp_reference.json`: the raw
+768-wide vectors and token ids that upstream llama.cpp's own `llama-embedding` tool
+computes for every golden input on the release GGUF. Python 3 standard library only; it
+needs the tool, built by `build_llama_cpp_reference_tool.sh`, and the release GGUF. See
+[docs/testing.md](../docs/testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson).
+
+### `build_llama_cpp_reference_tool.sh`
+
+Builds `llama-embedding` from a llama.cpp checkout at the commit the pinned static release
+was built from, linked against that release's own archives, for
+`generate_llama_cpp_reference.py`. It refuses a checkout at another commit or a release for
+another architecture. `--static` links a fully static binary, for an aarch64 build made in
+the `linux/arm64` container that must also run under qemu.
 
 ## Benchmarks
 
@@ -36,12 +83,12 @@ Top-level orchestrator for the LTEmbed and PyTorch runners. It launches
 
 Important assumptions:
 
-- `--bundle-dir` points at a GGUF bundle directory containing `model.gguf`, `tokenizer.json`, and `build-info.json`
-- `--model-dir` points at a local Hugging Face snapshot of the model for the PyTorch runner. The default, `assets/`, is not such a snapshot.
+- `--bundle-dir` points at a GGUF bundle directory containing `model.gguf` and `build-info.json`
+- `--model-dir` points at a local Hugging Face snapshot of `unsloth/embeddinggemma-2` for the PyTorch runner (the files SentenceTransformers needs, at the pinned revision). The default, `assets/`, is not such a snapshot.
 - `--cold-iters` runs the cold-start pass N times per scenario (fresh process each time) and aggregates the latency distribution Python-side
-- `--golden-parity` re-embeds the texts from the immutable `tests/fixtures/test_fixtures.json` golden and reports per-item cosine similarity (`mode=golden_parity` CSV rows); the golden file is never written
+- `--golden-parity` re-embeds the texts from the immutable `tests/fixtures/test_fixtures.json` golden and reports per-item cosine similarity against the golden truncated to `--output-dimension` (`mode=golden_parity` CSV rows). It is skipped unless `--output-dimension` is one of the fixture's widths (768, 512, 256, 128). The golden file is never written
 - `--emit-reference <path>` runs only the PyTorch retrieval pass, writes its embeddings to `<path>`, and exits. `--reference-path <path>` loads that file instead of running PyTorch, so only LTEmbed runs. The `benchmark-arm64` workflow uses this pair to run PyTorch once for all quants.
-- `--output-dimension` and `--l2-normalize` describe LTEmbed post-processing explicitly
+- `--output-dimension` sets the width of both runners' vectors. `--l2-normalize` sets LTEmbed's normalization only: the PyTorch reference is always unit-norm (see `bench_pytorch.py` below), and every comparison with it is by cosine
 - correctness and golden-parity thresholds (`--correctness-threshold`, `--golden-parity-threshold`, both `0.98` by default) should allow for the drift of a quantized GGUF model from the PyTorch FP32 reference
 - `--threads` is passed to PyTorch as `torch.set_num_threads(...)` and to `benchmark_ltembed --threads`, which sets llama.cpp `n_threads` and `n_threads_batch`; the CSV `threads` column records this requested runner thread count
 - Historical note (ONNX Runtime era): before LTEmbed passed `--threads` to ONNX Runtime's `with_intra_threads(...)`, LTEmbed rows recorded the requested `--threads` value in the CSV while the engine actually ran with 1 intra-op thread; LTEmbed rows with `threads > 1` produced before that fix are mislabeled and must not be compared against later runs (relevant when using `compare_benchmarks.py` across runs)
@@ -50,7 +97,16 @@ Important assumptions:
 ### `bench_pytorch.py`
 
 PyTorch retrieval-eval reference runner (retrieval-only; other `--mode` values exit with an
-error). Requires `torch`, `transformers` and `numpy`.
+error). It runs EmbeddingGemma 2's SentenceTransformers pipeline in float32 with the model's
+own prompts, one input at a time, and refuses inputs over 8192 tokens instead of truncating
+them. Requires the same packages as `generate_fixtures.py`.
+
+Its vectors are always unit-norm, and it has no `--l2-normalize` flag. The pipeline's last
+module is the model's own `Normalize`, so the magnitude is gone before the script sees a
+vector; it truncates to `--output-dimension` and normalizes again, which gives the direction
+LTEmbed returns with normalization on. LTEmbed's unnormalized output is checked against the
+[llama.cpp reference](../docs/testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson)
+instead.
 
 ### `benchmark_corpus.json`
 

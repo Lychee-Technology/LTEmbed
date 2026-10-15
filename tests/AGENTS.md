@@ -50,9 +50,21 @@ scripts/generate_fixtures.py
 
 Fixture regeneration must be intentional and reviewed.
 
+The golden gates (per-input and mean cosine) are set just below the measured quantization error of the release GGUF (`docs/testing.md` § "Gates and how they were set"). Do not lower them to make a failing result pass; a result below them is a finding to investigate.
+
+## llama.cpp Reference Fixture
+
+`tests/fixtures/llama_cpp_reference.json` holds what upstream llama.cpp's own embedding tool computes on the release GGUF, per static-release variant. It is reference data from a tool that shares LTEmbed's kernels but none of its code, built by `scripts/build_llama_cpp_reference_tool.sh` and recorded by:
+
+```text
+scripts/generate_llama_cpp_reference.py
+```
+
+Never fill it from LTEmbed output. Regenerate it, for every variant, when the golden inputs, the release GGUF or the static llama.cpp release change.
+
 ## Tokenizer Fixtures
 
-Tokenizer parity fixtures protect against tokenizer drift.
+`tests/fixtures/token_ids.json` holds Python `tokenizers` output for the model's pinned `tokenizer.json`; the GGUF's vocabulary, which the engine tokenizes with, must reproduce it. It protects against tokenizer drift.
 
 Relevant generator:
 
@@ -63,6 +75,12 @@ scripts/generate_token_ids.py
 When changing tokenizer revisions or the Rust `tokenizers` dependency, verify that fixture provenance and version metadata remain correct.
 
 Do not update expected token IDs merely to make a failing implementation pass.
+
+## Tokenizer Parity Test
+
+`src/engine/tokenizer_parity.rs` compares the GGUF's own vocabulary (`llama_tokenize`), the engine's only tokenizer, with the model's pinned `tokenizer.json` on a fixed corpus, and with the token ids of the token-id and llama.cpp reference fixtures (`docs/testing.md` § "Tokenizer parity"). It lives in the crate because the GGUF tokenizer is crate-internal; do not expose it publicly for the test. The `tokenizer.json` is a reference only: `scripts/assemble_gguf_bundle.py --reference-tokenizer` writes it outside the bundle, the test reads it from `LTEMBED_TEST_REFERENCE_TOKENIZER` and checks its sha256, and `tokenizers` is a dev-dependency. The tests are bundle-gated like the Tier 2 tests and `#[ignore]`d in plain `cargo test --lib`; CI runs them with `--ignored` after assembling the bundle and the reference.
+
+Equality is exact. Do not add a tolerance, an allow-list of differing inputs, or drop corpus sources to make it pass: a difference is a finding. Run it whenever a change can affect tokenization: the GGUF, the tokenizer revision, the `tokenizers` version, the static llama.cpp release, or the prefixes.
 
 ## Large Fixture Changes
 

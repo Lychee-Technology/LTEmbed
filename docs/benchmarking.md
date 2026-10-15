@@ -40,13 +40,15 @@ batching.
 - **Stage profile**: with `LTEMBED_PROFILE=1` (also `true` or `yes`), warm mode prints one
   line per scenario to stderr with mean `prefix_ms`, `tokenize_ms`, `tensorize_ms`,
   `run_ms`, `extract_ms`, `postprocess_ms` and `total_ms`.
-- **Correctness vs. PyTorch**: cosine between LTEmbed and the PyTorch FP32 model on the
-  retrieval-eval texts. The default pass threshold is `0.98`
+- **Correctness vs. PyTorch**: cosine between LTEmbed and the PyTorch F32 model (run by
+  SentenceTransformers, `scripts/bench_pytorch.py`) on the retrieval-eval texts. The default pass threshold is `0.98`
   (`--correctness-threshold`).
 - **Golden parity**: cosine against the immutable fixture `tests/fixtures/test_fixtures.json`
-  (see [testing.md](./testing.md#golden-fixture-testsfixturestest_fixturesjson)). Threshold
-  `0.98` by default (`--golden-parity-threshold`). It is skipped when `--output-dimension`
-  differs from the fixture's `dim` (512).
+  (see [testing.md](./testing.md#golden-fixture-testsfixturestest_fixturesjson)), truncated
+  to `--output-dimension`. Threshold `0.98` per input by default
+  (`--golden-parity-threshold`), looser than the test suite's gate (0.995 per input). It is
+  skipped unless `--output-dimension` is one of the fixture's widths (768, 512,
+  256, 128).
 - **Retrieval quality**: `recall_at_1`, `recall_at_3`, `both_at_3` and `mrr_at_3` per
   dataset, for LTEmbed and for PyTorch.
 
@@ -100,14 +102,16 @@ with PyTorch, and writes a CSV and a text summary. It launches
 compilation out of the timings.
 
 Without `--reference-path`, the orchestrator runs the PyTorch reference itself
-(`scripts/bench_pytorch.py`). That needs `torch`, `transformers` and `numpy`, plus a local
-Hugging Face snapshot of the model passed as `--model-dir`. The default `--model-dir` is
-`assets/`, which does not contain the model, so pass it explicitly:
+(`scripts/bench_pytorch.py`). That needs `sentence-transformers`, `transformers`, `torch`,
+`torchvision`, `pillow` and `numpy` (the versions are in the script's docstring), plus a
+local snapshot of `unsloth/embeddinggemma-2` at the revision
+`scripts/assemble_gguf_bundle.py` pins, passed as `--model-dir`. The default `--model-dir`
+is `assets/`, which the repository does not contain, so pass it explicitly:
 
 ```bash
 cargo build --release --bin benchmark_ltembed
 python3 scripts/run_embedding_benchmarks.py \
-  --model-dir /path/to/jina-embeddings-v5-text-nano-retrieval-snapshot \
+  --model-dir /path/to/embeddinggemma-2-snapshot \
   --bundle-dir gguf_bundle \
   --output-dimension 512 --threads 1 \
   --output-csv artifacts/benchmark-report.csv \
@@ -127,7 +131,7 @@ Useful options: `--scenario`, `--warmup`, `--iters`, `--cold-iters` (default 10)
 
 | Input | Default |
 |---|---|
-| `quants` | `IQ4_NL,Q5_K_M,Q8_0` |
+| `quants` | `UD-Q4_K_XL,UD-Q5_K_XL,Q8_0` (any quant pinned in `scripts/assemble_gguf_bundle.py`) |
 | `warmup` / `iters` / `cold_iters` | `10` / `100` / `10` |
 | `threads` | `1` |
 | `output_dimension` / `l2_normalize` | `512` / `true` |
@@ -138,13 +142,14 @@ Useful options: `--scenario`, `--warmup`, `--iters`, `--cold-iters` (default 10)
 Jobs:
 
 1. **`prepare`** turns `quants` into a matrix.
-2. **`reference`** downloads the FP32 model snapshot, builds a CN/EN cross-lingual retrieval
-   set from `tests/CN_EN_Data.csv` (`scripts/build_cn_en_retrieval_cases.py`), and runs
-   PyTorch once with `--emit-reference`. Artifact: `benchmark-reference`.
-3. **`benchmark`** (one job per quant) fetches the static llama.cpp release, assembles a
-   bundle from `resolve/main` on Hugging Face (not pinned; see
-   [bundle-format.md](./bundle-format.md#where-each-workflow-gets-its-bundle)), builds the
-   release binary, runs the orchestrator with `--reference-path`, `--fixture-path`,
+2. **`reference`** downloads the safetensors model at the pinned tokenizer revision,
+   installs pinned CPU versions of `torch`, `torchvision`, `transformers` and
+   `sentence-transformers`, builds a CN/EN cross-lingual retrieval set from
+   `tests/CN_EN_Data.csv` (`scripts/build_cn_en_retrieval_cases.py`), and runs PyTorch once
+   with `--emit-reference`. Artifact: `benchmark-reference`.
+3. **`benchmark`** (one job per quant) fetches the static llama.cpp release, assembles the
+   quant's bundle with `scripts/assemble_gguf_bundle.py` (pinned revisions and hashes; see
+   [bundle-format.md](./bundle-format.md#assembling-a-bundle)), builds the release binary, runs the orchestrator with `--reference-path`, `--fixture-path`,
    `--golden-parity` and `LTEMBED_PROFILE=1`, and records `metadata.json` with
    `scripts/write_benchmark_metadata.py`. Artifact: `benchmark-arm64-<QUANT>`.
 4. **`report`** runs `scripts/render_benchmark_report.py` over all quant artifacts.
@@ -159,9 +164,11 @@ All artifacts are kept for 3 days. Copy any result you want to keep.
 
 - **Quality gate**: mean cosine ≥ `0.99` against the golden fixture, or against the
   workflow's dynamic PyTorch reference when golden parity is missing. This is stricter
-  than the orchestrator's `0.98` pass thresholds.
-- **Size budget**: `model.gguf` + `tokenizer.json` + `build-info.json` ≤ 230 MiB, which is
-  the 250 MiB unzipped AWS Lambda package limit minus a 20 MiB allowance for a binary.
+  than the orchestrator's `0.98` pass thresholds, and looser than the test suite's gate,
+  which requires 0.995 for every input.
+- **Size budget**: every file in the bundle directory (`model.gguf`, `build-info.json`,
+  `SHA256SUMS`, `provenance.json`: `metadata.json`'s `bundle_size_bytes`) ≤ 230 MiB, which
+  is the 250 MiB unzipped AWS Lambda package limit minus a 20 MiB allowance for a binary.
 
 If any requested quant has no results, the report is marked **INCOMPLETE** and makes no
 recommendation. If no quant passes the quality gate, it makes none either. The size
@@ -170,41 +177,156 @@ budget is a packaging target; this repository does not deploy to Lambda (see
 
 ## Recorded results
 
-No benchmark output is committed to the repository except the table below. In
-particular, there are **no committed Graviton results** and no committed output from the
-`benchmark-arm64` workflow.
+No benchmark output is committed to the repository except the tables below. In
+particular, there are **no committed Graviton timings** and no committed output from the
+`benchmark-arm64` workflow; the only aarch64 timings are from a Raspberry Pi 5, below. The previous model's results, from the
+llama.cpp migration spike of July 2026, are in
+[history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md#recorded-results-llamacpp-migration-spike-july-2026).
 
-### llama.cpp migration spike, July 2026
+### EmbeddingGemma 2 on x86-64-v3, October 2026
 
-Source: [history/migrations/llama-cpp-spike-results.md](./history/migrations/llama-cpp-spike-results.md),
-committed with #149 on 2026-07-09.
+Measured during the EmbeddingGemma 2 migration, on one machine:
 
-**Golden parity** (cosine after truncation to 512 and L2 normalization, over the 4
-golden fixtures):
+- AMD Ryzen 5 5600G (Zen 3, 6 cores / 12 threads, x86-64-v3), 27 GiB RAM, Fedora Linux
+  (kernel 7.2), nothing else running;
+- static llama.cpp `v0.1.159-2` (`b11577`), `x86_64-v3` variant; flash attention on;
+- the engine tokenizing with the GGUF's vocabulary, bundles without `tokenizer.json`;
+- `benchmark_ltembed --mode warm`, `--output-dimension 512 --l2-normalize true`, 3 warm-up
+  and 20 timed iterations (`single/long`: 1 and 2 or 3). Values are medians in ms.
 
-| Quant | GGUF size | min cosine | mean cosine |
+These are single-machine numbers. They show how the quants, thread counts and input lengths
+compare; they do not predict Graviton or Lambda latency.
+
+**Long inputs vary between processes.** The same bundle, opened through paths of
+different lengths, gives `single/long` times that differ by up to 13% between processes
+(`UD-Q5_K_XL`: 5330 to 5914 ms), while repeated calls in one process differ by under 1%.
+Another copy of the same GGUF, evicting it from the page cache, and padding the environment
+by up to 112 bytes change nothing; the likely cause, not confirmed, is the process's memory
+layout, which the path's length shifts. `BF16` varies by 0.5%, the quantized GGUFs by
+9–13%, short inputs by 2–4%. A single process's `single/long` time is therefore one sample
+of that spread. The `single/long` column below is the median over eight such paths, with
+their range; the ranges of the 4-, 5- and 6-bit quants overlap.
+
+**Warm latency by quant**, 6 threads. Token counts include the prompt, `<bos>` and `<eos>`.
+
+| Quant | `single/zh` (13) | `single/en` (14) | `single/medium` (90) | `batch/medium/8` (8 × 90) | `single/long` (4075), median (range) |
+|---|---|---|---|---|---|
+| `UD-Q4_K_XL` | 18.7 | 19.6 | 69.6 | 557 | 5521 (5000–5652) |
+| `UD-Q5_K_XL` | 24.3 | 25.0 | 84.1 | 689 | 5816 (5330–5914) |
+| `UD-Q6_K_XL` | 26.3 | 27.0 | 87.2 | 715 | 5747 (5446–6004) |
+| `Q8_0` | 22.6 | 23.7 | 95.7 | 759 | 6765 (6274–6821) |
+| `BF16` | 24.5 | 25.6 | 98.6 | 780 | 6625 (6618–6648) |
+
+**Warm latency of `UD-Q5_K_XL` by thread count**. `single/long` at 1 and 4 threads is
+one process each:
+
+| Threads | `single/zh` | `single/en` | `single/medium` | `batch/medium/8` | `single/long` |
+|---|---|---|---|---|---|
+| 1 | 67.8 | 68.8 | 279.4 | 2190 | 25161 |
+| 4 | 27.1 | 28.0 | 104.9 | 810 | 7753 |
+| 6 | 24.3 | 25.0 | 84.1 | 689 | 5816 |
+
+- `batch/medium/8` costs eight single calls, as expected from one `llama_encode` per input.
+- Output width does not matter: at 768 instead of 512 dimensions, `single/medium` takes
+  84.1 ms and `batch/medium/8` 691 ms. Truncation and normalization take about 2 µs.
+- The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 67.8,
+  67.9, 67.6 and 67.9 ms at 1 thread with `max_length` 8192, 2048, 512 and 128.
+- Loading the engine takes 0.48–0.53 s (warm page cache). A cold start of `single/zh`
+  (load and one embedding in a fresh process, 6 threads) takes 0.50–0.51 s.
+- Memory and first-call latency for inputs of up to 8192 tokens, and the effect of flash
+  attention, are in [architecture.md](./architecture.md#long-inputs-and-memory).
+
+**Quality by quant.** Cosine against the PyTorch F32 model at 512 dimensions, over the 25
+golden inputs (10 to 8192 tokens) and over the 2000 texts of the CN/EN set that
+`scripts/build_cn_en_retrieval_cases.py --num-pairs 500` builds from `tests/CN_EN_Data.csv`
+(500 Chinese–English sentence pairs, each sentence embedded as a query and as a document);
+and that set's retrieval metrics, where each query must find both sentences of its pair:
+
+| Quant | Golden min / mean | CN/EN min / 1st percentile / mean | CN/EN texts below 0.985 | recall@3 | both@3 |
+|---|---|---|---|---|---|
+| `UD-Q4_K_XL` | 0.98972 / 0.99486 | 0.9614 / 0.9854 / 0.9954 | 20 of 2000 | 0.9725 | 0.945 |
+| `UD-Q5_K_XL` | 0.99702 / 0.99852 | 0.9911 / 0.9962 / 0.9987 | 0 | 0.973 | 0.946 |
+| `UD-Q6_K_XL` | 0.99839 / 0.99926 | 0.9949 / 0.9983 / 0.9993 | 0 | — | — |
+| `Q8_0` | 0.99962 / 0.99985 | 0.9986 / 0.9997 / 0.9999 | 0 | 0.969 | 0.938 |
+| `BF16` | 0.99999 / 1.00000 | 0.9999 / 1.0000 / 1.0000 | 0 | — | — |
+| PyTorch F32 | 1 | 1 | — | 0.969 | 0.938 |
+
+- `BF16` matches the F32 model on every text, so the drift of the smaller quants is
+  quantization error, not an LTEmbed error. It shrinks with each larger quant.
+- `UD-Q5_K_XL` is closer to the F32 model than `UD-Q4_K_XL` on every one of the 2000 texts
+  (by 0.0033 on average) and on every golden input at every trained width; its mean
+  error, 1 − cosine, is 3.6 times smaller on the CN/EN set and 3.5 times on the golden
+  inputs at 512 dimensions. The two quants also differ from each other more
+  than either differs from the F32 model: the cosine between their vectors of the same text
+  at 512 dimensions is at least 0.98805 (mean 0.99383) over the golden inputs, and at
+  least 0.9458 (mean 0.9945; 886 texts below 0.995) over the CN/EN set. Their errors point
+  in different directions, so vectors from different quants do not belong in one index.
+- `UD-Q4_K_XL` keeps retrieval quality on this set, but 1% of its short sentences drift to
+  cosine 0.96–0.985. The worst is the English sentence "The worker is pushing the
+  distaff." as a query (0.9614). This tail is why the release ships `UD-Q5_K_XL`, whose
+  worst is 0.9911; 10 of its 2000 texts fall below 0.995, the per-input gate the test suite
+  applies to its 25 golden inputs. Deployments that compare scores across models or depend
+  on absolute thresholds should still measure on their own data.
+- Recall@1 is at most 0.5 here, because each query has two relevant documents and recall
+  counts the fraction found.
+- The orchestrator and `render_benchmark_report.py` reproduce these runs: with the
+  `UD-Q4_K_XL`, `UD-Q5_K_XL` and `Q8_0` results, the report recommends `UD-Q4_K_XL` as the
+  only quant within the 230 MiB budget. Those bundles still held the 32 MB `tokenizer.json`;
+  without it `UD-Q5_K_XL` (200.3 MiB) fits too. The report's smallest-bundle rule still
+  picks `UD-Q4_K_XL`, because its mean-cosine gate does not see the tail above; the release
+  ships `UD-Q5_K_XL` anyway ([releases.md](./releases.md#why-ud-q5_k_xl)).
+
+### EmbeddingGemma 2 on a Raspberry Pi 5 (aarch64), October 2026
+
+Measured natively with the same probe, inputs and `benchmark_ltembed` flags as the x86
+tables above, at 4, 2 and 1 threads:
+
+- Raspberry Pi 5 Model B (4 × Cortex-A76, 2.4 GHz), 16 GB RAM, Ubuntu 26.04 (kernel 7.0,
+  4 KiB pages); every run had 0 major page faults, so swap played no part;
+- static llama.cpp `v0.1.159-2`, `aarch64-graviton2` variant: the same Graviton2-targeted
+  kernels CI's ARM job runs, since the release has no runtime ISA dispatch; flash attention
+  on;
+- the release bundle (`UD-Q5_K_XL`), `--output-dimension 512 --l2-normalize true`, 3
+  warm-up and 20 timed iterations (`single/long`: 1 and 3). Values are medians in ms.
+  `single/long` is one process per thread count; its spread between processes was not
+  measured here;
+- temperature, sampled every 2 s: the firmware's soft temperature limit was active for
+  about 10 s, at 81 °C, at the end of the 8192-token first call at 4 threads. Otherwise the
+  ARM clock read 2400 MHz and no throttling or capping flag was set.
+
+These are one Raspberry Pi's numbers. They do not predict Graviton or Lambda latency.
+
+**Warm latency of `UD-Q5_K_XL` by thread count**:
+
+| Threads | `single/zh` | `single/en` | `single/medium` | `batch/medium/8` | `single/long` |
+|---|---|---|---|---|---|
+| 1 | 145.4 | 160.9 | 878.5 | 6749 | 99985 |
+| 2 | 79.5 | 86.5 | 464.9 | 3640 | 53025 |
+| 4 | 60.8 | 63.3 | 357.6 | 2687 | 38030 |
+
+- At 4 threads the Pi takes 2.5 times as long as the x86 host at 6 threads on `single/zh`,
+  4.3 times on `single/medium` and 6.5 times on `single/long`.
+- At 768 dimensions, `single/medium` took 386.7 ms and `batch/medium/8` 2765 ms, 3–8% more
+  than at 512. They ran last, after the 1-thread runs, in a warm phase that reached
+  80.7 °C; on x86 the width makes no difference.
+- The bundle's `max_length` does not matter for inputs that fit: `single/zh` takes 145.2 to
+  145.8 ms at 1 thread and 59.5 to 60.4 ms at 4 threads with `max_length` 128, 512, 2048 and
+  8192.
+- Loading the engine takes 1.32–1.39 s (1.82 s for the session's first load). A cold start
+  of `single/zh` (load and one embedding in a fresh process, 4 threads) takes 1.28–1.29 s.
+
+**Memory and first call**: peak resident memory (`/usr/bin/time -v`) of one process that
+loads the release bundle (`max_length` 8192) and embeds one input, and the time of that
+first call:
+
+| Input tokens | Peak RSS | First call, 4 threads | First call, 1 thread |
 |---|---|---|---|
-| Q8_0 | 233 MB | 0.99970 | 0.99980 |
-| Q5_K_M | 169 MB | 0.99663 | 0.99720 |
-| Q4_K_M | 157 MB | 0.98937 | 0.99169 |
+| 14 | 0.41 GiB | 0.08 s | 0.17 s |
+| 1024 | 1.59 GiB | 5.6 s | 15.2 s |
+| 2039 | 2.60 GiB | 15.0 s | — |
+| 4074 | 4.84 GiB | 38.8 s | 99.5 s |
+| 8192 | 9.48 GiB (10.2 GB) | 120 s | 302 s |
 
-**Warm latency, in ms.**
-
-- Environment: an **Apple Silicon aarch64 development machine, not Graviton**. The exact
-  chip, OS and llama.cpp build flags were not recorded.
-- Settings: `--mode warm`, `threads=1`, 50 iterations.
-
-Use these numbers only to compare quants with each other. They do not represent
-Graviton or Lambda performance.
-
-| Scenario | Q8_0 p50 | Q8_0 p95 | Q5_K_M p50 | Q5_K_M p95 |
-|---|---|---|---|---|
-| `single/short` | 10.5 | 11.0 | 21.4 | 33.6 |
-| `single/medium` | 18.4 | 19.5 | 32.6 | 33.1 |
-| `single/long` | 466 | 480 | 741 | 748 |
-| `batch/medium/8` | 146 | 147 | 261 | 283 |
-
-On that machine Q8_0 was about 1.7–1.8× faster than Q5_K_M. The scenario set has changed
-since: `single/short` no longer exists, and the medium, long and batch texts have come from
-`scripts/benchmark_corpus.json` since #153 (2026-07-19), so new runs are not directly
-comparable with this table.
+Peak RSS is 0.09–0.12 GiB above the x86 host's at every length, and the thread count does
+not change it. With `max_length` 2048, the 2039-token input peaks at the same 2.60 GiB and
+the 1024-token one at 1.51 GiB.

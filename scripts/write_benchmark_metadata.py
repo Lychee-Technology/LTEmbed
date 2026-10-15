@@ -7,8 +7,8 @@ quant's benchmark run: the model file and bundle it measured, the static llama.c
 artifacts it linked, the runner it executed on, and the run parameters.
 
 The ``bundle_size_bytes`` field sums every file in the bundle directory
-(model.gguf + tokenizer.json + build-info.json) — the exact contents that would ship
-in a Lambda package, which is what the aggregate report's size constraint measures.
+(model.gguf + build-info.json, with SHA256SUMS and provenance.json) — the exact contents that
+would ship in a Lambda package, which is what the aggregate report's size constraint measures.
 """
 
 from __future__ import annotations

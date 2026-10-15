@@ -40,7 +40,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # Tokens that AGENTS.md files put in backticks but that are not repository paths.
 NOT_REPO_PATHS = frozenset(
     {
-        # The runtime GGUF bundle (docs/bundle-format.md): built locally or by CI, never
+        # The runtime GGUF bundle (docs/bundle-format.md) and the model's tokenizer.json, which
+        # the tokenizer tests compare its vocabulary with: built locally or by CI, never
         # committed.
         "gguf_bundle/",
         "model.gguf",
@@ -58,6 +59,13 @@ NOT_REPO_PATHS = frozenset(
         # status banner template in docs/history/AGENTS.md.
         "query/document",
         "llama.cpp/GGUF",
+        # Hugging Face repositories of the current and the previous model (root AGENTS.md,
+        # src/engine/AGENTS.md), and the floating revision URL segment .github/AGENTS.md
+        # forbids.
+        "unsloth/embeddinggemma-2-GGUF",
+        "unsloth/embeddinggemma-2",
+        "jinaai/jina-embeddings-v5-text-nano-retrieval",
+        "resolve/main",
     }
 )
 

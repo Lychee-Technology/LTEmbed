@@ -64,7 +64,7 @@ Before adding a dependency:
 
 Do not update unrelated dependencies as part of another task.
 
-Changes involving `tokenizers`, llama.cpp artifacts, or model-related dependencies require extra parity testing.
+Changes involving llama.cpp artifacts, the `tokenizers` dev-dependency (the tokenizer parity tests' reference), or model-related dependencies require extra parity testing. Do not make `tokenizers` a library dependency again: the engine tokenizes with the GGUF's vocabulary.
 
 ## Unsafe Code
 

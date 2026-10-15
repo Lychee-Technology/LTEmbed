@@ -20,7 +20,9 @@ container; see [development.md](./development.md#container-builds).
 You also need:
 
 - Rust `1.94.0` (pinned in `rust-toolchain.toml`; `rustup` installs it automatically)
-- `gh` (the GitHub CLI), `curl`, `sha256sum` and `tar`
+- `gh` (the GitHub CLI), `curl`, `sha256sum`, `tar` and Python 3
+- about 0.35 GB of memory for short inputs, and up to about 10 GB for an 8192-token input
+  (see [architecture.md](./architecture.md#long-inputs-and-memory))
 
 ## 2. Fetch the static llama.cpp release
 
@@ -41,12 +43,16 @@ Without this variable, every `cargo build`, `cargo test` and `cargo run` fails i
 
 ## 3. Get a model bundle
 
-A bundle is a directory with `model.gguf`, `tokenizer.json` and `build-info.json`. To
-assemble the same Q5_K_M bundle that CI uses into `./gguf_bundle`, run the script in
-[bundle-format.md → Assembling a bundle by hand](./bundle-format.md#assembling-a-bundle-by-hand).
+A bundle is a directory with `model.gguf` and `build-info.json`; the engine tokenizes with
+the GGUF's own vocabulary. To assemble the same `UD-Q5_K_XL` bundle that CI uses into
+`./gguf_bundle` (about 210 MB of downloads, checked against pinned hashes):
 
-Use the model's own `tokenizer.json` from Hugging Face. `assets/tokenizer.json` in this
-repository is a different tokenizer, used only by unit tests.
+```bash
+python3 scripts/assemble_gguf_bundle.py gguf_bundle
+```
+
+See [bundle-format.md → Assembling a bundle](./bundle-format.md#assembling-a-bundle) for
+other quants and for files already on disk.
 
 ## 4. Build and run the example
 
@@ -86,15 +92,16 @@ of two vectors is their cosine similarity.
 ### Queries and documents
 
 The bundle defines separate prefixes for queries and documents. Wrap search text in
-`EmbeddingInput::query` and the passages being searched in `EmbeddingInput::document`. The engine adds the
-`Query: ` or `Document: ` prefix from `build-info.json`. Pass raw text; do not add the
-prefix yourself.
+`EmbeddingInput::query` and the passages being searched in `EmbeddingInput::document`. The
+engine adds EmbeddingGemma 2's `task: search result | query: ` or `title: none | text: `
+prompt from `build-info.json`. Pass raw text; do not add the prompt yourself, or it is
+applied twice.
 
 ### `EngineConfig`
 
 | Field | Meaning | `Default` |
 |---|---|---|
-| `output_dimension` | Keep the first N of the 768 raw dimensions (Matryoshka truncation). Must be 1–768. | `512` |
+| `output_dimension` | Keep the first N of the 768 raw dimensions (Matryoshka truncation). Must be 1–768; the model is trained for 768, 512, 256 and 128. | `512` |
 | `l2_normalize` | Scale each vector to unit length after truncation | `true` |
 
 `EngineConfig::default()` gives `512` and `true`. Pick one setting and use it for both
@@ -115,11 +122,12 @@ All methods return `ltembed::error::LTEmbedError`. The ones you are most likely 
 
 | Error | Cause |
 |---|---|
-| `ModelLoad(MissingFile { .. })` | The bundle directory lacks one of the three files |
+| `ModelLoad(MissingFile { .. })` | The bundle directory lacks `model.gguf` or `build-info.json` |
 | `ModelLoad(UnsupportedModelFormat { .. })` | `build-info.json` is from an ONNX-era bundle |
 | `ModelLoad(Config(_))` | `output_dimension` is 0 or above 768, or `n_threads` is 0 |
-| `ModelLoad(Runtime(_))` | The GGUF or tokenizer failed to load, the GGUF does not match `build-info.json`, or `tokenizer.json` has a different vocabulary size than the GGUF |
-| `InputTooLong { tokens, max }` | An input is longer than 8192 tokens. Nothing is truncated, so split long text first. |
+| `ModelLoad(UnsupportedPooling { .. })` | `build-info.json` is from a bundle for the previous model (`last_token` pooling); see [model-migration.md](./model-migration.md) |
+| `ModelLoad(Runtime(_))` | The GGUF failed to load, does not match `build-info.json`, or its tokenization does not add BOS and EOS |
+| `InputTooLong { tokens, max }` | An input is longer than the bundle's `max_length` (8192 tokens). Nothing is truncated, so split long text first. |
 
 The full list is in [architecture.md](./architecture.md#errors).
 

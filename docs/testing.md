@@ -10,22 +10,18 @@ other hosts, run them in the container from
 
 | Suite | Command | Needs beyond the build | Run by CI |
 |---|---|---|---|
-| Library unit tests (`src/**`) | `cargo test --lib` | `assets/tokenizer.json` (tracked) for tokenizer shape tests | Yes |
-| Tokenizer reload memory test | `cargo test --test tokenizer_reload_tests` | — (writes its own BPE tokenizer to a temp file) | Yes |
+| Library unit tests (`src/**`) | `cargo test --lib` | — | Yes |
 | Benchmark support and binary unit tests | `cargo test --test benchmarking_support_tests --bin benchmark_ltembed` | — | Yes |
 | Example compiles | `cargo check --example api_usage` | — | Yes |
 | Example unit test | `cargo test --example api_usage` | — | **No** |
+| Tokenizer parity (`src/engine/tokenizer_parity.rs`) | `cargo test --lib tokenizer_parity -- --ignored` | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` and the reference `tokenizer.json` in `LTEMBED_TEST_REFERENCE_TOKENIZER` | Yes (required) |
 | Integration tests, Tier 1 | `cargo test --test integration_tests` | — | Yes |
 | Integration tests, Tier 2 | same | A GGUF bundle in `LTEMBED_TEST_BUNDLE_DIR` | Yes (required) |
-| Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` for two modules | Yes, without `torch` |
+| Python script tests | `python3 -m pytest tests/ -q` | `pytest`, `numpy`; `torch` (and `sentence-transformers` for one) for two modules | Yes, without `torch` |
 | Format | `cargo fmt --check` | Nothing (no build script) | Yes |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | — | Yes |
 | Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` | — | Yes |
 | Markdown links and `AGENTS.md` paths | `python3 scripts/check_doc_references.py` | Git and Python 3 only (no build) | Yes |
-
-`tokenizer_reload_tests` is its own test binary because it installs a counting global
-allocator. It checks that loading and dropping `HFTokenizer` repeatedly does not keep
-growing memory, which guards the BPE-cache workaround in `src/traits/tokenizer.rs`.
 
 ## What CI runs
 
@@ -42,17 +38,24 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    not. The `x86_64` runner label alone does not guarantee that.
 2. `mkdir -p assets`
 3. `cargo test --lib`
-4. `cargo test --test tokenizer_reload_tests`
-5. `cargo test --test benchmarking_support_tests --bin benchmark_ltembed`
-6. `cargo check --example api_usage`
-7. Assemble `ci_gguf_bundle/` (Q5_K_M at the pinned Hugging Face revision; see
-   [bundle-format.md](./bundle-format.md#assembling-a-bundle-by-hand)) and export
-   `LTEMBED_TEST_BUNDLE_DIR`.
-8. `cargo test --test integration_tests`
+4. `cargo test --test benchmarking_support_tests --bin benchmark_ltembed`
+5. `cargo check --example api_usage`
+6. `python3 scripts/assemble_gguf_bundle.py ci_gguf_bundle --reference-tokenizer
+   ci_reference_tokenizer.json`: the UD-Q5_K_XL GGUF at its pinned Hugging Face revision,
+   and the model's `tokenizer.json` at its own, outside the bundle, each checked against its
+   pinned sha256 (see [bundle-format.md](./bundle-format.md#assembling-a-bundle)); then
+   export `LTEMBED_TEST_BUNDLE_DIR` and `LTEMBED_TEST_REFERENCE_TOKENIZER`.
+7. `cargo test --lib tokenizer_parity -- --ignored`: the
+   [tokenizer parity tests](#tokenizer-parity), which
+   plain `cargo test --lib` (step 3) skips as ignored.
+8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
+   8192-token input, which takes about 10 GB of memory
+   ([architecture.md](./architecture.md#long-inputs-and-memory)); GitHub's standard Linux
+   runners have 16 GB.
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
-`python3 -m pytest tests/ -q`. `torch` is not installed, so `tests/test_bench_pytorch.py`
-and `tests/test_compare_q4f16_onnx_vs_pytorch.py` skip.
+`python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
+`tests/test_bench_pytorch.py` and `tests/test_compare_q4f16_onnx_vs_pytorch.py` skip.
 
 **`Lint`**: `python3 scripts/check_doc_references.py` with the runner's own `python3`
 (see [Documentation references](#documentation-references)), then fetch static llama,
@@ -69,59 +72,60 @@ Benchmarks run only by hand; see [benchmarking.md](./benchmarking.md).
 **Tier 1** never needs model weights. Most of these tests build throwaway bundles in a
 temp directory and check load-time validation:
 
-- missing `model.gguf`, `tokenizer.json` or `build-info.json` → `ModelLoad(MissingFile)`
+- missing `model.gguf` or `build-info.json` → `ModelLoad(MissingFile)`
 - malformed `build-info.json` → `ModelLoad(Metadata)`
-- unsupported `input_kind` or `pooling` → `ModelLoad(UnsupportedInputKind / UnsupportedPooling)`
+- unsupported `input_kind` → `ModelLoad(UnsupportedInputKind)`, and the previous model's
+  `"pooling": "last_token"` → `ModelLoad(UnsupportedPooling)`
 - `output_dimension` larger than raw → `ModelLoad(Config)`
-- input over 8192 tokens → `InputTooLong { max: 8192 }`. This uses `assets/tokenizer.json`
-  and skips if that file is missing.
 - the skip and require logic itself (`bundle_or_skip`)
-- `tests/fixtures/test_fixtures.json` matches `EMBEDDING_DIMENSION`
-  (`test_golden_fixture_matches_engine_dimension`), and the check itself fails on
-  synthetic stale fixtures (`parse_golden_fixtures`); see
-  [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson)
+- the committed fixtures agree with the engine and with each other, so a fixture left stale
+  by a model, prompt or width change fails every run, not only runs with a bundle:
+  `test_golden_fixture_matches_engine_constants` checks
+  [the golden fixture](#golden-fixture-testsfixturestest_fixturesjson) against
+  `QUERY_PREFIX`, `DOCUMENT_PREFIX`, `RAW_EMBEDDING_DIMENSION`, `MAX_LENGTH` and the trained
+  widths; `test_golden_fixture_problems`, `test_stale_golden_fixture_fails` and
+  `test_golden_fixture_without_prompts_fails` show the check rejects synthetic stale
+  fixtures; `test_llama_cpp_reference_matches_golden_inputs` checks that
+  [the llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson) covers
+  the same inputs and has vectors for the variant the tests were built for.
 
-**Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`:
+The `build-info.json` range check for `max_length` (`1..=8192`) is covered by unit tests in
+`src/engine/bundle.rs`.
 
-| Test | Bundle files read | Checks |
-|---|---|---|
-| `test_golden_parity_cosine_similarity` | `model.gguf`, `tokenizer.json`, `build-info.json` | Cosine > 0.99 against each golden vector |
-| `test_token_ids_match_python_tokenizers` | `tokenizer.json` only | `HFTokenizer` ids, masks and type ids equal the Python fixture exactly |
-| `test_embed_batch_consistency` | `model.gguf`, `tokenizer.json`, `build-info.json` | `embed_batch(..)[0] == embed(..)` |
-| `test_output_is_l2_normalized` | `model.gguf`, `tokenizer.json`, `build-info.json` | Unit norm |
-| `test_output_dimension_is_512` | `model.gguf`, `tokenizer.json`, `build-info.json` | Output length 512 |
-| `test_gguf_width_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `raw_embedding_dimension` changed to 1024, loading fails with `ModelLoad(Runtime)` |
-| `test_gguf_n_embd_out_mismatch_returns_model_load_error` | `model.gguf`, `tokenizer.json`, `build-info.json` | With `<arch>.embedding_length_out = 512` added to a copy of the GGUF (`n_embd` stays 768), loading fails with `ModelLoad(Runtime)` naming `n_embd_out 512` |
-| `test_tokenizer_vocab_mismatch_returns_model_load_error` | `model.gguf`, `build-info.json` | With `assets/tokenizer.json` (30522 tokens) in place of the bundle's tokenizer, loading fails with `ModelLoad(Runtime)` naming both vocabulary sizes |
+**Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
+`model.gguf` and `build-info.json`:
 
-The Tier 2 tests build the engine with a 512-d, L2-normalized `EngineConfig`, regardless of
-the bundle's `output_embedding_dimension`.
+| Test | Checks |
+|---|---|
+| `test_golden_parity_at_every_trained_dimension` | The 22 golden inputs of at most 512 tokens, at widths 768, 512, 256 and 128: width, finite values, unit norm, cosine ≥ 0.995 for each input against the golden truncated to that width, and each query ranks its relevant document first |
+| `test_llama_cpp_reference_parity` | All 25 golden inputs, up to 8192 tokens: the GGUF's sha256 is the one the reference was generated from; the raw 768-wide vector has cosine ≥ 0.99999 and a norm within 1e-4 of the reference for this variant; and each input passes the per-input golden gate at 768 and 512. The token ids the reference recorded are checked by the [tokenizer parity tests](#tokenizer-parity). |
+| `test_embed_batch_matches_single_embeds_and_repeats_exactly` | `embed_batch` returns one vector per input, in order, bit-identical to embedding each alone, and repeating the call returns bit-identical vectors |
+| `test_query_and_document_prompts_differ` | The same text as a query and as a document gives different vectors |
+| `test_default_config_output_is_normalized_and_512_wide` | `EngineConfig::default()` output has 512 values and unit norm |
+| `test_bundle_without_tokenizer_json_loads_and_ignores_one` | A directory of only `model.gguf` and `build-info.json` loads and gives the same vector as the test bundle, and still does with an unparseable `tokenizer.json` beside them |
+| `test_long_input_returns_input_too_long_error` | An input of more than 8192 tokens returns `InputTooLong { max: 8192 }` with its full token count |
+| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: 65, max: 64 }`. The two texts are found with an engine whose `max_length` is 1, whose `InputTooLong` names each text's token count. |
+| `test_gguf_width_mismatch_returns_model_load_error` | With `raw_embedding_dimension` 1024, loading fails with `ModelLoad(Runtime)` |
+| `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
+| `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
+| `test_gguf_without_eos_returns_model_load_error` | A copy of the GGUF with `tokenizer.ggml.add_eos_token` set to false fails the load-time tokenization check, naming the missing EOS. A copy without `add_bos_token` would still load: llama.cpp forces it on for this tokenizer, so the BOS half of the check has unit tests only. |
 
-The bundle's GGUF has `n_embd = n_embd_out = 768`, so
-`test_gguf_width_mismatch_returns_model_load_error` fails on the `n_embd` comparison and
-never reaches the `n_embd_out` one. `test_gguf_n_embd_out_mismatch_returns_model_load_error`
-covers that comparison. It derives its GGUF from the bundle's at test time, so no crafted
-GGUF is committed. The copy, about 170 MB for the Q5_K_M bundle, goes to Cargo's
+The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error` and
+`test_gguf_without_eos_returns_model_load_error`, about 210 MB each, go to Cargo's
 integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
-than `/tmp`, and is removed afterwards, even when the test fails.
-
-`test_tokenizer_vocab_mismatch_returns_model_load_error` symlinks the bundle's `model.gguf`
-and `build-info.json` instead of copying them. It reads the expected GGUF vocabulary size
-from the length of `tokenizer.ggml.tokens` with the test's own GGUF reader, not through
-llama.cpp. The matching case needs no test of its own: every other engine-backed Tier 2 test
-loads the bundle, whose tokenizer and GGUF both have 128256 tokens.
+than `/tmp`, and are removed afterwards, even when the test fails. No crafted
+GGUF is committed. The tests that swap one bundle file symlink the others instead of
+copying them.
 
 ### Skipping vs. failing without a bundle
 
 By default a Tier 2 test **skips**: it returns early, passes, and prints `Skipping: …`. That
-happens when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks `model.gguf` or
-`tokenizer.json`. The token-id test checks only `tokenizer.json`, so a directory holding
-just that file is enough to run it. Local runs without a bundle therefore pass.
+happens when `LTEMBED_TEST_BUNDLE_DIR` is unset, or when the directory lacks `model.gguf`.
+Local runs without a bundle therefore pass.
 
-`build-info.json` is not part of that check. If the directory has `model.gguf` and
-`tokenizer.json` but no `build-info.json`, the engine-backed tests do not skip. Each one
-fails when it builds the engine, with `ModelLoad(MissingFile)`, whether or not
-`LTEMBED_REQUIRE_TEST_BUNDLE` is set.
+`build-info.json` is not part of that check. If the directory has `model.gguf` but no
+`build-info.json`, the tests do not skip. Each one fails when it builds the engine, with
+`ModelLoad(MissingFile)`, whether or not `LTEMBED_REQUIRE_TEST_BUNDLE` is set.
 
 `LTEMBED_REQUIRE_TEST_BUNDLE=1` turns each skip into a failure that names the missing
 variable or file. `0`, empty or unset keeps the skip. Any other value fails, so a typo such
@@ -138,62 +142,177 @@ LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
   cargo test --test integration_tests
 ```
 
-Under qemu emulation the token-id test alone can take a few minutes, because one case
-tokenizes a 1M-space input.
+Under qemu emulation the model-backed tests are slow: the llama.cpp reference test alone
+embeds about 13,500 tokens of long input.
 
 ## Golden fixture: `tests/fixtures/test_fixtures.json`
 
-This is the **immutable PyTorch FP32 reference**. It holds four inputs (three queries, one
-document), each with its final 512-d, truncated and L2-normalized vector:
+This is the **immutable PyTorch F32 reference**. `scripts/generate_fixtures.py` produces it
+from the original safetensors model ([`unsloth/embeddinggemma-2`](https://huggingface.co/unsloth/embeddinggemma-2)
+at revision `c8f89cc7…`, a copy of `google/embeddinggemma-2`), run by SentenceTransformers
+on the CPU in float32, text tower only, with the model's own pipeline: its `query` and
+`document` prompts, mean pooling over every token (prompt, `<bos>` and `<eos>` included),
+the 512→768 projection, and L2 normalization. It never runs LTEmbed, llama.cpp or a GGUF.
+The fixture records the generator, the model revision, the prompts and the library
+versions (`sentence-transformers` 6.1.0, `transformers` 5.19.0, `torch` 2.14.1+cpu).
 
 ```json
 {
-  "model": "jinaai/jina-embeddings-v5-text-nano-retrieval",
-  "raw_dim": 768,
-  "dim": 512,
-  "max_length": 8192,
-  "fixtures": [{ "kind": "query", "text": "Hello, world!", "embedding": [/* 512 floats */] }]
+  "model": {"repo": "unsloth/embeddinggemma-2", "revision": "c8f89cc7…", "upstream": "google/embeddinggemma-2"},
+  "prompts": {"query": "task: search result | query: ", "document": "title: none | text: "},
+  "raw_dim": 768, "dims": [768, 512, 256, 128], "max_length": 8192, "short_tokens": 512,
+  "fixtures": [{"name": "query_zh", "kind": "query", "text": "如何重置密码？", "tokens": 14,
+                "relevant": "document_zh", "embedding": [/* 768 floats, unit norm */]}]
 }
 ```
 
-- `text` is raw caller text. The prefix is applied by the generator and by the engine, never
-  stored.
-- `scripts/generate_fixtures.py` produces it with `transformers` + `torch`
-  (`pip install transformers torch numpy`). It loads the model with
-  `trust_remote_code=True` in float32 (the model's native dtype is bfloat16), then applies
-  last-token pooling, truncation to 512 and L2 normalization.
+- 25 inputs: 21 short ones (10 to 68 tokens) in English, Chinese, Japanese, Korean, French,
+  German, Russian and Arabic, mixed Chinese and English, Python and Rust code, emoji, an
+  empty query and irregular whitespace; and four from `scripts/benchmark_corpus.json` of
+  89, 1024, 4074 and 8192 tokens, the last exactly `MAX_LENGTH`.
+- `text` is raw caller text; the prompt is applied by the generator and by the engine,
+  never stored. `tokens` counts the prompted input with `<bos>` and `<eos>`.
+- `relevant` names the document a query must rank first among the documents. The generator
+  checks the reference itself does.
+- Each vector is the full 768-wide embedding. A smaller width is its first values,
+  renormalized, which is how the model card says to use the widths it was trained for.
 - **Never regenerate it from GGUF or LTEmbed output.** The golden measures how far the
-  quantized llama.cpp path drifts from the original model. Regenerating it from GGUF
-  output would make that check meaningless.
-- Regenerate it, from PyTorch, only when the reference itself changes: a different model,
-  different `TEST_INPUTS`, or a change to pooling, prefixes or output dimension. The script
-  downloads the model's latest Hugging Face revision; it does not pin one.
-- `dim` and the length of every vector must equal `EMBEDDING_DIMENSION`, and the file must
-  hold at least one fixture. Otherwise `test_golden_fixture_matches_engine_dimension` (Tier 1)
-  fails in every run, and so does the parity test whenever a bundle lets it run. A mismatch
-  never skips, with or without `LTEMBED_REQUIRE_TEST_BUNDLE`: a stale fixture is a problem in
-  the repository, not a missing local resource. Changing `EMBEDDING_DIMENSION` therefore
-  requires regenerating the fixture in the same change, with `OUTPUT_DIM` in
-  `scripts/generate_fixtures.py` set to the new value. The parity test used to skip on a
-  mismatch instead. The file once shipped with `dim: 0`, and parity went unchecked until
-  the llama.cpp migration.
+  quantized llama.cpp path drifts from the original model; output captured from the
+  implementation would make that check meaningless.
+- Regenerate it, from PyTorch, only when the reference itself changes: a different model
+  or revision, different inputs, or a change to pooling, prompts or widths. Requirements and
+  usage are in the script's docstring; it needs `torchvision` and `pillow` besides `torch`.
+
+### Gates and how they were set
+
+Quantization moves a vector away from the F32 reference; an implementation mistake (wrong
+prompt, pooling, tokenizer or width) moves it further. The gate sits between the two: cosine
+≥ **0.995** for every input, at every width. There is no separate mean gate: every input
+must reach 0.995, so the mean does too.
+
+Cosine of LTEmbed's output against the golden, over all 25 inputs at 768 dimensions, for
+each GGUF of the pinned revision (x86-64-v3, flash attention on):
+
+| GGUF | Minimum | Mean |
+|---|---|---|
+| `UD-Q4_K_XL` | 0.98944 | 0.99471 |
+| `UD-Q5_K_XL` (release) | 0.99690 | 0.99849 |
+| `UD-Q6_K_XL` | 0.9983 | 0.9992 |
+| `Q8_0` | 0.9996 | 0.99985 |
+| `BF16` | 0.99999 | 0.99999+ |
+
+`BF16` agrees with the F32 reference on every input, including the 8192-token one, so
+tokenization, prompts, pooling, projection and LTEmbed's attention settings are right and
+the remaining gap is weight quantization, which shrinks with each larger quant. For the
+release quant at the other widths: 512, minimum 0.99702 and mean 0.99852; 256, minimum
+0.99730 and mean 0.99869; 128, minimum 0.99829 and mean 0.99911. Its worst input is a Rust
+code snippet at 768 and 512, and a Python one at 256 and 128. On aarch64 the release
+quant's vectors differ slightly (see the llama.cpp reference below). From the aarch64
+reference vectors, which LTEmbed must match, its minimum and mean are 0.99622 and 0.99847
+at 768, 0.99640 and 0.99851 at 512, 0.99700 and 0.99869 at 256, and 0.99807 and 0.99909 at
+128, with the same Rust snippet worst at every width.
+
+The gate was set just below that measured error. Until the release moved from `UD-Q4_K_XL`
+to `UD-Q5_K_XL`, the gates were 0.985 per input and 0.993 on average, just below the 4-bit
+quant's error; the previous model's gate was 0.99 per input. The gate holds for these 25
+inputs, not for every text: over 2000 short CN/EN sentences at 512 dimensions, 10 of the
+release quant's vectors (0.5%) fall below 0.995, the lowest at 0.9911
+([benchmarking.md](./benchmarking.md#recorded-results)). The llama.cpp reference test below
+catches implementation errors with a far tighter gate.
+
+### How sensitive the gates are
+
+Cosine of the F32 reference's own output for deliberately wrong pipelines against the
+correct embedding, over the 21 short inputs:
+
+| Mistake | Highest cosine | Caught by |
+|---|---|---|
+| No prompt | 0.938 | per-input gate |
+| Query and document prompts swapped | 0.982 | per-input gate |
+| The previous model's `Query: `/`Document: ` prompts | 0.929 | per-input gate |
+| Last-token pooling | 0.880 | per-input gate |
+| First-token pooling | 0.871 | per-input gate |
+| Prompt applied twice | 0.9985 (median 0.991) | per-input gate; llama.cpp reference |
+| `<eos>` missing | 0.9856 (median 0.973) | per-input gate; load-time tokenization check |
+
+Every mistake also fails the llama.cpp reference test, which uses the correct prompt and
+the GGUF's own tokenizer.
+
+## llama.cpp reference: `tests/fixtures/llama_cpp_reference.json`
+
+The golden can only show LTEmbed is within quantization error of the F32 model. This
+fixture shows LTEmbed computes what llama.cpp itself computes on the same GGUF: upstream
+llama.cpp's `llama-embedding` example (`examples/embedding/embedding.cpp`), built from the
+commit the pinned static release compiles and linked against that release's own archives,
+run on the release GGUF for every golden input. It runs the same tokenizer and kernels as
+LTEmbed but none of LTEmbed's code: it tokenizes the prompted text and builds its batch
+itself. The settings are LTEmbed's: mean pooling, non-causal attention, flash
+attention on, `n_ctx = n_batch = n_ubatch = 8192`, no normalization.
+
+The kernels differ between the variants (their vectors agree to a mean cosine of 0.99963,
+and 0.99907 on the worst input), so the fixture holds one set of raw 768-wide vectors per
+variant, plus the token ids the GGUF
+gave, the GGUF identity, the llama.cpp commit and the tool's arguments. LTEmbed matches its
+own variant's vectors to the tool's 7-decimal output: the gate is cosine ≥ 0.99999 and a
+norm within 1e-4. Measured on x86-64-v3, the two agree to cosine 1 − 4·10⁻¹⁶.
+
+`scripts/generate_llama_cpp_reference.py` writes one variant's section and keeps the
+other's. `scripts/build_llama_cpp_reference_tool.sh` builds the tool from a llama.cpp
+checkout at the release's commit and an extracted release (see its header for the
+details):
+
+```bash
+COMMIT=cbe28bb3cb0758f0c566a9a3561766821aeb0748   # STATIC_LLAMA_LLAMA_CPP_COMMIT
+git init .llama-artifacts/llama.cpp && git -C .llama-artifacts/llama.cpp fetch --depth 1 \
+  https://github.com/ggml-org/llama.cpp "$COMMIT" && git -C .llama-artifacts/llama.cpp checkout FETCH_HEAD
+python3 scripts/assemble_gguf_bundle.py .llama-artifacts/bundle
+
+# x86-64-v3 host, x86_64-v3 release in .llama-artifacts/extracted-x86_64-v3:
+scripts/build_llama_cpp_reference_tool.sh .llama-artifacts/llama.cpp \
+  .llama-artifacts/extracted-x86_64-v3 .llama-artifacts/reftool-x86_64-v3
+python3 scripts/generate_llama_cpp_reference.py --variant x86_64-v3 \
+  --tool .llama-artifacts/reftool-x86_64-v3/llama-embedding --gguf .llama-artifacts/bundle/model.gguf
+
+# aarch64: build in the linux/arm64 container, statically so that it also runs under qemu.
+docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work rust:1.94.0 \
+  scripts/build_llama_cpp_reference_tool.sh --static .llama-artifacts/llama.cpp \
+  .llama-artifacts/extracted .llama-artifacts/reftool-aarch64
+python3 scripts/generate_llama_cpp_reference.py --variant aarch64-graviton2 \
+  --tool .llama-artifacts/reftool-aarch64/llama-embedding --gguf .llama-artifacts/bundle/model.gguf
+```
+
+With podman on an SELinux host, add `--security-opt label=disable` as in
+[development.md](./development.md#container-builds). The generator checks the GGUF's
+sha256, that the tool reports the pinned commit, that each input gives the token count the
+golden recorded, and that both variants saw the same token ids. Without `--reset`, a run
+keeps the other variant's section, so that section must come from the same inputs: the
+generator checks its input names before running the tool, and its token ids as each input
+runs. When the golden inputs change, run with `--reset`, which keeps neither the other
+section nor its token ids, then generate the other variant. Under qemu on an x86_64 host
+the aarch64 run takes hours: the 4074- and 8192-token inputs dominate.
 
 ## Token-id fixture: `tests/fixtures/token_ids.json`
 
 `scripts/generate_token_ids.py` encodes a fixed set of inputs with the Python `tokenizers`
-library, once singly and once as one padded batch. It uses the `tokenizer.json` at the
-Hugging Face revision that CI pins. The fixture records:
+library, singly and as one batch. It uses the model's `tokenizer.json` at the revision
+`scripts/assemble_gguf_bundle.py` pins; the bundle itself has no `tokenizer.json`. The
+fixture records:
 
-- `tokenizer`: repo, `revision` (`ac5d898c…`) and the file's `sha256`
+- `tokenizer`: repo, `revision` (`c8f89cc7…`) and the file's `sha256`
 - `tokenizers_version` (`0.23.2`): the script refuses to run unless the installed Python
-  `tokenizers` equals the Rust `tokenizers` version in `Cargo.lock`
-- `padding`: right padding, `pad_id` `128004`, `pad_type_id` `0`
-- `cases`: each input as literal `text` or as a `repeat` spec (the 1M-space input is never
-  stored literally), with its single encoding and its row of the batch encoding. Batch
-  rows store trailing padding as a count.
+  `tokenizers` equals the Rust `tokenizers` version in `Cargo.lock`, the dev-dependency the
+  [tokenizer parity test](#tokenizer-parity) reads its reference with
+- `padding`: `null`. EmbeddingGemma 2's tokenizer pads nothing, so the script requires each
+  batch row to equal the single encoding and stores only that.
+- `cases`: 15 inputs, as literal `text` or as a `repeat` spec (long inputs are never stored
+  literally): prompted English and CJK text, emoji, mixed whitespace, byte fallback, the
+  empty string, added-token text in several forms, a run of 100,000 spaces (3230 tokens),
+  and 6009 tokens of repeated mixed Chinese and English.
 
-If the bundle's `tokenizer.json` hash differs from the recorded one, the test fails with
-instructions to regenerate, instead of a bare id mismatch.
+`test_gguf_vocabulary_matches_reference_token_ids` in `src/engine/tokenizer_parity.rs`
+requires the GGUF's vocabulary, which the engine tokenizes with, to give each case's ids
+exactly. The parity test requires its reference `tokenizer.json` to have the recorded
+`sha256`, and fails with the expected repo and revision if it does not.
 
 **Regenerate it** after changing the script's `INPUTS`, bumping `REVISION`, or bumping
 `tokenizers` in `Cargo.lock`:
@@ -206,24 +325,136 @@ python3 scripts/generate_token_ids.py
 If the installed version is wrong, the script exits and prints the `pip install` command to
 run. No model weights are needed.
 
-`REVISION` in `scripts/generate_token_ids.py` must equal `HF_REVISION` in
-`.github/workflows/ci.yml`. Change them together.
+`REPO` and `REVISION` in `scripts/generate_token_ids.py` and `scripts/generate_fixtures.py`
+must equal `TOKENIZER_REPO` and `TOKENIZER_REVISION` in `scripts/assemble_gguf_bundle.py`,
+and its `TOKENIZER_SHA256` must equal the hash the fixture records.
+`tests/test_reference_generators.py` checks all of them.
+
+## Tokenizer parity
+
+The engine tokenizes every input with the GGUF's own vocabulary (`tokenizer.ggml.*`)
+through `llama_tokenize`, as upstream llama.cpp does
+([bundle-format.md](./bundle-format.md#tokenization)). The load-time check only shows that
+this adds BOS and EOS. `src/engine/tokenizer_parity.rs` checks the token ids themselves
+against references that do not come from llama.cpp or LTEmbed:
+
+- `test_tokenizer_json_matches_gguf_vocabulary`: the model's pinned `tokenizer.json`, run
+  by the `tokenizers` crate, must give the same ids as the GGUF's vocabulary on a fixed
+  corpus of 25,401 texts. `tokenizers` is a dev-dependency for this test only; the library
+  does not use it.
+- `test_gguf_vocabulary_matches_reference_token_ids`: the GGUF's vocabulary must give the
+  ids of the 15 [token-id fixture](#token-id-fixture-testsfixturestoken_idsjson) cases,
+  written by Python `tokenizers`, and the ids upstream `llama-embedding` recorded for the 25
+  prompted golden inputs in the
+  [llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson). That is
+  40 inputs, up to 8192 tokens.
+
+The corpus of the first test:
+
+| Source | Texts |
+|---|---|
+| `tests/CN_EN_Data.csv`, both columns | 5268 |
+| [Golden fixture](#golden-fixture-testsfixturestest_fixturesjson) inputs | 25 |
+| [Token-id fixture](#token-id-fixture-testsfixturestoken_idsjson) inputs, `repeat` specs expanded | 15 |
+| `text` fields of `scripts/benchmark_corpus.json` and `scripts/retrieval_eval_cases.json` | 28 |
+| Hand-picked edge cases (`EDGE_CASES`, plus five long runs without a word boundary) | 65 |
+| Seeded random strings | 20,000 |
+
+- **Edge cases**:
+  - whitespace and invisible characters: no-break and ideographic spaces, zero-width
+    characters, BOM, NEL, line and paragraph separators, NUL, control characters;
+  - composed and decomposed Unicode, and compatibility characters;
+  - scripts written without spaces;
+  - emoji ZWJ sequences, flags and keycaps;
+  - digits in several scripts;
+  - code and URLs;
+  - special-token text in exact, nested, unterminated and wrong-case forms.
+- **Random strings**: each has 1 to 12 segments. A segment is either a special-token or
+  whitespace fragment, or a run of code points from one of 30 ranges (ASCII, controls, Latin,
+  combining marks, Greek, Cyrillic, Hebrew, Arabic, Devanagari, Thai, Hangul, kana, CJK and
+  CJK Extension B, private use, variation selectors, fullwidth forms, hieroglyphs, regional
+  indicators, emoji). A fixed seed (`RANDOM_SEED`, xorshift64*) makes them the same on every
+  run.
+
+Each text is tokenized three times: as is, with the query prefix and with the document
+prefix, through the engine's own `prefixed_text`. That makes 76,203 encodings, about 4.1
+million tokens. Any difference fails the test, which lists the first 20 with the position of
+their first differing token. There is no tolerance.
+
+On the pinned GGUF all 76,203 encodings and all 40 reference inputs are identical. On
+x86-64-v3 this was measured locally, and both tests take about 19 s together in a debug
+build. CI runs them on both variants.
+
+**What a pass shows.** The GGUF's vocabulary agrees with the model's `tokenizer.json` on
+this corpus, and with the recorded ids, for the pinned GGUF, `tokenizer.json`, `tokenizers`
+version and static llama.cpp release. It is not a proof for every input. Neither side is
+checked against the tokenizer the model was trained with.
+
+**How sensitive it is.** With the engine's `llama_tokenize` call changed to not match
+special-token text (`parse_special = false`), the corpus test finds 20,148 differing
+encodings and the reference-id test 3 differing inputs. Comparing the real GGUF with a
+deliberately altered copy of `tokenizer.json` (measured before the reference's sha256 was
+checked, which now rejects such a copy):
+
+| Change to `tokenizer.json` | Encodings that differ |
+|---|---|
+| `<eos>` removed from the template | 76,203 (all) |
+| NFC normalization added before the space replacement | 14,916 |
+| `<mask>` no longer an added token | 2,712 |
+| One BPE merge removed (`▁th` + `e`) | 0 |
+
+Removing one merge changes nothing because the BPE reaches the same tokens through other
+merges. Python `tokenizers` also gives unchanged ids for all 5268 Chinese and English
+sentences after removing any one of nine merges tried.
+
+**Running them.** The tests need the GGUF, so they are `#[ignore]`d and plain
+`cargo test --lib` stays model-free. The reference `tokenizer.json` is written outside the
+bundle by `scripts/assemble_gguf_bundle.py --reference-tokenizer`
+([bundle-format.md](./bundle-format.md#assembling-a-bundle)):
+
+```bash
+LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
+  LTEMBED_TEST_REFERENCE_TOKENIZER="$PWD/reference-tokenizer.json" \
+  cargo test --lib tokenizer_parity -- --ignored
+```
+
+- **Skip or fail**: they follow the same rules as the Tier 2 integration tests
+  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). Both need `model.gguf` in
+  `LTEMBED_TEST_BUNDLE_DIR`, and the corpus test also the file
+  `LTEMBED_TEST_REFERENCE_TOKENIZER` names; with `LTEMBED_REQUIRE_TEST_BUNDLE=1` a missing
+  variable or file fails instead of skipping. Neither reads `build-info.json`.
+- **Corpus check**: the model-free unit test `test_corpus_reads_every_source`, part of
+  `cargo test --lib`, checks that every source loads and that the `repeat` specs are
+  expanded.
+- **Expected warnings**: texts that start with `<bos>` or end with `<eos>` make llama.cpp
+  print `check_double_bos_eos` warnings, about 560 per run. Both tokenizers add a second BOS
+  or EOS there.
+
+The corpus test has no fixture to regenerate: it computes both sides on every run. If either
+test fails after a bump of the static llama.cpp release, the GGUF or the tokenizer revision,
+that is a finding: the engine no longer tokenizes the way the model's own tokenizer does.
 
 ## Python tests
 
-`tests/test_*.py` cover the scripts in `scripts/`: the benchmark orchestrator, report
-renderer, metadata writer, retrieval-case builder, token-id generator, embedding comparison,
-documentation reference check, the PyTorch runner and the ONNX-era
-`compare_q4f16_onnx_vs_pytorch.py`. They do not build LTEmbed or need a bundle. The
-orchestrator tests check the `cargo run` command line without running it.
+`tests/test_*.py` cover the scripts in `scripts/`: the bundle assembler, the benchmark
+orchestrator, report renderer, metadata writer, retrieval-case builder, the three reference
+generators, embedding comparison, documentation reference check, the PyTorch runner and
+the ONNX-era `compare_q4f16_onnx_vs_pytorch.py`. They do not build LTEmbed or need a bundle
+or model weights. The orchestrator tests check the `cargo run` command line without running
+it. `tests/test_assemble_gguf_bundle.py` and `tests/test_reference_generators.py` also check
+that the committed fixtures, the generators, the bundle pins and the static release pins in
+`ci.yml` still name the same files, and that the release archive check requires the model's
+license text and attribution in `licenses/embeddinggemma-2/`, which name the pinned GGUF.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
 
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub
 `uname`, `cargo` and `docker` commands and a stub CPU check, so on any machine it checks
 which hosts run clippy natively and which use the container, without compiling anything.
-The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs `bash`
-and `git`.
+Its releases carry the artifact contract `.github/scripts/fetch-static-llama.sh` accepts
+(`EXPECTED_CONTRACT`), so it fails if the hook expects another one or names another in its
+error. The real CPU check runs against a fake dynamic loader and `/proc/cpuinfo`. It needs
+`bash` and `git`.
 
 ## Documentation references
 

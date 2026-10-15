@@ -1,28 +1,42 @@
 use approx::assert_relative_eq;
 use ltembed::engine::{
-    EmbeddingEngine, EmbeddingInput, EngineConfig, EMBEDDING_DIMENSION, MAX_LENGTH,
+    EmbeddingEngine, EmbeddingInput, EngineConfig, DOCUMENT_PREFIX, EMBEDDING_DIMENSION,
+    MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION,
 };
 use ltembed::error::{LTEmbedError, ModelLoadError};
-use ltembed::traits::tokenizer::{HFTokenizer, Tokenizer, TokenizerOutput};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::env::VarError;
-use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
-const TOKEN_IDS_FIXTURE: &str = "tests/fixtures/token_ids.json";
-const TOKENIZER: &str = "assets/tokenizer.json";
+const LLAMA_CPP_REFERENCE: &str = "tests/fixtures/llama_cpp_reference.json";
 const TEST_BUNDLE_ENV: &str = "LTEMBED_TEST_BUNDLE_DIR";
 /// `1` turns every bundle-gated skip into a failure. CI sets it so that losing
 /// `LTEMBED_TEST_BUNDLE_DIR` cannot leave the model-backed tests silently skipped.
 const REQUIRE_TEST_BUNDLE_ENV: &str = "LTEMBED_REQUIRE_TEST_BUNDLE";
 /// Bundle files the engine tests need. A missing `build-info.json` is not a skip: the engine
 /// reports it as a load error and the test fails.
-const ENGINE_BUNDLE_FILES: &[&str] = &["model.gguf", "tokenizer.json"];
+const ENGINE_BUNDLE_FILES: &[&str] = &["model.gguf"];
+
+/// Lowest cosine allowed between the engine's output and the F32 PyTorch golden, per input
+/// and at every width. The release GGUF is 5-bit: measured against the golden, UD-Q5_K_XL
+/// reaches 0.9969 at worst (a Rust snippet at 768 dimensions) and the BF16 GGUF of the same
+/// revision 0.99999 through this same engine, so the gap is weight quantization. Semantic
+/// mistakes fall far below the gate (docs/testing.md § "Golden fixture"). Every input must
+/// pass it, so it also bounds the mean.
+const GOLDEN_MIN_COSINE: f64 = 0.995;
+/// Lowest cosine allowed between the engine's raw vector and upstream llama.cpp's own
+/// embedding tool on the same GGUF, kernels and settings (measured: identical up to the
+/// tool's 7-decimal output). Anything lower is an LTEmbed error, not quantization.
+const LLAMA_CPP_MIN_COSINE: f64 = 0.99999;
+/// Largest allowed relative difference between those two vectors' norms.
+const LLAMA_CPP_MAX_NORM_ERROR: f64 = 1e-4;
 
 /// The test bundle directory if it holds `files`. Otherwise the test should return early
 /// (`None`), unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic instead.
@@ -72,24 +86,50 @@ fn bundle_or_skip(dir: Option<PathBuf>, required: bool, files: &[&str]) -> Optio
 }
 
 fn make_engine(bundle_dir: &Path) -> EmbeddingEngine {
-    EmbeddingEngine::from_gguf_bundle_dir(
+    make_engine_with(bundle_dir, EMBEDDING_DIMENSION, true, 1)
+}
+
+fn make_engine_with(
+    bundle_dir: &Path,
+    output_dimension: usize,
+    l2_normalize: bool,
+    n_threads: usize,
+) -> EmbeddingEngine {
+    EmbeddingEngine::from_gguf_bundle_dir_with_threads(
         bundle_dir,
         EngineConfig {
-            output_dimension: EMBEDDING_DIMENSION,
-            l2_normalize: true,
+            output_dimension,
+            l2_normalize,
         },
+        n_threads,
     )
     .expect("Failed to initialize EmbeddingEngine from bundle")
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    dot / (norm_a * norm_b)
+/// Threads for the tests that embed inputs of thousands of tokens.
+fn long_input_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
 }
 
-#[derive(Deserialize)]
+/// Cosine similarity, accumulated in f64.
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    assert_eq!(a.len(), b.len(), "cosine of vectors of different lengths");
+    let dot: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| f64::from(x) * f64::from(y))
+        .sum();
+    dot / (norm(a) * norm(b))
+}
+
+fn norm(v: &[f32]) -> f64 {
+    v.iter()
+        .map(|&x| f64::from(x) * f64::from(x))
+        .sum::<f64>()
+        .sqrt()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FixtureKind {
     Query,
@@ -98,15 +138,52 @@ enum FixtureKind {
 
 #[derive(Deserialize)]
 struct Fixture {
+    name: String,
     kind: FixtureKind,
     text: String,
+    /// Token count of the prompted text, BOS and EOS included.
+    tokens: usize,
+    /// For a query: the document fixture that must rank first.
+    relevant: Option<String>,
+    /// The `raw_dim`-wide, L2-normalized PyTorch embedding.
     embedding: Vec<f32>,
 }
 
+impl Fixture {
+    fn input(&self) -> EmbeddingInput<'_> {
+        match self.kind {
+            FixtureKind::Query => EmbeddingInput::query(&self.text),
+            FixtureKind::Document => EmbeddingInput::document(&self.text),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Prompts {
+    query: String,
+    document: String,
+}
+
+/// `tests/fixtures/test_fixtures.json`, written by `scripts/generate_fixtures.py`.
 #[derive(Deserialize)]
 struct FixtureFile {
-    dim: usize,
+    prompts: Prompts,
+    raw_dim: usize,
+    /// The Matryoshka widths the tests check.
+    dims: Vec<usize>,
+    max_length: usize,
+    /// Inputs of at most this many tokens are checked at every width.
+    short_tokens: usize,
     fixtures: Vec<Fixture>,
+}
+
+impl FixtureFile {
+    fn short_fixtures(&self) -> Vec<&Fixture> {
+        self.fixtures
+            .iter()
+            .filter(|fixture| fixture.tokens <= self.short_tokens)
+            .collect()
+    }
 }
 
 /// `tests/fixtures/test_fixtures.json`, checked by `parse_golden_fixtures`.
@@ -128,130 +205,164 @@ fn parse_golden_fixtures(json: &str) -> FixtureFile {
     });
     if let Some(problem) = golden_fixture_problem(&data) {
         panic!(
-            "{FIXTURES} {problem}. It must hold the PyTorch reference at the engine tests' \
-             output dimension, so changing EMBEDDING_DIMENSION means regenerating it: set \
-             OUTPUT_DIM in scripts/generate_fixtures.py to {EMBEDDING_DIMENSION} and run the \
-             script (see docs/testing.md)."
+            "{FIXTURES} {problem}. It must hold the PyTorch reference for the model the public \
+             constants describe, so changing the model, its prompts or its widths means \
+             regenerating it with scripts/generate_fixtures.py (see docs/testing.md)."
         );
     }
     data
 }
 
-/// Why `data` cannot be compared with the `EMBEDDING_DIMENSION`-d vectors the engine tests
-/// produce, or `None` if it can. A stale fixture is a problem in the repository, not a missing
-/// local resource, so it fails every run instead of skipping the way a missing bundle does.
+/// Why `data` does not describe the model the public constants describe, or `None` if it
+/// does. A stale fixture is a problem in the repository, not a missing local resource, so it
+/// fails every run instead of skipping the way a missing bundle does.
 fn golden_fixture_problem(data: &FixtureFile) -> Option<String> {
-    if data.dim != EMBEDDING_DIMENSION {
+    if data.prompts.query != QUERY_PREFIX || data.prompts.document != DOCUMENT_PREFIX {
         return Some(format!(
-            "records dim {}, but EMBEDDING_DIMENSION is {EMBEDDING_DIMENSION}",
-            data.dim
+            "records prompts {:?} / {:?}, but QUERY_PREFIX / DOCUMENT_PREFIX are {QUERY_PREFIX:?} \
+             / {DOCUMENT_PREFIX:?}",
+            data.prompts.query, data.prompts.document
         ));
+    }
+    if data.raw_dim != RAW_EMBEDDING_DIMENSION {
+        return Some(format!(
+            "records raw_dim {}, but RAW_EMBEDDING_DIMENSION is {RAW_EMBEDDING_DIMENSION}",
+            data.raw_dim
+        ));
+    }
+    if data.max_length != MAX_LENGTH {
+        return Some(format!(
+            "records max_length {}, but MAX_LENGTH is {MAX_LENGTH}",
+            data.max_length
+        ));
+    }
+    if !data.dims.contains(&EMBEDDING_DIMENSION) {
+        return Some(format!(
+            "checks widths {:?}, which leave out EMBEDDING_DIMENSION {EMBEDDING_DIMENSION}",
+            data.dims
+        ));
+    }
+    if let Some(dim) = data
+        .dims
+        .iter()
+        .find(|&&dim| dim == 0 || dim > data.raw_dim)
+    {
+        return Some(format!("checks width {dim}, outside 1..={}", data.raw_dim));
     }
     if data.fixtures.is_empty() {
         return Some("has no fixtures".to_string());
     }
-    data.fixtures
-        .iter()
-        .enumerate()
-        .find(|(_, fixture)| fixture.embedding.len() != data.dim)
-        .map(|(i, fixture)| {
-            format!(
-                "records dim {}, but fixture {i} has {} values",
-                data.dim,
+    for fixture in &data.fixtures {
+        if fixture.embedding.len() != data.raw_dim {
+            return Some(format!(
+                "records raw_dim {}, but fixture {} has {} values",
+                data.raw_dim,
+                fixture.name,
                 fixture.embedding.len()
-            )
-        })
+            ));
+        }
+        if fixture.tokens > data.max_length {
+            return Some(format!(
+                "has fixture {} of {} tokens, more than max_length {}",
+                fixture.name, fixture.tokens, data.max_length
+            ));
+        }
+        if let Some(relevant) = &fixture.relevant {
+            let is_short_document = data.short_fixtures().iter().any(|candidate| {
+                candidate.name == *relevant && candidate.kind == FixtureKind::Document
+            });
+            if fixture.kind != FixtureKind::Query || !is_short_document {
+                return Some(format!(
+                    "has fixture {} whose relevant document {relevant} is not a short \
+                     document fixture",
+                    fixture.name
+                ));
+            }
+        }
+    }
+    None
 }
 
-/// `tests/fixtures/token_ids.json`, written by `scripts/generate_token_ids.py`.
+/// `tests/fixtures/llama_cpp_reference.json`, written by
+/// `scripts/generate_llama_cpp_reference.py`: upstream llama.cpp's own embedding tool on the
+/// release GGUF, run on the golden fixture's inputs.
 #[derive(Deserialize)]
-struct TokenIdFixtureFile {
-    tokenizer: TokenizerSource,
-    tokenizers_version: String,
-    padding: BatchPadding,
-    cases: Vec<TokenIdCase>,
+struct LlamaCppReference {
+    gguf: GgufSource,
+    raw_dim: usize,
+    /// One entry per golden fixture, in the same order.
+    inputs: Vec<ReferenceInput>,
+    /// One section per static llama.cpp variant: their kernels round differently.
+    variants: HashMap<String, ReferenceVariant>,
 }
 
-/// The `tokenizer.json` the fixture was generated from.
 #[derive(Deserialize)]
-struct TokenizerSource {
-    repo: String,
-    revision: String,
+struct GgufSource {
     sha256: String,
 }
 
-/// Values of right-padding tokens. The generator rejects any other padding direction.
 #[derive(Deserialize)]
-struct BatchPadding {
-    pad_id: u32,
-    pad_type_id: u32,
-}
-
-#[derive(Deserialize)]
-struct TokenIdCase {
+struct ReferenceInput {
     name: String,
-    input: TokenIdInput,
-    single: TokenIds,
-    batch: PaddedTokenIds,
+    /// The GGUF vocabulary's tokenization of the prompted input.
+    token_ids: Vec<u32>,
 }
 
-/// A literal text, or a long text described by a repeated unit.
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TokenIdInput {
-    Text(String),
-    Repeat {
-        prefix: String,
-        unit: String,
-        count: usize,
-        suffix: String,
-    },
+struct ReferenceVariant {
+    embeddings: Vec<ReferenceEmbedding>,
 }
 
-impl TokenIdInput {
-    fn build(&self) -> String {
-        match self {
-            TokenIdInput::Text(text) => text.clone(),
-            TokenIdInput::Repeat {
-                prefix,
-                unit,
-                count,
-                suffix,
-            } => format!("{prefix}{}{suffix}", unit.repeat(*count)),
-        }
+#[derive(Deserialize)]
+struct ReferenceEmbedding {
+    name: String,
+    /// The raw (un-normalized) pooled, projected vector.
+    embedding: Vec<f32>,
+}
+
+/// The static llama.cpp variant this test binary links (see build.rs).
+fn static_llama_variant() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x86_64-v3"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-graviton2"
+    } else {
+        panic!("no static llama.cpp variant for this architecture")
     }
 }
 
-#[derive(Deserialize)]
-struct TokenIds {
-    input_ids: Vec<u32>,
-    attention_mask: Vec<u32>,
-    type_ids: Vec<u32>,
-}
-
-/// A batch row without its trailing padding, which is `padding` tokens long.
-#[derive(Deserialize)]
-struct PaddedTokenIds {
-    #[serde(flatten)]
-    unpadded: TokenIds,
-    padding: usize,
-}
-
-impl PaddedTokenIds {
-    fn padded(&self, pad: &BatchPadding) -> TokenIds {
-        let pad_with = |values: &[u32], value: u32| -> Vec<u32> {
-            values
-                .iter()
-                .copied()
-                .chain(std::iter::repeat_n(value, self.padding))
-                .collect()
-        };
-        TokenIds {
-            input_ids: pad_with(&self.unpadded.input_ids, pad.pad_id),
-            attention_mask: pad_with(&self.unpadded.attention_mask, 0),
-            type_ids: pad_with(&self.unpadded.type_ids, pad.pad_type_id),
+/// The reference, checked against the golden fixture: same inputs, in the same order.
+fn llama_cpp_reference(golden: &FixtureFile) -> LlamaCppReference {
+    let json = fs::read_to_string(LLAMA_CPP_REFERENCE).expect(
+        "tests/fixtures/llama_cpp_reference.json not found — run \
+         scripts/generate_llama_cpp_reference.py",
+    );
+    let reference: LlamaCppReference = serde_json::from_str(&json)
+        .unwrap_or_else(|e| panic!("{LLAMA_CPP_REFERENCE} does not parse: {e}"));
+    let golden_names: Vec<&str> = golden.fixtures.iter().map(|f| f.name.as_str()).collect();
+    let input_names: Vec<&str> = reference.inputs.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(
+        input_names, golden_names,
+        "{LLAMA_CPP_REFERENCE} was generated from other inputs than {FIXTURES}: rerun \
+         scripts/generate_llama_cpp_reference.py for every variant (docs/testing.md)"
+    );
+    assert_eq!(reference.raw_dim, golden.raw_dim);
+    for (variant, section) in &reference.variants {
+        let names: Vec<&str> = section.embeddings.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names, golden_names,
+            "{LLAMA_CPP_REFERENCE} variant {variant}"
+        );
+        for entry in &section.embeddings {
+            assert_eq!(
+                entry.embedding.len(),
+                reference.raw_dim,
+                "{variant} {}",
+                entry.name
+            );
         }
     }
+    reference
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -259,34 +370,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// Describes how `actual` differs from `expected` without printing sequences that can be
-/// thousands of tokens long.
-fn sequence_mismatch(field: &str, actual: &[u32], expected: &[u32]) -> Option<String> {
-    let lengths = format!("lengths {} vs {}", actual.len(), expected.len());
-    match actual.iter().zip(expected).position(|(a, e)| a != e) {
-        Some(i) => Some(format!(
-            "{field}[{i}] is {}, expected {} ({lengths})",
-            actual[i], expected[i]
-        )),
-        None => (actual.len() != expected.len()).then(|| format!("{field}: {lengths}")),
-    }
-}
-
-fn token_id_mismatches(actual: &TokenizerOutput, expected: &TokenIds) -> Vec<String> {
-    [
-        ("input_ids", &actual.input_ids, &expected.input_ids),
-        (
-            "attention_mask",
-            &actual.attention_mask,
-            &expected.attention_mask,
-        ),
-        ("type_ids", &actual.token_type_ids, &expected.type_ids),
-    ]
-    .into_iter()
-    .filter_map(|(field, actual, expected)| sequence_mismatch(field, actual, expected))
-    .collect()
 }
 
 fn unique_temp_dir() -> PathBuf {
@@ -308,28 +391,42 @@ fn write_build_info(dir: &Path, body: &str) {
     fs::write(dir.join("build-info.json"), body).unwrap();
 }
 
-fn write_tokenizer(dir: &Path) {
-    fs::copy(TOKENIZER, dir.join("tokenizer.json")).unwrap();
-}
-
 fn write_model_stub(dir: &Path) {
     fs::write(dir.join("model.gguf"), "stub").unwrap();
 }
 
-fn valid_build_info_json() -> &'static str {
-    r#"{
-  "target_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",
-  "model_metadata": {
-    "model_format": "gguf",
-    "pooling": "last_token",
-    "input_kind": "retrieval",
-    "query_prefix": "Query: ",
-    "document_prefix": "Document: ",
-    "raw_embedding_dimension": 768,
-    "output_embedding_dimension": 768,
-    "max_length": 8192
-  }
-}"#
+/// The `build-info.json` that CI and the release workflow write.
+fn valid_build_info() -> serde_json::Value {
+    serde_json::json!({
+        "target_id": "unsloth/embeddinggemma-2-GGUF",
+        "model_metadata": {
+            "model_format": "gguf",
+            "quant": "UD-Q5_K_XL",
+            "pooling": "mean",
+            "input_kind": "retrieval",
+            "query_prefix": "task: search result | query: ",
+            "document_prefix": "title: none | text: ",
+            "raw_embedding_dimension": 768,
+            "output_embedding_dimension": 768,
+            "max_length": 8192
+        }
+    })
+}
+
+fn valid_build_info_json() -> String {
+    valid_build_info().to_string()
+}
+
+/// The test bundle's `build-info.json` with `edit` applied, written to `dir`.
+fn write_edited_bundle_build_info(
+    bundle_dir: &Path,
+    dir: &Path,
+    edit: impl FnOnce(&mut serde_json::Value),
+) {
+    let build_info = fs::read_to_string(bundle_dir.join("build-info.json")).unwrap();
+    let mut build_info: serde_json::Value = serde_json::from_str(&build_info).unwrap();
+    edit(&mut build_info);
+    write_build_info(dir, &build_info.to_string());
 }
 
 /// Symlinks `files` from the test bundle into `dir`.
@@ -368,10 +465,9 @@ impl Drop for TempDir {
 
 /// GGUF metadata value types (`enum gguf_type` in llama.cpp's `gguf.h`).
 const GGUF_TYPE_UINT32: u32 = 4;
+const GGUF_TYPE_BOOL: u32 = 7;
 const GGUF_TYPE_STRING: u32 = 8;
 const GGUF_TYPE_ARRAY: u32 = 9;
-/// Tensor data alignment of a GGUF without `general.alignment`.
-const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
 
 /// Size in bytes of a fixed-size GGUF value type; `None` for strings and arrays.
 fn gguf_fixed_size(value_type: u32) -> Option<u64> {
@@ -443,19 +539,14 @@ impl GgufReader {
     }
 }
 
-/// A GGUF v3 file: a 24-byte header (magic, version, tensor count, key-value count), the
-/// key-value pairs, the tensor infos, zero padding to `alignment`, then the tensor data. Holds
-/// where those sections end and the metadata needed to add a key.
+/// The metadata of a GGUF v3 file: a 24-byte header (magic, version, tensor count, key-value
+/// count) followed by the key-value pairs. Holds what the tests below read or patch.
 struct GgufFile {
     path: PathBuf,
     /// `general.architecture`, the prefix of the model's hyperparameter keys.
     architecture: String,
-    /// Length of `tokenizer.ggml.tokens`, the model's own vocabulary, if the file has one.
-    n_tokens: Option<u64>,
-    keys: Vec<String>,
-    kv_end: u64,
-    tensor_infos_end: u64,
-    alignment: u64,
+    /// File offset and type of the value of each `uint32` and `bool` key.
+    fixed_offsets: HashMap<String, (u32, u64)>,
 }
 
 impl GgufFile {
@@ -464,13 +555,11 @@ impl GgufFile {
         assert_eq!(&reader.bytes(), b"GGUF", "{} is not a GGUF", path.display());
         let version = reader.u32();
         assert_eq!(version, 3, "{} is GGUF v{version}, not v3", path.display());
-        let n_tensors = reader.u64();
+        let _n_tensors = reader.u64();
         let n_kv = reader.u64();
 
         let mut architecture = None;
-        let mut n_tokens = None;
-        let mut alignment = GGUF_DEFAULT_ALIGNMENT;
-        let mut keys = Vec::new();
+        let mut fixed_offsets = HashMap::new();
         for _ in 0..n_kv {
             let key = reader.string();
             let value_type = reader.u32();
@@ -478,222 +567,302 @@ impl GgufFile {
                 ("general.architecture", GGUF_TYPE_STRING) => {
                     architecture = Some(reader.string());
                 }
-                ("general.alignment", GGUF_TYPE_UINT32) => alignment = reader.u32().into(),
-                ("tokenizer.ggml.tokens", GGUF_TYPE_ARRAY) => {
-                    let element_type = reader.u32();
-                    let len = reader.u64();
-                    reader.skip_array(element_type, len);
-                    n_tokens = Some(len);
+                (_, GGUF_TYPE_UINT32 | GGUF_TYPE_BOOL) => {
+                    fixed_offsets.insert(key, (value_type, reader.position()));
+                    reader.skip_value(value_type);
                 }
                 _ => reader.skip_value(value_type),
             }
-            keys.push(key);
-        }
-        let kv_end = reader.position();
-        for _ in 0..n_tensors {
-            reader.skip_value(GGUF_TYPE_STRING); // name
-            let n_dims = reader.u32();
-            reader.skip(8 * u64::from(n_dims) + 4 + 8); // dims, ggml type, data offset
         }
         Self {
             path: path.to_path_buf(),
             architecture: architecture
                 .unwrap_or_else(|| panic!("{} has no general.architecture", path.display())),
-            n_tokens,
-            keys,
-            kv_end,
-            tensor_infos_end: reader.position(),
-            alignment,
+            fixed_offsets,
         }
     }
 
-    /// Copies the file to `dst` with `key` appended to its metadata as a `uint32`. Tensor
-    /// offsets are relative to the start of the tensor data, so only the key-value count and
-    /// the padding before the data change.
-    fn copy_with_u32_key(&self, dst: &Path, key: &str, value: u32) {
-        assert!(
-            !self.keys.iter().any(|k| k == key),
-            "{} already has {key}",
-            self.path.display()
-        );
-        let mut src = File::open(&self.path).unwrap();
-        let mut header = vec![0; usize::try_from(self.tensor_infos_end).unwrap()];
-        src.read_exact(&mut header).unwrap();
-        let n_kv = u64::from_le_bytes(header[16..24].try_into().unwrap());
-        header[16..24].copy_from_slice(&(n_kv + 1).to_le_bytes());
-
-        let mut kv = Vec::new();
-        kv.extend_from_slice(&u64::try_from(key.len()).unwrap().to_le_bytes());
-        kv.extend_from_slice(key.as_bytes());
-        kv.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
-        kv.extend_from_slice(&value.to_le_bytes());
-        let kv_end = usize::try_from(self.kv_end).unwrap();
-        header.splice(kv_end..kv_end, kv);
-        let alignment = usize::try_from(self.alignment).unwrap();
-        header.resize(header.len().next_multiple_of(alignment), 0);
-
-        let mut out = BufWriter::new(File::create(dst).unwrap());
-        out.write_all(&header).unwrap();
-        let data_start = self.tensor_infos_end.next_multiple_of(self.alignment);
-        src.seek(SeekFrom::Start(data_start)).unwrap();
-        io::copy(&mut src, &mut out).unwrap();
+    /// Copies the file to `dst` with the value of `key`, which it must already have with type
+    /// `value_type`, replaced by `value`. The value keeps its size, so nothing else in the file
+    /// moves.
+    fn copy_with_value(&self, dst: &Path, key: &str, value_type: u32, value: &[u8]) {
+        let (found_type, offset) = *self.fixed_offsets.get(key).unwrap_or_else(|| {
+            panic!("{} has no key {key}", self.path.display());
+        });
+        assert_eq!(found_type, value_type, "{} {key}", self.path.display());
+        assert_eq!(gguf_fixed_size(value_type), Some(value.len() as u64));
+        fs::copy(&self.path, dst).unwrap();
+        let mut out = OpenOptions::new().write(true).open(dst).unwrap();
+        out.seek(SeekFrom::Start(offset)).unwrap();
+        out.write_all(value).unwrap();
         out.flush().unwrap();
     }
-}
 
-#[test]
-fn test_golden_parity_cosine_similarity() {
-    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
-        return;
-    };
-    let data = golden_fixtures();
-    let engine = make_engine(&bundle_dir);
+    fn copy_with_u32(&self, dst: &Path, key: &str, value: u32) {
+        self.copy_with_value(dst, key, GGUF_TYPE_UINT32, &value.to_le_bytes());
+    }
 
-    for fixture in &data.fixtures {
-        let input = match fixture.kind {
-            FixtureKind::Query => EmbeddingInput::query(&fixture.text),
-            FixtureKind::Document => EmbeddingInput::document(&fixture.text),
-        };
-        let rust_v = engine.embed(input).unwrap();
-        let sim = cosine_similarity(&rust_v, &fixture.embedding);
-        assert!(
-            sim > 0.99,
-            "Cosine similarity {sim:.6} < 0.99 for {:?}",
-            &fixture.text[..50.min(fixture.text.len())]
-        );
+    fn copy_with_bool(&self, dst: &Path, key: &str, value: bool) {
+        self.copy_with_value(dst, key, GGUF_TYPE_BOOL, &[u8::from(value)]);
     }
 }
 
-/// Needs no bundle, so a fixture left stale by an output-dimension change fails every run,
-/// not only the runs that can execute the parity test.
+/// Needs no bundle, so a fixture left stale by a model, prompt or width change fails every
+/// run, not only the runs that can execute the parity tests.
 #[test]
-fn test_golden_fixture_matches_engine_dimension() {
-    golden_fixtures();
+fn test_golden_fixture_matches_engine_constants() {
+    let data = golden_fixtures();
+    // The golden is L2-normalized at full width.
+    for fixture in &data.fixtures {
+        assert_relative_eq!(norm(&fixture.embedding), 1.0, epsilon = 1e-5);
+    }
 }
 
 #[test]
 fn test_golden_fixture_problems() {
-    let fixture_file = |dim: usize, lengths: &[usize]| FixtureFile {
-        dim,
-        fixtures: lengths
-            .iter()
-            .map(|&len| Fixture {
-                kind: FixtureKind::Query,
-                text: "text".to_string(),
-                embedding: vec![0.0; len],
-            })
-            .collect(),
+    let fixture = |name: &str, kind: FixtureKind, relevant: Option<&str>| Fixture {
+        name: name.to_string(),
+        kind,
+        text: "text".to_string(),
+        tokens: 4,
+        relevant: relevant.map(str::to_string),
+        embedding: vec![0.0; RAW_EMBEDDING_DIMENSION],
     };
-    let dim = EMBEDDING_DIMENSION;
+    let valid = || FixtureFile {
+        prompts: Prompts {
+            query: QUERY_PREFIX.to_string(),
+            document: DOCUMENT_PREFIX.to_string(),
+        },
+        raw_dim: RAW_EMBEDDING_DIMENSION,
+        dims: vec![RAW_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION],
+        max_length: MAX_LENGTH,
+        short_tokens: 512,
+        fixtures: vec![
+            fixture("q", FixtureKind::Query, Some("d")),
+            fixture("d", FixtureKind::Document, None),
+        ],
+    };
+    assert_eq!(golden_fixture_problem(&valid()), None);
 
+    // The previous model's prompts.
+    let mut data = valid();
+    data.prompts.query = "Query: ".to_string();
+    assert!(golden_fixture_problem(&data)
+        .unwrap()
+        .starts_with("records prompts \"Query: \""));
+
+    let mut data = valid();
+    data.raw_dim = 512;
     assert_eq!(
-        golden_fixture_problem(&fixture_file(dim, &[dim, dim])),
-        None
-    );
-    // The output dimension changed and the fixture was not regenerated.
-    assert_eq!(
-        golden_fixture_problem(&fixture_file(2 * dim, &[2 * dim])),
+        golden_fixture_problem(&data),
         Some(format!(
-            "records dim {}, but EMBEDDING_DIMENSION is {dim}",
-            2 * dim
+            "records raw_dim 512, but RAW_EMBEDDING_DIMENSION is {RAW_EMBEDDING_DIMENSION}"
         ))
     );
+
+    let mut data = valid();
+    data.dims = vec![RAW_EMBEDDING_DIMENSION];
+    assert!(golden_fixture_problem(&data)
+        .unwrap()
+        .contains("leave out EMBEDDING_DIMENSION"));
+
+    let mut data = valid();
+    data.fixtures.clear();
     assert_eq!(
-        golden_fixture_problem(&fixture_file(dim, &[])),
+        golden_fixture_problem(&data),
         Some("has no fixtures".to_string())
     );
+
+    let mut data = valid();
+    data.fixtures[1].embedding.truncate(EMBEDDING_DIMENSION);
     assert_eq!(
-        golden_fixture_problem(&fixture_file(dim, &[dim, dim / 2])),
+        golden_fixture_problem(&data),
         Some(format!(
-            "records dim {dim}, but fixture 1 has {} values",
-            dim / 2
+            "records raw_dim {RAW_EMBEDDING_DIMENSION}, but fixture d has \
+             {EMBEDDING_DIMENSION} values"
         ))
     );
+
+    let mut data = valid();
+    data.fixtures[0].relevant = Some("q".to_string());
+    assert!(golden_fixture_problem(&data)
+        .unwrap()
+        .contains("relevant document q is not a short document fixture"));
 }
 
-/// Detecting a stale fixture is not enough: loading it must fail the run. `dim` 0 can never
-/// equal `EMBEDDING_DIMENSION`, and the file once shipped with it.
+/// Detecting a stale fixture is not enough: loading it must fail the run.
 #[test]
-#[should_panic(expected = "records dim 0, but EMBEDDING_DIMENSION is")]
+#[should_panic(expected = "records prompts \"Query: \" / \"Document: \"")]
 fn test_stale_golden_fixture_fails() {
     parse_golden_fixtures(
-        r#"{"dim": 0, "fixtures": [{"kind": "query", "text": "text", "embedding": []}]}"#,
+        r#"{"prompts": {"query": "Query: ", "document": "Document: "}, "raw_dim": 768,
+            "dims": [512], "max_length": 8192, "short_tokens": 512,
+            "fixtures": [{"name": "q", "kind": "query", "text": "text", "tokens": 4,
+                          "embedding": []}]}"#,
     );
 }
 
-/// A fixture without `dim` fails too, rather than loading with its dimension unknown.
+/// A fixture in the previous model's format (one `dim`, no prompts) fails too.
 #[test]
-#[should_panic(expected = "missing field `dim`")]
-fn test_golden_fixture_without_dim_fails() {
-    parse_golden_fixtures(r#"{"fixtures": [{"kind": "query", "text": "text", "embedding": []}]}"#);
+#[should_panic(expected = "missing field `prompts`")]
+fn test_golden_fixture_without_prompts_fails() {
+    parse_golden_fixtures(r#"{"dim": 512, "fixtures": []}"#);
 }
 
-/// `HFTokenizer` must produce the same ids as the Python `tokenizers` behind the golden
-/// fixtures. The fixture's inputs exercise the model's Oniguruma `Split` regex (a 1M-char
-/// whitespace run that fancy-regex splits differently) and its added-token matcher.
+/// Needs no bundle: the reference must cover the golden inputs and this target's variant.
 #[test]
-fn test_token_ids_match_python_tokenizers() {
-    // Needs only tokenizer.json, so a directory holding just that file is enough to run it.
-    let Some(bundle_dir) = test_bundle(&["tokenizer.json"]) else {
+fn test_llama_cpp_reference_matches_golden_inputs() {
+    let golden = golden_fixtures();
+    let reference = llama_cpp_reference(&golden);
+    let variant = static_llama_variant();
+    assert!(
+        reference.variants.contains_key(variant),
+        "{LLAMA_CPP_REFERENCE} has no {variant} section: run \
+         scripts/generate_llama_cpp_reference.py --variant {variant} (docs/testing.md)"
+    );
+    for (fixture, input) in golden.fixtures.iter().zip(&reference.inputs) {
+        assert_eq!(input.token_ids.len(), fixture.tokens, "{}", fixture.name);
+    }
+}
+
+/// The engine against the F32 PyTorch golden at every width the fixture lists (768, 512, 256
+/// and 128): each output has that width, unit norm and finite values, stays within quantization
+/// error of the golden truncated to that width and renormalized, and ranks each query's
+/// relevant document first. Only the short inputs: truncation does not depend on length, and
+/// the long ones are checked at full width by the llama.cpp reference test.
+#[test]
+fn test_golden_parity_at_every_trained_dimension() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    let fixture_str = fs::read_to_string(TOKEN_IDS_FIXTURE)
-        .expect("tests/fixtures/token_ids.json not found — run scripts/generate_token_ids.py");
-    let fixture: TokenIdFixtureFile = serde_json::from_str(&fixture_str).unwrap();
+    let data = golden_fixtures();
+    let fixtures = data.short_fixtures();
+    let inputs: Vec<EmbeddingInput<'_>> = fixtures.iter().map(|f| f.input()).collect();
 
-    let tokenizer_path = bundle_dir.join("tokenizer.json");
-    let tokenizer_json = fs::read(&tokenizer_path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", tokenizer_path.display()));
-    let source = &fixture.tokenizer;
-    assert_eq!(
-        sha256_hex(&tokenizer_json),
-        source.sha256,
-        "{} is not the tokenizer.json that {TOKEN_IDS_FIXTURE} was generated from ({} at \
-         revision {}). If the upstream tokenizer changed, regenerate the fixture: set REVISION \
-         in scripts/generate_token_ids.py and HF_REVISION in .github/workflows/ci.yml to the \
-         new revision, then run `python3 scripts/generate_token_ids.py`.",
-        tokenizer_path.display(),
-        source.repo,
-        source.revision,
-    );
+    let mut failures = Vec::new();
+    let mut report = Vec::new();
+    for &dim in &data.dims {
+        let engine = make_engine_with(&bundle_dir, dim, true, 1);
+        let outputs = engine.embed_batch(&inputs).unwrap();
+        assert_eq!(outputs.len(), fixtures.len());
 
-    let tokenizer = HFTokenizer::from_file(&tokenizer_path.to_string_lossy()).unwrap();
-    let texts: Vec<String> = fixture
-        .cases
-        .iter()
-        .map(|case| case.input.build())
-        .collect();
-    let batch = tokenizer
-        .encode_batch(&texts, MAX_LENGTH)
-        .unwrap_or_else(|e| panic!("encode_batch failed: {e}"));
-    assert_eq!(batch.len(), fixture.cases.len());
-
-    let mut mismatches = Vec::new();
-    for ((case, text), batch_row) in fixture.cases.iter().zip(&texts).zip(&batch) {
-        let single = tokenizer
-            .encode(text, MAX_LENGTH)
-            .unwrap_or_else(|e| panic!("{}: encode failed: {e}", case.name));
-        for mismatch in token_id_mismatches(&single, &case.single) {
-            mismatches.push(format!("{} (encode): {mismatch}", case.name));
+        let mut cosines = Vec::new();
+        for (fixture, output) in fixtures.iter().zip(&outputs) {
+            assert_eq!(output.len(), dim, "{} at {dim}", fixture.name);
+            assert!(
+                output.iter().all(|v| v.is_finite()),
+                "{} at {dim} is not finite",
+                fixture.name
+            );
+            assert_relative_eq!(norm(output), 1.0, epsilon = 1e-5);
+            // Cosine does not depend on scale, so truncating the golden is enough.
+            let similarity = cosine(output, &fixture.embedding[..dim]);
+            if similarity < GOLDEN_MIN_COSINE {
+                failures.push(format!(
+                    "{} at {dim}: cosine {similarity:.6} < {GOLDEN_MIN_COSINE}",
+                    fixture.name
+                ));
+            }
+            cosines.push(similarity);
         }
-        for mismatch in token_id_mismatches(batch_row, &case.batch.padded(&fixture.padding)) {
-            mismatches.push(format!("{} (encode_batch): {mismatch}", case.name));
+        let mean = cosines.iter().sum::<f64>() / cosines.len() as f64;
+        let min = cosines.iter().copied().fold(f64::INFINITY, f64::min);
+        report.push(format!("{dim}: min {min:.6} mean {mean:.6}"));
+
+        let documents: Vec<(&Fixture, &Vec<f32>)> = fixtures
+            .iter()
+            .copied()
+            .zip(&outputs)
+            .filter(|(fixture, _)| fixture.kind == FixtureKind::Document)
+            .collect();
+        for (fixture, query) in fixtures.iter().zip(&outputs) {
+            let Some(relevant) = &fixture.relevant else {
+                continue;
+            };
+            let (best, _) = documents
+                .iter()
+                .map(|(document, output)| (&document.name, cosine(query, output)))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            if best != relevant {
+                failures.push(format!(
+                    "{} at {dim}: ranks {best} first, not {relevant}",
+                    fixture.name
+                ));
+            }
         }
     }
-    assert!(
-        mismatches.is_empty(),
-        "HFTokenizer output differs from Python tokenizers {}:\n  {}",
-        fixture.tokenizers_version,
-        mismatches.join("\n  ")
+    eprintln!("golden parity: {}", report.join("; "));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Every golden input, up to the full `MAX_LENGTH` tokens, against upstream llama.cpp's own
+/// embedding tool on the same GGUF and kernels: the raw vector must match the tool's (an
+/// LTEmbed tokenization, prefix, pooling, projection or FFI error, not quantization, would show
+/// here). The tool's token ids are compared with the engine's tokenization by
+/// `test_gguf_vocabulary_matches_reference_token_ids` (src/engine/tokenizer_parity.rs). Each
+/// raw vector is also checked against the F32 golden at full and default width.
+///
+/// The inputs run one after another in this one test because the longest needs about 10 GB:
+/// llama.cpp sizes its output buffer by the input's token count (docs/architecture.md).
+#[test]
+fn test_llama_cpp_reference_parity() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let golden = golden_fixtures();
+    let reference = llama_cpp_reference(&golden);
+    let variant = static_llama_variant();
+    let expected = &reference
+        .variants
+        .get(variant)
+        .unwrap_or_else(|| panic!("{LLAMA_CPP_REFERENCE} has no {variant} section"))
+        .embeddings;
+    let model_sha256 = sha256_hex(&fs::read(bundle_dir.join("model.gguf")).unwrap());
+    assert_eq!(
+        model_sha256, reference.gguf.sha256,
+        "the test bundle's model.gguf is not the GGUF {LLAMA_CPP_REFERENCE} was generated from"
     );
+
+    let engine = make_engine_with(
+        &bundle_dir,
+        RAW_EMBEDDING_DIMENSION,
+        false,
+        long_input_threads(),
+    );
+
+    let mut failures = Vec::new();
+    for (fixture, expected) in golden.fixtures.iter().zip(expected) {
+        let name = &fixture.name;
+        let raw = engine.embed(fixture.input()).unwrap();
+        assert_eq!(raw.len(), RAW_EMBEDDING_DIMENSION, "{name}");
+        assert!(raw.iter().all(|v| v.is_finite()), "{name} is not finite");
+
+        let similarity = cosine(&raw, &expected.embedding);
+        let norm_error = (norm(&raw) / norm(&expected.embedding) - 1.0).abs();
+        if similarity < LLAMA_CPP_MIN_COSINE || norm_error > LLAMA_CPP_MAX_NORM_ERROR {
+            failures.push(format!(
+                "{name}: vs llama.cpp ({variant}) cosine {similarity:.9}, norm error \
+                 {norm_error:.2e}"
+            ));
+        }
+        for dim in [RAW_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION] {
+            let similarity = cosine(&raw[..dim], &fixture.embedding[..dim]);
+            if similarity < GOLDEN_MIN_COSINE {
+                failures.push(format!(
+                    "{name} at {dim}: vs golden cosine {similarity:.6} < {GOLDEN_MIN_COSINE}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
 fn test_missing_model_file_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
-    write_build_info(&temp_dir, valid_build_info_json());
+    write_build_info(&temp_dir, &valid_build_info_json());
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
@@ -704,18 +873,22 @@ fn test_missing_model_file_returns_model_load_error() {
     fs::remove_dir_all(temp_dir).unwrap();
 }
 
+/// A bundle is `model.gguf` and `build-info.json`: the GGUF's vocabulary tokenizes, and a
+/// `tokenizer.json` beside them, even one that does not parse, is not read.
 #[test]
-fn test_missing_tokenizer_returns_model_load_error() {
+fn test_bundle_without_tokenizer_json_loads_and_ignores_one() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_model_stub(&temp_dir);
-    write_build_info(&temp_dir, valid_build_info_json());
+    link_bundle_files(&bundle_dir, &temp_dir, &["model.gguf", "build-info.json"]);
+    let input = EmbeddingInput::query("Which tokenizer splits this text?");
+    let expected = make_engine(&bundle_dir).embed(input).unwrap();
 
-    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
-    assert!(matches!(
-        result.unwrap_err(),
-        LTEmbedError::ModelLoad(ModelLoadError::MissingFile { .. })
-    ));
+    assert_eq!(make_engine(&temp_dir).embed(input).unwrap(), expected);
+    fs::write(temp_dir.join("tokenizer.json"), "not a tokenizer").unwrap();
+    assert_eq!(make_engine(&temp_dir).embed(input).unwrap(), expected);
 
     fs::remove_dir_all(temp_dir).unwrap();
 }
@@ -724,7 +897,6 @@ fn test_missing_tokenizer_returns_model_load_error() {
 fn test_missing_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
     write_model_stub(&temp_dir);
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
@@ -740,7 +912,6 @@ fn test_missing_build_info_returns_model_load_error() {
 fn test_malformed_build_info_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
     write_model_stub(&temp_dir);
     write_build_info(&temp_dir, "{not-json");
 
@@ -757,24 +928,10 @@ fn test_malformed_build_info_returns_model_load_error() {
 fn test_invalid_input_kind_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
     write_model_stub(&temp_dir);
-    write_build_info(
-        &temp_dir,
-        r#"{
-  "target_id": "bad-model",
-  "model_metadata": {
-    "model_format": "gguf",
-    "pooling": "last_token",
-    "input_kind": "classification",
-    "query_prefix": "Query: ",
-    "document_prefix": "Document: ",
-    "raw_embedding_dimension": 768,
-    "output_embedding_dimension": 768,
-    "max_length": 8192
-  }
-}"#,
-    );
+    let mut build_info = valid_build_info();
+    build_info["model_metadata"]["input_kind"] = "classification".into();
+    write_build_info(&temp_dir, &build_info.to_string());
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
@@ -784,28 +941,15 @@ fn test_invalid_input_kind_returns_model_load_error() {
     fs::remove_dir_all(temp_dir).unwrap();
 }
 
+/// A bundle assembled for the previous model's last-token pooling.
 #[test]
-fn test_invalid_pooling_returns_model_load_error() {
+fn test_last_token_pooling_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
     write_model_stub(&temp_dir);
-    write_build_info(
-        &temp_dir,
-        r#"{
-  "target_id": "bad-model",
-  "model_metadata": {
-    "model_format": "gguf",
-    "pooling": "mean",
-    "input_kind": "retrieval",
-    "query_prefix": "Query: ",
-    "document_prefix": "Document: ",
-    "raw_embedding_dimension": 768,
-    "output_embedding_dimension": 768,
-    "max_length": 8192
-  }
-}"#,
-    );
+    let mut build_info = valid_build_info();
+    build_info["model_metadata"]["pooling"] = "last_token".into();
+    write_build_info(&temp_dir, &build_info.to_string());
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
     assert!(matches!(
@@ -820,9 +964,8 @@ fn test_invalid_pooling_returns_model_load_error() {
 fn test_output_dimension_larger_than_raw_returns_model_load_error() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
     write_model_stub(&temp_dir);
-    write_build_info(&temp_dir, valid_build_info_json());
+    write_build_info(&temp_dir, &valid_build_info_json());
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(
         &temp_dir,
@@ -839,114 +982,120 @@ fn test_output_dimension_larger_than_raw_returns_model_load_error() {
     fs::remove_dir_all(temp_dir).unwrap();
 }
 
-/// The test bundle with only `raw_embedding_dimension` changed. The GGUF is 768 wide, so the
-/// load itself must fail, not the first `embed`.
+/// Loads the test bundle with `raw_embedding_dimension` set to `raw` and returns the load
+/// error's message. The GGUF's projected output is 768 wide, so the load itself must fail,
+/// not the first `embed`.
+fn load_with_raw_dimension(bundle_dir: &Path, raw: usize) -> String {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    link_bundle_files(bundle_dir, &temp_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(bundle_dir, &temp_dir, |build_info| {
+        build_info["model_metadata"]["raw_embedding_dimension"] = raw.into();
+    });
+
+    let result = EmbeddingEngine::from_gguf_bundle_dir(
+        &temp_dir,
+        EngineConfig {
+            output_dimension: 128,
+            l2_normalize: true,
+        },
+    );
+    fs::remove_dir_all(temp_dir).unwrap();
+    match result {
+        Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => msg,
+        Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        Ok(_) => panic!("a {raw}-wide bundle loaded against the 768-wide GGUF"),
+    }
+}
+
 #[test]
 fn test_gguf_width_mismatch_returns_model_load_error() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir).unwrap();
-    link_bundle_files(&bundle_dir, &temp_dir, ENGINE_BUNDLE_FILES);
-    let build_info = fs::read_to_string(bundle_dir.join("build-info.json")).unwrap();
-    let mut build_info: serde_json::Value = serde_json::from_str(&build_info).unwrap();
-    build_info["model_metadata"]["raw_embedding_dimension"] = 1024.into();
-    write_build_info(&temp_dir, &build_info.to_string());
-
-    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
-    match result {
-        Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
-            assert!(msg.contains("raw_embedding_dimension 1024"), "{msg}");
-        }
-        Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
-        Ok(_) => panic!("a 1024-wide bundle loaded against the 768-wide GGUF"),
-    }
-
-    fs::remove_dir_all(temp_dir).unwrap();
+    let msg = load_with_raw_dimension(&bundle_dir, 1024);
+    assert!(msg.contains("raw_embedding_dimension 1024"), "{msg}");
 }
 
-/// The test bundle with `<arch>.embedding_length_out = 512` added to a copy of its GGUF.
-/// llama.cpp then reports `n_embd` 768, which matches `raw_embedding_dimension`, but
-/// `n_embd_out` 512, so pooled vectors are narrower than the 768 floats `embed` reads. The
-/// load must fail on `n_embd_out`; the width test above never gets past `n_embd`.
+/// The hidden width (512) is not the embedding width: the engine reads the projected output.
 #[test]
-fn test_gguf_n_embd_out_mismatch_returns_model_load_error() {
+fn test_hidden_width_as_raw_dimension_returns_model_load_error() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    // The GGUF copy is about 170 MB.
+    let msg = load_with_raw_dimension(&bundle_dir, 512);
+    assert!(msg.contains("n_embd_out 768"), "{msg}");
+    assert!(msg.contains("raw_embedding_dimension 512"), "{msg}");
+    assert!(msg.contains("n_embd is 512"), "{msg}");
+}
+
+/// The test bundle with its GGUF's `<arch>.pooling_type` changed from mean (1) to last (3).
+/// llama.cpp loads it, so the engine's own check of the declared pooling must reject it.
+#[test]
+fn test_gguf_without_mean_pooling_returns_model_load_error() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    // The GGUF copy is about 210 MB.
     let temp_dir = TempDir::new();
-    link_bundle_files(
-        &bundle_dir,
-        temp_dir.path(),
-        &["tokenizer.json", "build-info.json"],
-    );
+    link_bundle_files(&bundle_dir, temp_dir.path(), &["build-info.json"]);
     let gguf = GgufFile::read(&bundle_dir.join("model.gguf"));
-    let key = format!("{}.embedding_length_out", gguf.architecture);
-    gguf.copy_with_u32_key(&temp_dir.path().join("model.gguf"), &key, 512);
+    let key = format!("{}.pooling_type", gguf.architecture);
+    gguf.copy_with_u32(&temp_dir.path().join("model.gguf"), &key, 3);
 
     let result = EmbeddingEngine::from_gguf_bundle_dir(temp_dir.path(), EngineConfig::default());
     match result {
         Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
-            assert!(msg.contains("n_embd_out 512"), "{msg}");
+            assert!(msg.contains(&format!("GGUF {key} is 3")), "{msg}");
         }
         Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
-        // Do not embed: the pooled buffer would be 512 floats, shorter than `embed` reads.
-        Ok(_) => panic!(
-            "the bundle loaded with {key} = 512 in its GGUF: either load no longer checks \
-             n_embd_out, or llama.cpp no longer reads {key}"
-        ),
+        Ok(_) => panic!("the bundle loaded with {key} = 3 in its GGUF"),
     }
 }
 
-/// The test bundle's GGUF and `build-info.json` with `assets/tokenizer.json`, a 30522-token
-/// WordPiece tokenizer from another model. It parses and its ids are all in the GGUF's range,
-/// so without the vocabulary-size check it loads and produces wrong embeddings.
+/// The test bundle with its GGUF's `tokenizer.ggml.add_eos_token` set to false. llama.cpp
+/// loads it and tokenizes without EOS, so every embedding would differ from the model's; the
+/// engine's check of the GGUF's tokenization must reject it. (`add_bos_token = false` cannot
+/// be tested this way: llama.cpp overrides it to true for a Gemma 4 tokenizer.)
 #[test]
-fn test_tokenizer_vocab_mismatch_returns_model_load_error() {
+fn test_gguf_without_eos_returns_model_load_error() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    let n_tokens = GgufFile::read(&bundle_dir.join("model.gguf"))
-        .n_tokens
-        .expect("the test bundle's GGUF has no tokenizer.ggml.tokens");
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir).unwrap();
-    link_bundle_files(&bundle_dir, &temp_dir, &["model.gguf", "build-info.json"]);
-    write_tokenizer(&temp_dir);
+    // The GGUF copy is about 210 MB.
+    let temp_dir = TempDir::new();
+    link_bundle_files(&bundle_dir, temp_dir.path(), &["build-info.json"]);
+    let key = "tokenizer.ggml.add_eos_token";
+    GgufFile::read(&bundle_dir.join("model.gguf")).copy_with_bool(
+        &temp_dir.path().join("model.gguf"),
+        key,
+        false,
+    );
 
-    let result = EmbeddingEngine::from_gguf_bundle_dir(&temp_dir, EngineConfig::default());
+    let result = EmbeddingEngine::from_gguf_bundle_dir(temp_dir.path(), EngineConfig::default());
     match result {
         Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
             assert!(
-                msg.contains("tokenizer.json vocabulary size 30522"),
-                "{msg}"
-            );
-            assert!(
-                msg.contains(&format!("GGUF vocabulary size {n_tokens}")),
+                msg.contains("the GGUF's tokenization adds no EOS:"),
                 "{msg}"
             );
         }
         Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
-        Ok(_) => panic!("{TOKENIZER} loaded against the test bundle's GGUF"),
+        Ok(_) => panic!("the bundle loaded with {key} = false in its GGUF"),
     }
-
-    fs::remove_dir_all(temp_dir).unwrap();
 }
 
+/// An input of more than `MAX_LENGTH` tokens is rejected before inference, with its full
+/// token count, instead of being truncated.
 #[test]
 fn test_long_input_returns_input_too_long_error() {
-    if !std::path::Path::new(TOKENIZER).exists() {
-        eprintln!("Skipping: tokenizer asset not found");
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
-    }
-    let tok = HFTokenizer::from_file(TOKENIZER).unwrap();
+    };
+    let engine = make_engine(&bundle_dir);
     let long_text = "hello world ".repeat(12000);
-    let result = tok.encode(&long_text, MAX_LENGTH);
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        LTEmbedError::InputTooLong { tokens, max } => {
+    match engine.embed(EmbeddingInput::document(&long_text)) {
+        Err(LTEmbedError::InputTooLong { tokens, max }) => {
             assert!(
                 tokens > MAX_LENGTH,
                 "tokens={tokens} should be > {MAX_LENGTH}"
@@ -957,54 +1106,130 @@ fn test_long_input_returns_input_too_long_error() {
     }
 }
 
+/// A bundle's `max_length` is the input limit the engine enforces and the context it sizes:
+/// an input of exactly that many tokens embeds, one more token fails with `InputTooLong`
+/// instead of being truncated. Lowering it is how a deployment caps peak memory.
 #[test]
-fn test_embed_batch_consistency() {
+fn test_bundle_max_length_is_enforced_without_truncation() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    const LIMIT: usize = 64;
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir).unwrap();
+    link_bundle_files(&bundle_dir, &temp_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &temp_dir, |build_info| {
+        build_info["model_metadata"]["max_length"] = LIMIT.into();
+    });
+
+    // Texts whose prompted form is exactly LIMIT and LIMIT + 1 tokens. An engine whose
+    // `max_length` is 1 rejects every input, naming its token count, so it counts tokens.
+    let counter_dir = unique_temp_dir();
+    fs::create_dir_all(&counter_dir).unwrap();
+    link_bundle_files(&bundle_dir, &counter_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &counter_dir, |build_info| {
+        build_info["model_metadata"]["max_length"] = 1.into();
+    });
+    let counter = make_engine(&counter_dir);
+    let text_of = |tokens: usize| {
+        (1..LIMIT)
+            .map(|words| vec!["alpha"; words].join(" "))
+            .find(|text| match counter.embed(EmbeddingInput::document(text)) {
+                Err(LTEmbedError::InputTooLong { tokens: count, .. }) => count == tokens,
+                other => panic!("expected InputTooLong at max_length 1, got {other:?}"),
+            })
+            .unwrap_or_else(|| panic!("no text of {tokens} tokens"))
+    };
+    let (fits, too_long) = (text_of(LIMIT), text_of(LIMIT + 1));
+    fs::remove_dir_all(counter_dir).unwrap();
+
+    let engine = make_engine(&temp_dir);
+    let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
+    assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
+    match engine.embed(EmbeddingInput::document(&too_long)) {
+        Err(LTEmbedError::InputTooLong { tokens, max }) => {
+            assert_eq!((tokens, max), (LIMIT + 1, LIMIT));
+        }
+        other => panic!("expected InputTooLong, got {other:?}"),
+    }
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+/// `embed_batch` returns one embedding per input, in input order, each identical to embedding
+/// that input alone, and repeating a call returns identical vectors.
+#[test]
+fn test_embed_batch_matches_single_embeds_and_repeats_exactly() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
     let engine = make_engine(&bundle_dir);
+    let long_document = "Mean pooling averages every token of the sequence. ".repeat(40);
     let inputs = [
         EmbeddingInput::query("hello"),
-        EmbeddingInput::query("world"),
+        EmbeddingInput::document(&long_document),
+        EmbeddingInput::query("世界"),
+        EmbeddingInput::document(""),
+        EmbeddingInput::query("hello"),
     ];
     let batch = engine.embed_batch(&inputs).unwrap();
-    let individual = engine.embed(inputs[0]).unwrap();
+    assert_eq!(batch.len(), inputs.len());
+    for (input, embedding) in inputs.iter().zip(&batch) {
+        assert_eq!(
+            *embedding,
+            engine.embed(*input).unwrap(),
+            "embed_batch must equal embed() for the same input"
+        );
+    }
+    assert_eq!(batch[0], batch[4], "the same input twice in one batch");
+    assert_ne!(
+        batch[0], batch[2],
+        "different inputs must not share an embedding"
+    );
     assert_eq!(
-        batch[0], individual,
-        "embed_batch[0] must equal embed() for same input"
+        batch,
+        engine.embed_batch(&inputs).unwrap(),
+        "a repeated call"
     );
 }
 
+/// The same text as a query and as a document gets different prompts, so different vectors.
 #[test]
-fn test_output_is_l2_normalized() {
+fn test_query_and_document_prompts_differ() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
     let engine = make_engine(&bundle_dir);
-    let v = engine
-        .embed(EmbeddingInput::query("normalization check"))
+    let query = engine
+        .embed(EmbeddingInput::query("password reset"))
         .unwrap();
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    assert_relative_eq!(norm, 1.0, epsilon = 1e-5);
+    let document = engine
+        .embed(EmbeddingInput::document("password reset"))
+        .unwrap();
+    let similarity = cosine(&query, &document);
+    assert!(similarity < 0.999, "query and document cosine {similarity}");
 }
 
 #[test]
-fn test_output_dimension_is_512() {
+fn test_default_config_output_is_normalized_and_512_wide() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
-    let engine = make_engine(&bundle_dir);
+    let engine = EmbeddingEngine::from_gguf_bundle_dir(&bundle_dir, EngineConfig::default())
+        .expect("Failed to initialize EmbeddingEngine from bundle");
     let v = engine
-        .embed(EmbeddingInput::query("dimension check"))
+        .embed(EmbeddingInput::query("normalization check"))
         .unwrap();
     assert_eq!(v.len(), EMBEDDING_DIMENSION);
+    assert!(v.iter().all(|x| x.is_finite()));
+    assert_relative_eq!(norm(&v), 1.0, epsilon = 1e-5);
 }
 
 #[test]
 fn test_missing_bundle_skips_unless_required() {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir).unwrap();
-    write_tokenizer(&temp_dir);
+    write_build_info(&temp_dir, &valid_build_info_json());
 
     assert_eq!(bundle_or_skip(None, false, ENGINE_BUNDLE_FILES), None);
     assert_eq!(
@@ -1012,7 +1237,7 @@ fn test_missing_bundle_skips_unless_required() {
         None
     );
     assert_eq!(
-        bundle_or_skip(Some(temp_dir.clone()), true, &["tokenizer.json"]),
+        bundle_or_skip(Some(temp_dir.clone()), true, &["build-info.json"]),
         Some(temp_dir.clone())
     );
 
@@ -1028,7 +1253,7 @@ fn test_required_bundle_fails_when_dir_unset() {
 }
 
 #[test]
-#[should_panic(expected = "has no model.gguf or tokenizer.json")]
+#[should_panic(expected = "has no model.gguf")]
 fn test_required_bundle_fails_when_files_missing() {
     bundle_or_skip(Some(unique_temp_dir()), true, ENGINE_BUNDLE_FILES);
 }

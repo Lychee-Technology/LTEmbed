@@ -96,6 +96,16 @@ class CommandBuilderTests(unittest.TestCase):
         self.assertIn("768", command)
         self.assertNotIn("--bundle-dir", command)
 
+    def test_only_the_ltembed_command_sets_l2_normalize(self):
+        # The PyTorch reference is always unit-norm; bench_pytorch.py has no such flag.
+        bench = load_module()
+        args = ltembed_args(l2_normalize=False)
+        with mock.patch.object(bench, "_prebuilt_ltembed_binary", return_value=None):
+            for mode in ("warm", "retrieval"):
+                command = bench.build_benchmark_command("ltembed", mode, args)
+                self.assertEqual(command[command.index("--l2-normalize") + 1], "false")
+        self.assertNotIn("--l2-normalize", bench.build_benchmark_command("pytorch", "retrieval", args))
+
     def test_command_appends_fixture_path_for_both_runners(self):
         bench = load_module()
         args = ltembed_args(resolved_fixture_path=Path("artifacts/resolved_fixture.json"))
@@ -305,13 +315,13 @@ class ColdItersTests(unittest.TestCase):
 
 class GoldenParityTests(unittest.TestCase):
     GOLDEN = {
-        "model": "test-model",
+        "model": {"repo": "test-model"},
         "raw_dim": 4,
-        "dim": 2,
+        "dims": [4, 2],
         "max_length": 8192,
         "fixtures": [
-            {"kind": "query", "text": "他感冒了", "embedding": [1.0, 0.0]},
-            {"kind": "document", "text": "He caught a cold.", "embedding": [0.0, 1.0]},
+            {"kind": "query", "text": "他感冒了", "embedding": [1.0, 0.0, 0.0, 5.0]},
+            {"kind": "document", "text": "He caught a cold.", "embedding": [0.0, 1.0, 5.0, 0.0]},
         ],
     }
 
@@ -324,7 +334,7 @@ class GoldenParityTests(unittest.TestCase):
         self.assertEqual(case["queries"][0]["relevant_document_ids"], [])
         self.assertEqual([d["id"] for d in case["documents"]], ["golden_document_1"])
         self.assertEqual(expected["golden_query_0"]["scenario"], "golden/query/0")
-        self.assertEqual(expected["golden_document_1"]["embedding"], [0.0, 1.0])
+        self.assertEqual(expected["golden_document_1"]["embedding"], [0.0, 1.0, 5.0, 0.0])
 
     def test_collect_golden_parity_rows_scores_each_fixture(self):
         bench = load_module()
@@ -335,7 +345,7 @@ class GoldenParityTests(unittest.TestCase):
             args = ltembed_args(
                 golden_fixture_path=golden_path,
                 golden_parity_threshold=0.98,
-                output_dimension=2,  # matches the fixture's dim
+                output_dimension=2,  # one of the fixture's widths: its first 2 values
                 output_csv=tmp / "report.csv",
             )
             ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
@@ -369,7 +379,7 @@ class GoldenParityTests(unittest.TestCase):
 
     def test_collect_golden_parity_skips_on_dimension_mismatch(self):
         bench = load_module()
-        golden = dict(self.GOLDEN, dim=512)
+        golden = self.GOLDEN
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             golden_path = tmp / "golden.json"
@@ -377,7 +387,7 @@ class GoldenParityTests(unittest.TestCase):
             args = ltembed_args(
                 golden_fixture_path=golden_path,
                 golden_parity_threshold=0.98,
-                output_dimension=768,  # != fixture dim -> cosine undefined, must skip
+                output_dimension=3,  # not one of the fixture's widths -> no reference, must skip
                 output_csv=tmp / "report.csv",
             )
             ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",
@@ -417,7 +427,7 @@ class GoldenParityTests(unittest.TestCase):
             args = ltembed_args(
                 golden_fixture_path=golden_path,
                 golden_parity_threshold=0.98,
-                output_dimension=2,  # matches the fixture's dim
+                output_dimension=2,  # one of the fixture's widths
                 output_csv=tmp / "report.csv",
             )
             ctx = bench.RunContext(run_id="r", timestamp_utc="t", model_id="m",

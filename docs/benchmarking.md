@@ -334,6 +334,10 @@ not change it. With `max_length` 2048, the 2039-token input peaks at the same 2.
 the 1024-token one at 1.51 GiB.
 
 These peaks include the 1 MiB per input token of logits that `v0.1.159-2` reserved and
-`v0.1.159-3` no longer does. The Pi was not measured again; the current release's memory on
-an aarch64 runner (0.54 GiB at 1024 tokens, 1.47 GiB at 8192) is in
-[architecture.md](./architecture.md#long-inputs-and-memory).
+`v0.1.159-3` no longer does. Measured again with `v0.1.159-3` in the same way, the Pi peaks
+at 0.42, 0.57, 0.92 and 1.48 GiB (1.58 GB) for 14, 1024, 4074 and 8192 tokens, at 4 threads
+and, for the first three, at 1 thread. That is 0.01–0.03 GiB above the aarch64 runner in
+[architecture.md](./architecture.md#long-inputs-and-memory). The first calls took 0.09–0.20,
+5.7, 39.1 and 103 s at 4 threads, and 0.17, 15.3 and 99.8 s at 1 thread; the 8192-token call
+reached 84 °C. One engine that embeds 8192, 14, 8192 and 1024 tokens in turn holds 1.48 GiB
+from the first input on, and its 8192-token calls took 118.7 and 118.9 s.

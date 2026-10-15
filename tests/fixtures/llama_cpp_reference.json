@@ -118,8 +118,8 @@
   ],
   "variants": {
     "aarch64-graviton2": {
-      "static_release": "v0.1.159-2",
-      "archive_sha256": "720b395930962c9c7a17e1f2828b41fc8fc188db075e44b8583fb402bcdee5a3",
+      "static_release": "v0.1.159-3",
+      "archive_sha256": "87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b",
       "embeddings": [
         {
           "name": "query_en",

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # The artifact contract the crate's FFI (src/engine/llama/) was written and tested against.
-readonly EXPECTED_CONTRACT=5
+readonly EXPECTED_CONTRACT=6
 
 : "${STATIC_LLAMA_REPO:?set STATIC_LLAMA_REPO}"
 : "${STATIC_LLAMA_TAG:?set STATIC_LLAMA_TAG}"

@@ -19,7 +19,7 @@ results are archived in
 | Document prefix | `Document: ` | `title: none \| text: ` |
 | Raw width / default output | 768 / 512 | 768 / 512 |
 | Maximum input | 8192 tokens | 8192 tokens |
-| Peak memory for an 8k input | not measured | about 10 GB ([architecture.md](./architecture.md#long-inputs-and-memory)) |
+| Peak memory for an 8k input | not measured | about 1.6 GB ([architecture.md](./architecture.md#long-inputs-and-memory)) |
 
 ## Rust API
 
@@ -105,10 +105,9 @@ still missing cannot be found.
   them with the new model's tokenizer, which the bundle no longer contains; the
   [Rust API](#rust-api) section shows how. The engine's count includes `<bos>` and `<eos>`
   and the prefix.
-- **Memory.** llama.cpp reserves about 1 MiB per input token for this model's 262144-token
-  vocabulary, and keeps the largest reservation for the engine's lifetime: an 8192-token
-  input needs about 10 GB. Size hosts for the longest input you accept, or set a lower
-  `max_length` in `build-info.json` to reject longer inputs
+- **Memory.** Peak memory grows with input length, and an engine keeps its peak for its
+  lifetime: an 8192-token input needs about 1.6 GB. Size hosts for the longest input you
+  accept, or set a lower `max_length` in `build-info.json` to reject longer inputs
   ([architecture.md](./architecture.md#long-inputs-and-memory)).
 - **Hand-written prefixes.** If any other component embedded text with its own prefixes (for
   example a Python job using the model directly), it must now use the model's

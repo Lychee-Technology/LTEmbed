@@ -36,19 +36,19 @@ The release is pinned by these variables in `.github/workflows/ci.yml`.
 | Variable | Value |
 |---|---|
 | `STATIC_LLAMA_REPO` | `Lychee-Technology/static-llama-cpp-rs-builder` |
-| `STATIC_LLAMA_TAG` | `v0.1.159-2` |
-| `STATIC_LLAMA_LLAMA_CPP_COMMIT` | `cbe28bb3cb0758f0c566a9a3561766821aeb0748` (llama.cpp `b11577`, version `0.6.0-dev`) |
-| `STATIC_LLAMA_SHA256_AARCH64` | `720b395930962c9c7a17e1f2828b41fc8fc188db075e44b8583fb402bcdee5a3` |
-| `STATIC_LLAMA_SHA256_X86_64` | `12c16eba8a756025d8ae2721544cef7b13decaf1b04e04ef1371dfeead50113d` |
+| `STATIC_LLAMA_TAG` | `v0.1.159-3` |
+| `STATIC_LLAMA_LLAMA_CPP_COMMIT` | `6868a52cb337450658006ad2f9281c2eb63f1666` (llama.cpp `b11630`, version `0.6.0-dev`) |
+| `STATIC_LLAMA_SHA256_AARCH64` | `87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b` |
+| `STATIC_LLAMA_SHA256_X86_64` | `448448f0548ef7d69737042ecd781dcd2c5f25d8c14debd66db455e00a58644c` |
 
-The release uses artifact contract `5`, has no OpenMP dependency, and ships one variant per
+The release uses artifact contract `6`, has no OpenMP dependency, and ships one variant per
 architecture. Both variants are built from the same llama.cpp commit and ship the same
 `bindings.rs`:
 
 | Variant (`target_profile`) | Asset | `target_triple` | Compiler flags | CPU requirement |
 |---|---|---|---|---|
-| `aarch64-graviton2` | `static-llama-cpp-v0.1.159-2-aarch64-graviton2.tar.gz` | `aarch64-unknown-linux-gnu` | `-march=armv8.2-a+fp16+dotprod+rcpc -mtune=neoverse-n1` | Graviton2 / Neoverse N1 or newer |
-| `x86_64-v3` | `static-llama-cpp-v0.1.159-2-x86_64-v3-linux-gnu.tar.gz` | `x86_64-unknown-linux-gnu` | `-march=x86-64-v3` | x86-64-v3: AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE |
+| `aarch64-graviton2` | `static-llama-cpp-v0.1.159-3-aarch64-graviton2.tar.gz` | `aarch64-unknown-linux-gnu` | `-march=armv8.2-a+fp16+dotprod+rcpc -mtune=neoverse-n1` | Graviton2 / Neoverse N1 or newer |
+| `x86_64-v3` | `static-llama-cpp-v0.1.159-3-x86_64-v3-linux-gnu.tar.gz` | `x86_64-unknown-linux-gnu` | `-march=x86-64-v3` | x86-64-v3: AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE |
 
 There is no runtime ISA dispatch: a CPU below the variant's baseline faults with `SIGILL`.
 x86-64 CPUs below v3 are not supported. To check an x86_64 host, run
@@ -63,16 +63,16 @@ variant in `.llama-artifacts/extracted/`.
 
 ```bash
 STATIC_LLAMA_REPO=Lychee-Technology/static-llama-cpp-rs-builder
-STATIC_LLAMA_TAG=v0.1.159-2
-STATIC_LLAMA_LLAMA_CPP_COMMIT=cbe28bb3cb0758f0c566a9a3561766821aeb0748
+STATIC_LLAMA_TAG=v0.1.159-3
+STATIC_LLAMA_LLAMA_CPP_COMMIT=6868a52cb337450658006ad2f9281c2eb63f1666
 
 # aarch64 Linux, or the linux/arm64 container (and the pre-push hook):
 VARIANT=aarch64-graviton2 PROFILE=aarch64-graviton2 TRIPLE=aarch64-unknown-linux-gnu
-SHA256=720b395930962c9c7a17e1f2828b41fc8fc188db075e44b8583fb402bcdee5a3
+SHA256=87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b
 DEST=.llama-artifacts/extracted
 # x86-64-v3 Linux instead:
 # VARIANT=x86_64-v3-linux-gnu PROFILE=x86_64-v3 TRIPLE=x86_64-unknown-linux-gnu
-# SHA256=12c16eba8a756025d8ae2721544cef7b13decaf1b04e04ef1371dfeead50113d
+# SHA256=448448f0548ef7d69737042ecd781dcd2c5f25d8c14debd66db455e00a58644c
 # DEST=.llama-artifacts/extracted-x86_64-v3
 
 TARBALL="static-llama-cpp-${STATIC_LLAMA_TAG}-${VARIANT}.tar.gz"
@@ -86,10 +86,10 @@ gh release download "$STATIC_LLAMA_TAG" --repo "$STATIC_LLAMA_REPO" \
 )
 tar -xzf ".llama-artifacts/dl/$TARBALL" -C "$DEST"
 (cd "$DEST" && sha256sum -c SHA256SUMS)
-# Each line must print the expected value: 5, the profile, the triple, the commit.
+# Each line must print the expected value: 6, the profile, the triple, the commit.
 jq -r '.artifact_contract_version, .target_profile, .target_triple, .llama_cpp.commit' \
   "$DEST/build-info.json"
-echo "expected: 5 $PROFILE $TRIPLE $STATIC_LLAMA_LLAMA_CPP_COMMIT"
+echo "expected: 6 $PROFILE $TRIPLE $STATIC_LLAMA_LLAMA_CPP_COMMIT"
 
 export STATIC_LLAMA_DIR="$PWD/$DEST"
 ```
@@ -104,7 +104,7 @@ The rest of the pin is not in the workflows. `fetch-static-llama.sh` maps `uname
 asset name, `target_profile` and `target_triple`, and on x86_64 refuses to continue unless
 the CPU passes the x86-64-v3 check in `.github/scripts/x86-64-v3.sh`, which
 `.githooks/pre-push` also uses. The script and the hook reject any artifact contract other
-than `5`, and any `target_triple` other than that of the variant they expect. When bumping
+than `6`, and any `target_triple` other than that of the variant they expect. When bumping
 the release, update the tag, the llama.cpp commit and both SHA-256 pins in `ci.yml`, and
 the same variables in `benchmark-arm64.yml`. Update the script and the hook if the new
 release changes an asset name, a variant or the contract version; `tests/test_pre_push_hook.py`
@@ -112,7 +112,12 @@ fails if the hook's `expected_contract` differs from the script's `EXPECTED_CONT
 Update [licenses/llama.cpp/NOTICE.md](../licenses/llama.cpp/NOTICE.md) as well, and compare its
 license copies with the new release's `LICENSES/`; `tests/test_reference_generators.py` fails
 while the notice names another release or llama.cpp commit than `ci.yml`, or while a copy
-differs from the sha256 the notice records.
+differs from the sha256 the notice records. The same test fails until `LLAMA_CPP_COMMIT`,
+`STATIC_RELEASE` and `VARIANTS` in `scripts/generate_llama_cpp_reference.py` match `ci.yml`
+and both variants' sections of `tests/fixtures/llama_cpp_reference.json` name the new release:
+rebuild the reference tool and regenerate both sections
+([testing.md](./testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson)), then
+run the tokenizer parity and integration tests on both variants.
 
 ## Native builds
 
@@ -160,7 +165,7 @@ docker run --rm --platform linux/arm64 \
   example `-e LTEMBED_TEST_BUNDLE_DIR=/work/gguf_bundle`.
 - On an x86_64 host, `--platform linux/arm64` runs under qemu emulation, which is slow; the
   llama.cpp reference test embeds about 13,500 tokens of long input and takes far longer
-  than natively. The 8192-token input needs about 10 GB of memory in the container too.
+  than natively.
 - With Podman on an SELinux host, add `--security-opt label=disable` so the container can
   read the bind mounts.
 
@@ -187,7 +192,7 @@ docker run --rm --platform linux/arm64 \
 
   Either way, the hook first fails fast if that release directory lacks any of
   `lib/libllama.a`, `lib/libggml.a`, `lib/libggml-cpu.a`, `lib/libggml-base.a`,
-  `bindings.rs` or `build-info.json`, if its contract version is not `5`, or if its
+  `bindings.rs` or `build-info.json`, if its contract version is not `6`, or if its
   `target_triple` is not the one above; in the container case, also if `docker info` fails.
   It does not verify SHA-256 sums; it trusts that the download step above did.
 
@@ -224,8 +229,8 @@ The tokenizer parity tests and the model-backed integration tests need a bundle 
 `./reference-tokenizer.json`, outside the bundle. Build both with
 `python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json`
 ([bundle-format.md](./bundle-format.md#assembling-a-bundle)), which downloads the same pinned
-files CI uses. The integration tests also need about 10 GB of free memory for the
-8192-token input.
+files CI uses. The integration tests, which embed an 8192-token input while other tests run
+their own engines, peak at about 2.3 GiB of memory on x86-64-v3.
 
 ## End-to-end sanity check
 

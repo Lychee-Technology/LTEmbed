@@ -179,7 +179,9 @@ budget is a packaging target; this repository does not deploy to Lambda (see
 
 No benchmark output is committed to the repository except the tables below. In
 particular, there are **no committed Graviton timings** and no committed output from the
-`benchmark-arm64` workflow; the only aarch64 timings are from a Raspberry Pi 5, below. The previous model's results, from the
+`benchmark-arm64` workflow. The aarch64 timings are from a Raspberry Pi 5, below, and the
+first-call times of a GitHub ARM runner in
+[architecture.md](./architecture.md#long-inputs-and-memory). The previous model's results, from the
 llama.cpp migration spike of July 2026, are in
 [history/models/jina-embeddings-v5-text-nano-retrieval.md](./history/models/jina-embeddings-v5-text-nano-retrieval.md#recorded-results-llamacpp-migration-spike-july-2026).
 
@@ -330,3 +332,8 @@ first call:
 Peak RSS is 0.09–0.12 GiB above the x86 host's at every length, and the thread count does
 not change it. With `max_length` 2048, the 2039-token input peaks at the same 2.60 GiB and
 the 1024-token one at 1.51 GiB.
+
+These peaks include the 1 MiB per input token of logits that `v0.1.159-2` reserved and
+`v0.1.159-3` no longer does. The Pi was not measured again; the current release's memory on
+an aarch64 runner (0.54 GiB at 1024 tokens, 1.47 GiB at 8192) is in
+[architecture.md](./architecture.md#long-inputs-and-memory).

@@ -49,9 +49,9 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    [tokenizer parity tests](#tokenizer-parity), which
    plain `cargo test --lib` (step 3) skips as ignored.
 8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
-   8192-token input, which takes about 10 GB of memory
-   ([architecture.md](./architecture.md#long-inputs-and-memory)); GitHub's standard Linux
-   runners have 16 GB.
+   8192-token input while other tests run their own engines; the whole test process peaks
+   at about 2.3 GiB on x86-64-v3
+   ([architecture.md](./architecture.md#long-inputs-and-memory)).
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
@@ -262,7 +262,7 @@ checkout at the release's commit and an extracted release (see its header for th
 details):
 
 ```bash
-COMMIT=cbe28bb3cb0758f0c566a9a3561766821aeb0748   # STATIC_LLAMA_LLAMA_CPP_COMMIT
+COMMIT=6868a52cb337450658006ad2f9281c2eb63f1666   # STATIC_LLAMA_LLAMA_CPP_COMMIT
 git init .llama-artifacts/llama.cpp && git -C .llama-artifacts/llama.cpp fetch --depth 1 \
   https://github.com/ggml-org/llama.cpp "$COMMIT" && git -C .llama-artifacts/llama.cpp checkout FETCH_HEAD
 python3 scripts/assemble_gguf_bundle.py .llama-artifacts/bundle

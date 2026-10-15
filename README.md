@@ -23,8 +23,9 @@ entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
   truncated to 512 and L2-normalized by default. The model is trained for 768, 512, 256
   and 128.
 - **Max input:** 8192 tokens. Longer inputs return an error; nothing is truncated. Memory
-  grows with input length, to about 10 GB for an 8192-token input; a bundle can set a lower
-  limit (see [docs/architecture.md](./docs/architecture.md#long-inputs-and-memory)).
+  grows with input length, from about 0.45 GB for short inputs to about 1.6 GB for an
+  8192-token input; a bundle can set a lower limit (see
+  [docs/architecture.md](./docs/architecture.md#long-inputs-and-memory)).
 
 ## Model bundle
 
@@ -106,7 +107,7 @@ handles one call at a time.
 
 Every `cargo build`, `test`, `clippy` or `run` needs `STATIC_LLAMA_DIR` set to the
 extracted, checksum-verified static llama.cpp release that `.github/workflows/ci.yml`
-pins (`v0.1.159-2`, llama.cpp `b11577`), in the variant for the host: `aarch64-graviton2`
+pins (`v0.1.159-3`, llama.cpp `b11630`), in the variant for the host: `aarch64-graviton2`
 or `x86_64-v3`.
 
 ```bash

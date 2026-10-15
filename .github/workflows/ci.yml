@@ -21,14 +21,16 @@ env:
   # STATIC_LLAMA_DIR before running cargo. .github/scripts/fetch-static-llama.sh picks the
   # variant for the runner's architecture.
   STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
-  STATIC_LLAMA_TAG: v0.1.159-2
-  # llama.cpp b11577 (0.6.0-dev), the engine commit the release compiles (build-info.json
-  # llama_cpp.commit). The first llama.cpp with EmbeddingGemma 2 (gemma-embedding2) support.
-  STATIC_LLAMA_LLAMA_CPP_COMMIT: cbe28bb3cb0758f0c566a9a3561766821aeb0748
+  STATIC_LLAMA_TAG: v0.1.159-3
+  # llama.cpp b11630 (0.6.0-dev), the engine commit the release compiles (build-info.json
+  # llama_cpp.commit). Unlike b11577, it reserves no host logits for a pooled embeddings
+  # context, which there took 1 MiB per input token for EmbeddingGemma 2
+  # (docs/architecture.md § "Long inputs and memory").
+  STATIC_LLAMA_LLAMA_CPP_COMMIT: 6868a52cb337450658006ad2f9281c2eb63f1666
   # Repo-pinned sha256 of static-llama-cpp-${STATIC_LLAMA_TAG}-aarch64-graviton2.tar.gz.
-  STATIC_LLAMA_SHA256_AARCH64: 720b395930962c9c7a17e1f2828b41fc8fc188db075e44b8583fb402bcdee5a3
+  STATIC_LLAMA_SHA256_AARCH64: 87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b
   # Repo-pinned sha256 of static-llama-cpp-${STATIC_LLAMA_TAG}-x86_64-v3-linux-gnu.tar.gz.
-  STATIC_LLAMA_SHA256_X86_64: 12c16eba8a756025d8ae2721544cef7b13decaf1b04e04ef1371dfeead50113d
+  STATIC_LLAMA_SHA256_X86_64: 448448f0548ef7d69737042ecd781dcd2c5f25d8c14debd66db455e00a58644c
 
 jobs:
   test:

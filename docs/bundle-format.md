@@ -56,8 +56,8 @@ loader checks, failing with `ModelLoad(Runtime)`:
 - the llama.cpp context reports mean pooling once created.
 
 The engine needs llama.cpp support for `gemma-embedding2`. The pinned static release
-(`v0.1.159-2`, llama.cpp `b11577`) has it; the previously pinned `v0.1.159-1` (llama.cpp
-`d8123504`) does not know the architecture.
+(`v0.1.159-3`, llama.cpp `b11630`) has it, as did `v0.1.159-2` (llama.cpp `b11577`);
+`v0.1.159-1` (llama.cpp `d8123504`) does not know the architecture.
 
 ## Tokenization
 

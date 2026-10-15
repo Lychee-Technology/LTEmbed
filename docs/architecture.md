@@ -27,8 +27,8 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-2` (llama.cpp `b11577`,
-  artifact contract `5`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-3` (llama.cpp `b11630`,
+  artifact contract `6`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
   No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
   one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
   architecture and checks the contract version, variant and commit; `.githooks/pre-push`
@@ -148,52 +148,80 @@ per-stage milliseconds. The benchmark binary prints it when `LTEMBED_PROFILE=1`.
 
 ## Long inputs and memory
 
-The memory an input needs grows with its length, almost entirely in one allocation:
-llama.cpp's output buffer. On every `llama_encode` it reserves room for vocabulary logits
-for every output token (`n_vocab × n_tokens` floats), whether or not the model computes
-them. With 262144 tokens in the vocabulary that is 1 MiB per input token, 8 GiB at 8192.
-LTEmbed cannot avoid it without changing llama.cpp: an encoder needs every token as an
-output, and llama.cpp sizes the buffer by outputs.
+The memory an input needs grows with its length. Peak resident memory
+(`/usr/bin/time -v`) of one fresh process that loads the release bundle (`UD-Q5_K_XL`,
+`max_length` 8192, flash attention on) and embeds one golden input, with the pinned static
+release `v0.1.159-3` and, for comparison, the previous `v0.1.159-2`:
 
-Peak resident memory (`/usr/bin/time -v`) of one process that loads the release bundle
-(`UD-Q5_K_XL`, `max_length` 8192) and embeds one input, and the time of that first call
-(x86-64-v3 Ryzen 5 5600G, flash attention on):
+| Input tokens | x86-64-v3 | aarch64 | x86-64-v3, `v0.1.159-2` | aarch64, `v0.1.159-2` |
+|---|---|---|---|---|
+| 14 | 0.32 GiB | 0.41 GiB | 0.32 GiB | 0.41 GiB |
+| 1024 | 0.45 GiB | 0.54 GiB | 1.47 GiB | 1.56 GiB |
+| 4074 | 0.81 GiB | 0.90 GiB | 4.75 GiB | 4.84 GiB |
+| 8192 | 1.38 GiB (1.48 GB) | 1.47 GiB (1.58 GB) | 9.38 GiB (10.1 GB) | 9.47 GiB (10.2 GB) |
 
-| Input tokens | Peak RSS | First call, 6 threads | First call, 1 thread |
-|---|---|---|---|
-| 14 | 0.32 GiB | 0.03 s | 0.08 s |
-| 1024 | 1.47 GiB | 1.5 s | 4.7 s |
-| 2039 | 2.50 GiB | 3.3 s | — |
-| 4074 | 4.75 GiB | 7.2 s | 26.3 s |
-| 8192 | 9.38 GiB (10.1 GB) | 18.3 s | 74.2 s |
+- x86-64-v3: AMD Ryzen 5 5600G, Fedora Linux (kernel 7.2), 6 threads.
+- aarch64: GitHub's `ubuntu-24.04-arm` runner, 4 Neoverse-N2 vCPUs and 16 GB, Ubuntu
+  (kernel 6.17), 4 threads
+  ([run](https://github.com/Lychee-Technology/LTEmbed/actions/runs/38688544781)).
+- One thread gives the same peaks. Both releases return bit-identical embeddings for every
+  input on each architecture.
 
-That is about 0.32 GiB plus 1.13 MiB per token of the longest input embedded so far.
-Loading takes 0.48–0.53 s (warm page cache). Later calls of the same length are faster
-than the first, which also touches the newly reserved buffers:
-[benchmarking.md](./benchmarking.md#recorded-results) has warm latencies, and how much
-long-input times vary between processes. It also has the same table for a Raspberry Pi 5
-(aarch64), where peak RSS is 0.09–0.12 GiB higher at every length and the 8192-token first
-call takes 120 s at 4 threads. Three consequences:
+That is about 0.32 GiB (aarch64: 0.41 GiB) plus 0.13 MiB per token of the longest input
+embedded so far. By llama.cpp's own account of this context, it goes to:
 
-- **The buffer only grows.** llama.cpp keeps the output buffer at the largest size any
-  input needed, so after one 8k input an engine holds about 9.4 GiB until it is dropped.
+- **the model and runtime**, which is what a short input needs. Most of it is the
+  memory-mapped GGUF;
+- **the compute buffer**, nearly all of the growth with length. llama.cpp sizes it at load
+  for `n_ubatch`, which is `max_length` (1104 MiB for 8192 tokens), but only the part an
+  input uses becomes resident;
+- **the output buffer**, 768 floats (3 KiB) per input token: 24 MiB at 8192.
+
+`v0.1.159-2` (llama.cpp `b11577`) and earlier also reserved, on every `llama_encode`, room
+for vocabulary logits for every output token (`n_vocab × n_tokens` floats), although a
+pooled embedding model produces none. With 262144 tokens in the vocabulary that is 1 MiB
+per input token, 8 GiB at 8192, and the whole difference between the columns. Since
+llama.cpp `b11630` (upstream
+[#30255](https://github.com/ggml-org/llama.cpp/pull/30255) and
+[#30445](https://github.com/ggml-org/llama.cpp/pull/30445)), a context with pooling
+reserves no host logits and `llama_get_logits` returns `NULL`; LTEmbed reads only the
+pooled embedding (`llama_get_embeddings_seq`).
+
+On the aarch64 runner at 4 threads, the first call took 0.06, 2.4, 15.2 and 44.7 s for the
+four lengths, and later calls of the same length 0.03, 2.3, 15.1 and 44.5 s; at 1 thread
+the 8192-token input took 174 s. Under `v0.1.159-2` warm calls took the same time to
+within 3%, and first calls up to 1.6 s longer, because they also allocated and zeroed the
+logits. Loading took 0.6–0.8 s. [benchmarking.md](./benchmarking.md#recorded-results) has warm
+latencies on x86-64-v3 and a Raspberry Pi 5, and how much long-input times vary between
+processes. Three consequences:
+
+- **An engine keeps its peak.** llama.cpp does not shrink these buffers, and the pages an
+  input made resident stay resident until the engine is dropped. One engine that embeds
+  8192, 14, 8192 and 1024 tokens in turn holds 1.38 GiB (aarch64: 1.47 GiB) from the first
+  input on, and the later inputs add nothing (`v0.1.159-2`: 9.38 and 9.48 GiB).
 - **`max_length` bounds it.** A bundle's `max_length` (`1..=8192`) sets
-  `n_ctx = n_batch = n_ubatch` and the input token limit. Inputs over it fail with
-  `InputTooLong` instead of being truncated, so a deployment that sets `max_length` to
-  2048 caps peak memory at about 2.5 GiB and rejects longer inputs explicitly. A smaller
-  `max_length` changes neither the result nor, measurably, the cost of inputs that fit:
-  with `max_length` 2048 instead of 8192, the 2039-token input peaks at the same 2.50 GiB
-  and the 1024-token one 63 MiB lower, and short-input latency is the same with
-  `max_length` 128, 512, 2048 or 8192.
+  `n_ctx = n_batch = n_ubatch` and the input token limit, and with them the compute buffer
+  llama.cpp reserves: 110 MiB for 1024 tokens, 228 MiB for 2048, 1104 MiB for 8192. Inputs
+  over it fail with `InputTooLong` instead of being truncated, so an engine never needs
+  more than its peak for an input of `max_length` tokens. On x86-64-v3 that is 0.34 GiB for
+  `max_length` 512, 0.40 GiB for 1024, 0.51 GiB for 2048, 0.77 GiB for 4096 and 1.38 GiB
+  for 8192 (aarch64 was not measured this way; above, it peaks 0.09 GiB higher at every
+  length). Inputs that fit get bit-identical embeddings under any `max_length`, and a
+  smaller one lowers their peak slightly: the 1024-token input peaks at 0.40 GiB with
+  `max_length` 1024, 0.41 GiB with 2048 and 0.45 GiB with 8192.
 - **One sequence per micro-batch.** llama.cpp's encoder cannot split a sequence across
   micro-batches (it asserts `n_ubatch >= n_tokens`), so `n_ubatch` must equal the context
   length. LTEmbed checks the length before encoding, so the assertion cannot fire.
 
 Latency grows faster than linearly with length, because attention is quadratic. Flash
-attention keeps the attention's compute buffer small: measured with llama.cpp's own
-`llama-embedding` on the same GGUF and settings at 6 threads, turning it off raises the
-8192-token input's peak RSS from 9.40 GiB to 10.40 GiB and its run time, load included, from
-20.5 s to 39.2 s (4074 tokens: 8.6 s to 13.2 s).
+attention keeps the attention's compute buffer small: for 8192 tokens llama.cpp reserves
+1104 MiB with it and 2128 MiB without. Measured with llama.cpp's own `llama-embedding`
+(`b11630`) on the same GGUF and settings at 6 threads on the x86-64-v3 host, turning it off
+raises the 8192-token input's peak RSS from 1.63 GiB to 2.63 GiB and its run time, load
+included, from 23.2 s to 45.1 s (4074 tokens: 1.07 to 1.48 GiB, 8.7 to 12.7 s). The tool
+peaks higher than LTEmbed because its context, made for 256 sequences, reserves a 257 MiB
+output buffer. Other jobs were loading the host during these runs; with `b11577` on the
+idle host the run times were 20.5 and 39.2 s (4074 tokens: 8.6 and 13.2 s).
 
 ## Concurrency
 

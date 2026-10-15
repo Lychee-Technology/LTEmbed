@@ -1,5 +1,13 @@
 # Jina model attribution and redistribution notice
 
+> [!NOTE]
+> **LTEmbed no longer ships this model.** Since [#179](https://github.com/Lychee-Technology/LTEmbed/pull/179), `main` and the releases built from
+> it use EmbeddingGemma 2, under Apache-2.0 ([its license and attribution](../embeddinggemma-2/NOTICE.md)).
+> This notice applies to the Jina model in the `v0.1.0` release asset described below,
+> and to anyone who redistributes that asset. Later release tarballs contain this
+> directory only because they contain the source tree; they do not contain the Jina
+> model.
+
 This directory preserves upstream terms and attribution for
 **`jinaai/jina-embeddings-v5-text-nano-retrieval`**, published by **Jina AI**.
 It is not a new license grant, a guarantee of redistribution clearance, or a
@@ -70,10 +78,9 @@ the upstream card retains their description and base-model relationship.
 
 **Every future redistribution must verify these same hashes before reusing this
 unchanged-content statement.** If bytes or revisions differ, review their terms
-and provenance and update the notice to describe actual changes. Creating this
-directory does not amend the existing published archive. It has not been wired
-into the release workflow, and no corrected archive or release is published by
-this change.
+and provenance and update the notice to describe actual changes. This directory
+does not amend the existing published archive, and the release workflow does not
+package the Jina model.
 
 ## EuroBERT base and retained Apache attribution
 

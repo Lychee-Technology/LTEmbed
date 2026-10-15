@@ -7,6 +7,7 @@ the committed fixtures, the generators and the CI pins still name the same artif
 """
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+LLAMA_CPP_NOTICE = ROOT / "licenses" / "llama.cpp" / "NOTICE.md"
 
 
 def load(name):
@@ -254,6 +256,29 @@ class PinConsistencyTests(unittest.TestCase):
         for variant, section in committed["variants"].items():
             self.assertEqual(section["static_release"], reference.STATIC_RELEASE, variant)
             self.assertEqual(section["archive_sha256"], reference.VARIANTS[variant], variant)
+
+
+class LlamaCppNoticeTests(unittest.TestCase):
+    """licenses/llama.cpp/NOTICE.md attributes the static release that CI links against."""
+
+    def setUp(self):
+        self.notice = LLAMA_CPP_NOTICE.read_text(encoding="utf-8")
+
+    def test_notice_names_the_ci_static_release_and_llama_cpp_commit(self):
+        tags = set(re.findall(r"release \*\*`([^`]+)`\*\*", self.notice))
+        tags |= set(re.findall(r"static-llama-cpp-rs-builder/releases/tag/([^>\s]+)", self.notice))
+        self.assertEqual(tags, {ci_env("STATIC_LLAMA_TAG")})
+        commits = set(re.findall(r"at commit\s+\*\*`([0-9a-f]{40})`\*\*", self.notice))
+        commits |= set(re.findall(r"ggml-org/llama\.cpp/(?:tree/)?([0-9a-f]{40})", self.notice))
+        self.assertEqual(commits, {ci_env("STATIC_LLAMA_LLAMA_CPP_COMMIT")})
+
+    def test_license_copies_have_the_sha256_the_notice_records(self):
+        recorded = dict(re.findall(r"\[(LICENSE-[\w-]+\.txt)\]\(\./\1\), sha256\s+`([0-9a-f]{64})`",
+                                   self.notice))
+        self.assertEqual(sorted(recorded), ["LICENSE-BUILDER-MIT.txt", "LICENSE-MIT.txt"])
+        for name, digest in recorded.items():
+            actual = hashlib.sha256((LLAMA_CPP_NOTICE.parent / name).read_bytes()).hexdigest()
+            self.assertEqual(actual, digest, name)
 
 
 if __name__ == "__main__":

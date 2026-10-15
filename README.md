@@ -52,12 +52,18 @@ The statically linked llama.cpp/ggml components are **MIT-licensed**. Their upst
 copyright and permission notice must accompany redistributed binaries, even when
 statically linked; see [native dependency licenses and attribution](./licenses/llama.cpp/NOTICE.md).
 
-The Jina model is **CC BY-NC 4.0 (NonCommercial only)**; commercial use requires
-separate permission from [sales@jina.ai](mailto:sales@jina.ai). See the
-[model attribution, provenance and redistribution checklist](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md).
-These companion files do not clear redistribution, resolve upstream tokenizer
-rights, or grant additional rights to third-party materials.
-They are not yet integrated into release packaging.
+The model, EmbeddingGemma 2, is licensed under the **Apache License 2.0**. Release
+tarballs carry its license text and attribution in `licenses/embeddinggemma-2/`
+([NOTICE.md](./licenses/embeddinggemma-2/NOTICE.md)); if you pass the bundle on without
+the rest of the tarball, pass that directory on with it.
+
+The `v0.1.0` release asset holds the previous model, Jina v5 Nano, which is
+**CC BY-NC 4.0 (NonCommercial only)**; commercial use requires separate permission from
+[sales@jina.ai](mailto:sales@jina.ai). `main` no longer ships it. Its terms, attribution
+and redistribution checklist are in
+[licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md),
+which does not clear redistribution of that asset, resolve its tokenizer's upstream
+rights, or grant additional rights.
 
 ## Usage
 

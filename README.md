@@ -41,6 +41,30 @@ The release workflow packages a ready-made `gguf_bundle/`, or you can assemble o
 pinned Hugging Face revisions with `python3 scripts/assemble_gguf_bundle.py gguf_bundle`.
 See [docs/bundle-format.md](./docs/bundle-format.md).
 
+## Licensing
+
+LTEmbed's original source code is dual-licensed under either the
+[MIT license](./LICENSE-MIT) or the [Apache License 2.0](./LICENSE-APACHE), at your
+option (`MIT OR Apache-2.0`). Third-party models, tokenizers, assets and dependencies
+are not relicensed by this grant; their applicable upstream terms remain in effect.
+
+The statically linked llama.cpp/ggml components are **MIT-licensed**. Their upstream
+copyright and permission notice must accompany redistributed binaries, even when
+statically linked; see [native dependency licenses and attribution](./licenses/llama.cpp/NOTICE.md).
+
+The model, EmbeddingGemma 2, is licensed under the **Apache License 2.0**. Release
+tarballs carry its license text and attribution in `licenses/embeddinggemma-2/`
+([NOTICE.md](./licenses/embeddinggemma-2/NOTICE.md)); if you pass the bundle on without
+the rest of the tarball, pass that directory on with it.
+
+The `v0.1.0` release asset holds the previous model, Jina v5 Nano, which is
+**CC BY-NC 4.0 (NonCommercial only)**; commercial use requires separate permission from
+[sales@jina.ai](mailto:sales@jina.ai). `main` no longer ships it. Its terms, attribution
+and redistribution checklist are in
+[licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md),
+which does not clear redistribution of that asset, resolve its tokenizer's upstream
+rights, or grant additional rights.
+
 ## Usage
 
 ```rust

@@ -109,6 +109,10 @@ the release, update the tag, the llama.cpp commit and both SHA-256 pins in `ci.y
 the same variables in `benchmark-arm64.yml`. Update the script and the hook if the new
 release changes an asset name, a variant or the contract version; `tests/test_pre_push_hook.py`
 fails if the hook's `expected_contract` differs from the script's `EXPECTED_CONTRACT`.
+Update [licenses/llama.cpp/NOTICE.md](../licenses/llama.cpp/NOTICE.md) as well, and compare its
+license copies with the new release's `LICENSES/`; `tests/test_reference_generators.py` fails
+while the notice names another release or llama.cpp commit than `ci.yml`, or while a copy
+differs from the sha256 the notice records.
 
 ## Native builds
 

@@ -55,10 +55,8 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
-6 tests skip: the 3 in `tests/test_bench_pytorch.py` that run the PyTorch runner's
-`load_model` and `main` with real torch, and the 3 in
-`tests/test_compare_q4f16_onnx_vs_pytorch.py`, which stay gated on torch until #185 removes
-that ONNX-era script. The runner's other tests need only `numpy`
+the 3 tests in `tests/test_bench_pytorch.py` that run the PyTorch runner's `load_model` and
+`main` with real torch skip. The runner's other tests need only `numpy`
 ([Python tests](#python-tests)).
 
 **`Lint`**: `python3 scripts/check_doc_references.py` with the runner's own `python3`
@@ -437,13 +435,13 @@ that is a finding: the engine no longer tokenizes the way the model's own tokeni
 
 `tests/test_*.py` cover the scripts in `scripts/`: the bundle assembler, the benchmark
 orchestrator, report renderer, metadata writer, retrieval-case builder, the three reference
-generators, embedding comparison, documentation reference check, the PyTorch runner and
-the ONNX-era `compare_q4f16_onnx_vs_pytorch.py`. They do not build LTEmbed or need a bundle
-or model weights. The orchestrator tests check the `cargo run` command line without running
-it. `tests/test_assemble_gguf_bundle.py` and `tests/test_reference_generators.py` also check
-that the committed fixtures, the generators, the bundle pins and the static release pins in
-`ci.yml` still name the same files, and that the release archive check requires the model's
-license text and attribution in `licenses/embeddinggemma-2/`, which name the pinned GGUF.
+generators, embedding comparison, documentation reference check and the PyTorch runner.
+They do not build LTEmbed or need a bundle or model weights. The orchestrator tests check
+the `cargo run` command line without running it. `tests/test_assemble_gguf_bundle.py` and
+`tests/test_reference_generators.py` also check that the committed fixtures, the generators,
+the bundle pins and the static release pins in `ci.yml` still name the same files, and that
+the release archive check requires the model's license text and attribution in
+`licenses/embeddinggemma-2/`, which name the pinned GGUF.
 `tests/test_reference_generators.py` also checks that `licenses/llama.cpp/NOTICE.md` names the
 static release and llama.cpp commit that `ci.yml` pins, and that its license copies have the
 sha256 it records.

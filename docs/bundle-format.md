@@ -90,6 +90,12 @@ neither the bundle nor the release archive contains a `tokenizer.json`.
   vectors.
 - `scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes that pinned
   `tokenizer.json` to `PATH`, outside the bundle, for those tests.
+- The loader also measures the vocabulary's longest token text: 93 bytes, a run of 31 `▁`.
+  No text of more than `max_length` times that many bytes, prefix included, fits in
+  `max_length` tokens, so the engine rejects such a text with `InputTooLong` without
+  tokenizing it. This relies on the `gemma4` tokenization never dropping input; the loader
+  does not check that, and with a GGUF whose tokenization drops input the bound could reject
+  a text that fits ([architecture.md](./architecture.md#inputs-over-the-byte-bound)).
 
 ## `build-info.json`
 
@@ -125,7 +131,7 @@ unknown field: the output size comes from `EngineConfig`.
 | `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text |
 | `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text |
 | `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
-| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`) and llama.cpp context size |
+| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`), the input byte bound (`max_length` × the vocabulary's longest token, 93 bytes) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |
 
 If the file is missing, the engine returns `ModelLoad(MissingFile)`. If it cannot be read or

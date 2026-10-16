@@ -1094,14 +1094,95 @@ fn test_long_input_returns_input_too_long_error() {
     let engine = make_engine(&bundle_dir);
     let long_text = "hello world ".repeat(12000);
     match engine.embed(EmbeddingInput::document(&long_text)) {
-        Err(LTEmbedError::InputTooLong { tokens, max }) => {
+        Err(LTEmbedError::InputTooLong {
+            tokens: Some(tokens),
+            bytes,
+            max,
+        }) => {
             assert!(
                 tokens > MAX_LENGTH,
                 "tokens={tokens} should be > {MAX_LENGTH}"
             );
+            assert_eq!(bytes, DOCUMENT_PREFIX.len() + long_text.len());
             assert_eq!(max, MAX_LENGTH);
         }
-        other => panic!("Expected InputTooLong, got {other:?}"),
+        other => panic!("Expected InputTooLong with a token count, got {other:?}"),
+    }
+}
+
+/// The release GGUF's longest token: 31 × U+2581 (`▁`), 93 bytes. The tokenizer parity tests
+/// check that no token of the GGUF is longer. The engine rejects a text of more than
+/// `max_length` times its length, prefix included, without tokenizing it.
+fn longest_token() -> String {
+    "\u{2581}".repeat(31)
+}
+
+/// The byte bound never rejects an input that fits: a document of the vocabulary's longest
+/// token, as many copies as `MAX_LENGTH` tokens hold, embeds. With BOS, the six prompt tokens,
+/// a `▁` for the prompt's last space and EOS, that is `MAX_LENGTH - 9` copies: 761,039 bytes,
+/// 817 under the bound. One more copy is tokenized and counted, not rejected by its size.
+#[test]
+fn test_input_of_the_longest_tokens_that_fits_embeds() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let engine = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, long_input_threads());
+    let fits = longest_token().repeat(MAX_LENGTH - 9);
+    let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
+    assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
+    assert!(embedding.iter().all(|value| value.is_finite()));
+
+    let over = longest_token().repeat(MAX_LENGTH - 8);
+    match engine.embed(EmbeddingInput::document(&over)) {
+        Err(LTEmbedError::InputTooLong { tokens, bytes, max }) => {
+            assert_eq!(
+                (tokens, bytes, max),
+                (
+                    Some(MAX_LENGTH + 1),
+                    DOCUMENT_PREFIX.len() + over.len(),
+                    MAX_LENGTH
+                )
+            );
+        }
+        other => panic!("expected InputTooLong with a token count, got {other:?}"),
+    }
+}
+
+/// A text one byte over the bound, `MAX_LENGTH` times the longest token's length with the
+/// prefix, is rejected without being tokenized: its `InputTooLong` has no token count. One at
+/// the bound is tokenized and counted.
+#[test]
+fn test_input_over_the_byte_bound_is_rejected_without_tokenizing() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let engine = make_engine(&bundle_dir);
+    let bound = MAX_LENGTH * longest_token().len();
+    let text_of = |bytes: usize| "a".repeat(bytes - DOCUMENT_PREFIX.len());
+
+    for bytes in [bound + 1, 64 << 20] {
+        let text = text_of(bytes);
+        match engine.embed(EmbeddingInput::document(&text)) {
+            Err(LTEmbedError::InputTooLong {
+                tokens: None,
+                bytes: reported,
+                max,
+            }) => assert_eq!((reported, max), (bytes, MAX_LENGTH)),
+            other => panic!("{bytes} bytes: expected InputTooLong without a count, got {other:?}"),
+        }
+    }
+
+    let at_bound = text_of(bound);
+    match engine.embed(EmbeddingInput::document(&at_bound)) {
+        Err(LTEmbedError::InputTooLong {
+            tokens: Some(tokens),
+            bytes,
+            ..
+        }) => {
+            assert!(tokens > MAX_LENGTH, "{tokens} tokens");
+            assert_eq!(bytes, bound);
+        }
+        other => panic!("expected InputTooLong with a token count, got {other:?}"),
     }
 }
 
@@ -1122,20 +1203,29 @@ fn test_bundle_max_length_is_enforced_without_truncation() {
     });
 
     // Texts whose prompted form is exactly LIMIT and LIMIT + 1 tokens. An engine whose
-    // `max_length` is 1 rejects every input, naming its token count, so it counts tokens.
+    // `max_length` is 8 counts tokens: each text below has more than 8 tokens (one word makes
+    // 9) and fewer bytes than its byte bound (8 × 93), so it rejects each one after
+    // tokenizing it, naming its token count.
+    const COUNTER_LIMIT: usize = 8;
     let counter_dir = unique_temp_dir();
     fs::create_dir_all(&counter_dir).unwrap();
     link_bundle_files(&bundle_dir, &counter_dir, ENGINE_BUNDLE_FILES);
     write_edited_bundle_build_info(&bundle_dir, &counter_dir, |build_info| {
-        build_info["model_metadata"]["max_length"] = 1.into();
+        build_info["model_metadata"]["max_length"] = COUNTER_LIMIT.into();
     });
     let counter = make_engine(&counter_dir);
     let text_of = |tokens: usize| {
         (1..LIMIT)
             .map(|words| vec!["alpha"; words].join(" "))
             .find(|text| match counter.embed(EmbeddingInput::document(text)) {
-                Err(LTEmbedError::InputTooLong { tokens: count, .. }) => count == tokens,
-                other => panic!("expected InputTooLong at max_length 1, got {other:?}"),
+                Err(LTEmbedError::InputTooLong {
+                    tokens: Some(count),
+                    ..
+                }) => count == tokens,
+                other => panic!(
+                    "expected InputTooLong with a token count at max_length {COUNTER_LIMIT}, \
+                     got {other:?}"
+                ),
             })
             .unwrap_or_else(|| panic!("no text of {tokens} tokens"))
     };
@@ -1146,8 +1236,8 @@ fn test_bundle_max_length_is_enforced_without_truncation() {
     let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
     assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
     match engine.embed(EmbeddingInput::document(&too_long)) {
-        Err(LTEmbedError::InputTooLong { tokens, max }) => {
-            assert_eq!((tokens, max), (LIMIT + 1, LIMIT));
+        Err(LTEmbedError::InputTooLong { tokens, max, .. }) => {
+            assert_eq!((tokens, max), (Some(LIMIT + 1), LIMIT));
         }
         other => panic!("expected InputTooLong, got {other:?}"),
     }

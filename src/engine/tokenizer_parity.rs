@@ -548,6 +548,78 @@ fn test_gguf_vocabulary_matches_reference_token_ids() {
     );
 }
 
+/// The engine's byte bound (`EmbeddingBackend::max_input_bytes`) rejects no text that fits:
+/// every text below, as is and with each prefix, is within the bound for a `max_length` of its
+/// own token count. Besides the corpus, the texts pack bytes into tokens: runs of the
+/// vocabulary's longest token and of whitespace, and each special token's text between
+/// whitespace runs, which a token that strips whitespace would swallow. The bound's
+/// per-token length, the GGUF's longest token, must also be the reference tokenizer.json's.
+#[test]
+#[ignore = "needs a GGUF bundle; run with `cargo test --lib tokenizer_parity -- --ignored`"]
+fn test_byte_bound_admits_every_text_that_fits() {
+    let (Some(gguf), Some(hf)) = (test_gguf(), reference_tokenizer()) else {
+        return;
+    };
+    let spec = ModelSpec::defaults();
+
+    let vocab = hf.get_vocab(true);
+    let longest = vocab.keys().max_by_key(|token| token.len()).unwrap();
+    // The bound for one token is the longest token's length.
+    assert_eq!(
+        gguf.max_input_bytes(1),
+        longest.len(),
+        "the GGUF's longest token text against tokenizer.json's, {longest:?}"
+    );
+
+    let mut texts: Vec<String> = corpus().into_iter().flat_map(|(_, texts)| texts).collect();
+    texts.push(longest.repeat(64));
+    let whitespace = [" ", "\t", "\n", "\r\n", "\u{a0}", "\u{3000}"];
+    texts.extend(whitespace.iter().map(|ws| ws.repeat(1000)));
+    for token in hf.get_added_tokens_decoder().values() {
+        for ws in whitespace {
+            let run = ws.repeat(100);
+            texts.push(format!("{run}{}{run}", token.content));
+        }
+    }
+
+    let mut checked = 0usize;
+    let mut densest = 0.0f64;
+    let mut rejected = Vec::new();
+    for text in &texts {
+        let forms = [
+            text.clone(),
+            prefixed_text(EmbeddingInput::query(text), &spec),
+            prefixed_text(EmbeddingInput::document(text), &spec),
+        ];
+        for input in forms {
+            let tokens = gguf.tokenize(&input).unwrap().len();
+            checked += 1;
+            densest = densest.max(input.len() as f64 / tokens as f64);
+            if input.len() > gguf.max_input_bytes(tokens) {
+                let excerpt: String = input.chars().take(120).collect();
+                rejected.push(format!(
+                    "{} bytes in {tokens} tokens, over the bound of {}: {excerpt:?}",
+                    input.len(),
+                    gguf.max_input_bytes(tokens)
+                ));
+            }
+        }
+    }
+
+    eprintln!(
+        "byte bound: {checked} encodings, at most {densest:.1} bytes per token (bound: {}), {} \
+         rejected",
+        gguf.max_input_bytes(1),
+        rejected.len()
+    );
+    assert!(
+        rejected.is_empty(),
+        "the byte bound rejects {} texts that fit:\n{}",
+        rejected.len(),
+        rejected.join("\n")
+    );
+}
+
 fn ids(value: &Value) -> Vec<u32> {
     value
         .as_array()

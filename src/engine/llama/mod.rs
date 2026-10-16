@@ -71,6 +71,8 @@ pub(crate) struct LlamaBackend {
     raw_dim: usize,
     /// Context length (also the max single-sequence token count llama can pool at once).
     n_ctx: usize,
+    /// The vocabulary's longest token text in bytes, for [`input_byte_bound`].
+    longest_token_bytes: usize,
 }
 
 /// Checks the GGUF's embedding widths against the bundle's `raw_embedding_dimension`.
@@ -168,6 +170,10 @@ unsafe fn check_gguf_pooling(model: *const ffi::llama_model) -> Result<(), LTEmb
     check_declared_pooling(&key, declared.as_deref())
 }
 
+/// Longest text [`tokenize_with_vocab`] accepts: `llama_tokenize` takes the text's length and
+/// the token buffer's capacity, `text.len() + 2`, as `i32`.
+const MAX_TOKENIZE_BYTES: usize = i32::MAX as usize - 2;
+
 /// Tokenizes the whole of `text` with `vocab`, adding the special tokens the GGUF declares
 /// (BOS/EOS) and matching special-token text, as llama.cpp's own tools do.
 ///
@@ -176,11 +182,16 @@ unsafe fn tokenize_with_vocab(
     vocab: *const ffi::llama_vocab,
     text: &str,
 ) -> Result<Vec<u32>, String> {
-    let too_long = || format!("a text of {} bytes is too long to tokenize", text.len());
-    let text_len = i32::try_from(text.len()).map_err(|_| too_long())?;
-    // Byte fallback yields at most one token per byte; BOS and EOS add two more.
+    if text.len() > MAX_TOKENIZE_BYTES {
+        return Err(format!(
+            "a text of {} bytes is too long to tokenize",
+            text.len()
+        ));
+    }
+    // Byte fallback yields at most one token per byte; BOS and EOS add two more. The engine
+    // passes no text over its byte bound (`input_byte_bound`), which caps this buffer.
     let capacity = text.len() + 2;
-    let n_tokens_max = i32::try_from(capacity).map_err(|_| too_long())?;
+    let (text_len, n_tokens_max) = (text.len() as i32, capacity as i32);
     let mut tokens: Vec<ffi::llama_token> = vec![0; capacity];
     // `tokens` holds `n_tokens_max` elements, the most llama.cpp writes.
     let n = ffi::llama_tokenize(
@@ -205,6 +216,54 @@ unsafe fn tokenize_with_vocab(
             u32::try_from(token).map_err(|_| format!("llama_tokenize returned token id {token}"))
         })
         .collect()
+}
+
+/// Length in bytes of the longest token text in `vocab` (EmbeddingGemma 2: 93, a run of 31
+/// `▁`). See [`input_byte_bound`].
+///
+/// `llama_vocab_get_text` returns NUL-terminated text, so a token whose text held a NUL byte
+/// would count short; the pinned GGUF has none, and the tokenizer parity tests check this
+/// length against the model's `tokenizer.json`.
+///
+/// Safety: `vocab` belongs to a live model.
+unsafe fn longest_token_bytes(vocab: *const ffi::llama_vocab) -> usize {
+    (0..ffi::llama_vocab_n_tokens(vocab))
+        .map(|token| {
+            let text = ffi::llama_vocab_get_text(vocab, token);
+            if text.is_null() {
+                0
+            } else {
+                CStr::from_ptr(text).to_bytes().len()
+            }
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The size in bytes beyond which a text cannot fit in `max_tokens` tokens of a vocabulary
+/// whose longest token text is `longest_token_bytes` long, lowered to [`MAX_TOKENIZE_BYTES`].
+///
+/// Sound because this vocabulary's tokenization never drops or contracts input. llama.cpp
+/// (`llama_vocab::impl::tokenize`, `src/llama-vocab.cpp` at `v0.7.0`) tokenizes a Gemma 4
+/// vocabulary (`tokenizer.ggml.model = gemma4`) by turning special-token text into that
+/// token, replacing each space in the rest with `▁` (U+2581, 3 bytes), splitting at newlines,
+/// BPE-merging each piece, and spelling a merged piece that is not a token as one `<0xXX>`
+/// token per byte. Every input byte so ends up in exactly one token whose text holds at least
+/// as many bytes as the input it covers: escaping only lengthens it, and a byte token's text
+/// is 6 bytes long. A text therefore needs at least `bytes / longest_token_bytes` tokens, BOS
+/// and EOS aside, and one of more than `max_tokens × longest_token_bytes` bytes does not fit.
+///
+/// Two llama.cpp mechanisms could drop input, and neither applies to this vocabulary: a token
+/// with the `LSTRIP` or `RSTRIP` attribute removes whitespace beside its special-token text,
+/// but llama.cpp sets those only for some other models, by name; and a byte without a
+/// `<0xXX>` token is skipped, but the pinned GGUF has all 256. The engine does not check
+/// either at load, as it does not check that the vocabulary splits text like the model's
+/// own tokenizer: with a GGUF whose tokenization drops input, this bound could reject a text
+/// that fits.
+fn input_byte_bound(max_tokens: usize, longest_token_bytes: usize) -> usize {
+    max_tokens
+        .saturating_mul(longest_token_bytes)
+        .min(MAX_TOKENIZE_BYTES)
 }
 
 /// Text the load-time check tokenizes with the GGUF's vocabulary (see
@@ -333,17 +392,19 @@ impl LlamaBackend {
                 ))));
             }
 
+            let vocab = ffi::llama_model_get_vocab(model);
             if let Err(err) = check_embedding_widths(
                 ffi::llama_model_n_embd(model),
                 ffi::llama_model_n_embd_out(model),
                 raw_embedding_dimension,
             )
             .and_then(|()| check_gguf_pooling(model))
-            .and_then(|()| check_gguf_special_tokens(ffi::llama_model_get_vocab(model)))
+            .and_then(|()| check_gguf_special_tokens(vocab))
             {
                 ffi::llama_model_free(model);
                 return Err(err);
             }
+            let longest_token_bytes = longest_token_bytes(vocab);
 
             let n = n_ctx;
             let mut cparams = ffi::llama_context_default_params();
@@ -397,6 +458,7 @@ impl LlamaBackend {
                 inner: Mutex::new(ModelContext { model, ctx }),
                 raw_dim: raw_embedding_dimension,
                 n_ctx: context_length,
+                longest_token_bytes,
             })
         }
     }
@@ -467,6 +529,10 @@ impl EmbeddingBackend for LlamaBackend {
             .map_err(LTEmbedError::Tokenization)
     }
 
+    fn max_input_bytes(&self, max_tokens: usize) -> usize {
+        input_byte_bound(max_tokens, self.longest_token_bytes)
+    }
+
     fn embed(
         &self,
         tokenized: &[Vec<u32>],
@@ -503,7 +569,7 @@ impl EmbeddingBackend for LlamaBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::RAW_EMBEDDING_DIMENSION;
+    use crate::engine::{check_input_bytes, MAX_LENGTH, RAW_EMBEDDING_DIMENSION};
 
     const RAW: i32 = RAW_EMBEDDING_DIMENSION as i32;
     /// EmbeddingGemma 2's hidden width, apart from its 768-wide projected output.
@@ -629,6 +695,52 @@ mod tests {
                     assert!(msg.contains("1..=8192"), "{msg}");
                 }
                 other => panic!("{n_tokens} tokens: expected Inference(Internal), got {other:?}"),
+            }
+        }
+    }
+
+    /// EmbeddingGemma 2 at its context length: 8192 tokens of at most 93 bytes.
+    #[test]
+    fn test_input_byte_bound_is_max_tokens_times_the_longest_token() {
+        assert_eq!(input_byte_bound(8192, 93), 761_856);
+        assert_eq!(input_byte_bound(1, 93), 93);
+    }
+
+    /// Whatever the vocabulary and limit, the bound stays within what `llama_tokenize` takes,
+    /// so the engine reports any longer text as too long instead of failing to tokenize it.
+    #[test]
+    fn test_input_byte_bound_stays_within_what_llama_tokenize_takes() {
+        for (max_tokens, longest_token_bytes) in [
+            (8192, 1 << 20),
+            (8192, usize::MAX),
+            (usize::MAX, 93),
+            (MAX_TOKENIZE_BYTES, 1),
+        ] {
+            assert_eq!(
+                input_byte_bound(max_tokens, longest_token_bytes),
+                MAX_TOKENIZE_BYTES,
+                "{max_tokens} tokens of {longest_token_bytes} bytes"
+            );
+        }
+        assert_eq!(MAX_TOKENIZE_BYTES + 2, i32::MAX as usize);
+    }
+
+    /// A text over `i32::MAX` bytes, which `llama_tokenize` cannot take, is `InputTooLong`
+    /// whatever the vocabulary and `max_length`, not a tokenization error. Only its length is
+    /// needed, so nothing of that size is allocated.
+    #[test]
+    fn test_text_over_i32_max_bytes_is_input_too_long() {
+        let bytes = i32::MAX as usize + 1;
+        for max_length in [1, MAX_LENGTH] {
+            let bound = input_byte_bound(max_length, usize::MAX);
+            match check_input_bytes(bytes, bound, max_length) {
+                Err(LTEmbedError::InputTooLong { tokens, bytes, max }) => {
+                    assert_eq!(
+                        (tokens, bytes, max),
+                        (None, i32::MAX as usize + 1, max_length)
+                    );
+                }
+                other => panic!("max_length {max_length}: expected InputTooLong, got {other:?}"),
             }
         }
     }

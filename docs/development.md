@@ -238,8 +238,8 @@ The tokenizer parity tests and the model-backed integration tests need a bundle 
 `./reference-tokenizer.json`, outside the bundle. Build both with
 `python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json`
 ([bundle-format.md](./bundle-format.md#assembling-a-bundle)), which downloads the same pinned
-files CI uses. The integration tests, which embed an 8192-token input while other tests run
-their own engines, peak at about 2.3 GiB of memory on x86-64-v3.
+files CI uses. The integration tests, which embed two 8192-token inputs while other tests
+run their own engines, peak at about 3.4 GiB of memory on x86-64-v3.
 
 ## End-to-end sanity check
 

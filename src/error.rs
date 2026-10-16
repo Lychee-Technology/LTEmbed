@@ -14,14 +14,32 @@ pub enum LTEmbedError {
     #[error("Inference failed: {0}")]
     Inference(#[from] InferenceError),
 
-    #[error("Input too long: {tokens} tokens exceeds the {max} token limit")]
-    InputTooLong { tokens: usize, max: usize },
+    /// An input is longer than the bundle's `max_length` tokens, `max`. It is never truncated.
+    ///
+    /// `bytes` is the size of the text the engine tokenizes: the input with its prefix.
+    /// `tokens` is that text's token count, BOS and EOS included. It is `None` when the engine
+    /// rejected the text without tokenizing it, because no text of `bytes` bytes fits in
+    /// `max` tokens of the model's vocabulary (`docs/architecture.md` § "Long inputs and
+    /// memory").
+    #[error("Input too long: {}", describe_input_too_long(*.tokens, *.bytes, *.max))]
+    InputTooLong {
+        tokens: Option<usize>,
+        bytes: usize,
+        max: usize,
+    },
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+fn describe_input_too_long(tokens: Option<usize>, bytes: usize, max: usize) -> String {
+    match tokens {
+        Some(tokens) => format!("{tokens} tokens exceeds the {max} token limit"),
+        None => format!("{bytes} bytes cannot fit in the {max} token limit"),
+    }
 }
 
 /// Failure classes surfaced while loading a bundle and building an engine.
@@ -132,12 +150,27 @@ mod tests {
     #[test]
     fn test_input_too_long_display() {
         let e = LTEmbedError::InputTooLong {
-            tokens: 600,
+            tokens: Some(600),
+            bytes: 2_400,
             max: 512,
         };
         assert_eq!(
             e.to_string(),
             "Input too long: 600 tokens exceeds the 512 token limit"
+        );
+    }
+
+    /// Rejected by size, before tokenizing: there is no token count to report.
+    #[test]
+    fn test_input_too_long_display_without_token_count() {
+        let e = LTEmbedError::InputTooLong {
+            tokens: None,
+            bytes: 67_108_884,
+            max: 8192,
+        };
+        assert_eq!(
+            e.to_string(),
+            "Input too long: 67108884 bytes cannot fit in the 8192 token limit"
         );
     }
 }

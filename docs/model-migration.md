@@ -38,6 +38,12 @@ and code that names a removed one no longer compiles:
 - **`InferenceError::SequenceTooLong` and `InferenceError::AllPadding` are removed.** An
   input longer than the bundle's `max_length` is `LTEmbedError::InputTooLong`, which the
   engine returns before inference runs, as before.
+- **`LTEmbedError::InputTooLong` is `{ tokens: Option<usize>, bytes: usize, max: usize }`**,
+  no longer `{ tokens: usize, max: usize }`. `bytes` is the input's size with its prefix.
+  `tokens` is `None` when the input is too large to fit in `max` tokens at all, which the
+  engine now rejects without tokenizing it
+  ([architecture.md](./architecture.md#inputs-over-the-byte-bound)); otherwise it is the
+  token count, as before.
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 

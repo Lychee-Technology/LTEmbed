@@ -443,8 +443,8 @@ the bundle pins and the static release pins in `ci.yml` still name the same file
 the release archive check requires the model's license text and attribution in
 `licenses/embeddinggemma-2/`, which name the pinned GGUF.
 `tests/test_reference_generators.py` also checks that `licenses/llama.cpp/NOTICE.md` names the
-static release and llama.cpp commit that `ci.yml` pins, and that its license copies have the
-sha256 it records.
+static release and llama.cpp commit that `ci.yml` pins, that its license copies have the
+sha256 it records, and that `benchmark-arm64.yml` pins the same static release as `ci.yml`.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
 
 `tests/test_bench_pytorch.py` checks the PyTorch runner with a fake model. The runner

@@ -35,11 +35,16 @@ impl EmbedBatchProfile {
     }
 }
 
-pub(crate) fn prefixed_text(input: EmbeddingInput<'_>, spec: &ModelSpec) -> String {
-    match input.kind {
-        EmbeddingInputKind::Query => format!("{}{}", spec.query_prefix, input.text),
-        EmbeddingInputKind::Document => format!("{}{}", spec.document_prefix, input.text),
+/// The prefix the engine adds to an input of `kind`.
+pub(crate) fn prefix(kind: EmbeddingInputKind, spec: &ModelSpec) -> &str {
+    match kind {
+        EmbeddingInputKind::Query => &spec.query_prefix,
+        EmbeddingInputKind::Document => &spec.document_prefix,
     }
+}
+
+pub(crate) fn prefixed_text(input: EmbeddingInput<'_>, spec: &ModelSpec) -> String {
+    format!("{}{}", prefix(input.kind, spec), input.text)
 }
 
 /// Truncate a raw pooled embedding to `config.output_dimension` (Matryoshka) and

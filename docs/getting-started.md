@@ -128,7 +128,7 @@ All methods return `ltembed::error::LTEmbedError`. The ones you are most likely 
 | `ModelLoad(Config(_))` | `output_dimension` is 0 or above 768, or `n_threads` is 0 |
 | `ModelLoad(UnsupportedPooling { .. })` | `build-info.json` is from a bundle for the previous model (`last_token` pooling); see [model-migration.md](./model-migration.md) |
 | `ModelLoad(Runtime(_))` | The GGUF failed to load, does not match `build-info.json`, or its tokenization does not add BOS and EOS |
-| `InputTooLong { tokens, max }` | An input is longer than the bundle's `max_length` (8192 tokens). Nothing is truncated, so split long text first. |
+| `InputTooLong { tokens, bytes, max }` | An input is longer than the bundle's `max_length` (8192 tokens). `tokens` is its token count, or `None` for an input too large to fit at all (over 761,856 bytes with its prefix), which is rejected without being tokenized. Nothing is truncated, so split long text first. |
 
 The full list is in [architecture.md](./architecture.md#errors).
 

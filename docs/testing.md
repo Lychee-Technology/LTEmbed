@@ -48,10 +48,10 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 7. `cargo test --lib tokenizer_parity -- --ignored`: the
    [tokenizer parity tests](#tokenizer-parity), which
    plain `cargo test --lib` (step 3) skips as ignored.
-8. `cargo test --test integration_tests`. The llama.cpp reference test embeds an
-   8192-token input while other tests run their own engines; the whole test process peaks
-   at about 2.3 GiB on x86-64-v3
-   ([architecture.md](./architecture.md#long-inputs-and-memory)).
+8. `cargo test --test integration_tests`. The llama.cpp reference test and
+   `test_input_of_the_longest_tokens_that_fits_embeds` each embed an 8192-token input while
+   other tests run their own engines; the whole test process peaks at about 3.4 GiB on
+   x86-64-v3 ([architecture.md](./architecture.md#long-inputs-and-memory)).
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
@@ -92,7 +92,11 @@ temp directory and check load-time validation:
   the same inputs and has vectors for the variant the tests were built for.
 
 The `build-info.json` range check for `max_length` (`1..=8192`) is covered by unit tests in
-`src/engine/bundle.rs`.
+`src/engine/bundle.rs`. Unit tests in `src/engine/mod.rs` and `src/engine/llama/mod.rs`
+cover the [byte bound](./architecture.md#inputs-over-the-byte-bound) without a model: an
+input over it fails its batch before any input is tokenized, one at it is tokenized, and a
+text over `i32::MAX` bytes is `InputTooLong` for any vocabulary, checked on its length
+alone.
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
 `model.gguf` and `build-info.json`:
@@ -105,8 +109,10 @@ The `build-info.json` range check for `max_length` (`1..=8192`) is covered by un
 | `test_query_and_document_prompts_differ` | The same text as a query and as a document gives different vectors |
 | `test_default_config_output_is_normalized_and_512_wide` | `EngineConfig::default()` output has 512 values and unit norm |
 | `test_bundle_without_tokenizer_json_loads_and_ignores_one` | A directory of only `model.gguf` and `build-info.json` loads and gives the same vector as the test bundle, and still does with an unparseable `tokenizer.json` beside them |
-| `test_long_input_returns_input_too_long_error` | An input of more than 8192 tokens returns `InputTooLong { max: 8192 }` with its full token count |
-| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: 65, max: 64 }`. The two texts are found with an engine whose `max_length` is 1, whose `InputTooLong` names each text's token count. |
+| `test_long_input_returns_input_too_long_error` | An input of more than 8192 tokens returns `InputTooLong { max: 8192 }` with its full token count and its size with the prefix |
+| `test_input_of_the_longest_tokens_that_fits_embeds` | The [byte bound](./architecture.md#inputs-over-the-byte-bound) rejects no input that fits: a document of 8183 copies of the vocabulary's longest token (31 × `▁`), exactly 8192 tokens and 761,039 bytes, embeds, and one more copy returns `InputTooLong { tokens: Some(8193) }`: it is tokenized, not rejected by its size |
+| `test_input_over_the_byte_bound_is_rejected_without_tokenizing` | Inputs one byte over the bound (8192 × 93 bytes, prefix included) and of 64 MiB return `InputTooLong { tokens: None }` with their size; one at the bound is tokenized and counted |
+| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: Some(65), max: 64 }`. The two texts are found with an engine whose `max_length` is 8: every candidate has more than 8 tokens and fewer bytes than that engine's byte bound, so its `InputTooLong` names the candidate's token count. |
 | `test_gguf_width_mismatch_returns_model_load_error` | With `raw_embedding_dimension` 1024, loading fails with `ModelLoad(Runtime)` |
 | `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
 | `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
@@ -333,11 +339,12 @@ The engine tokenizes every input with the GGUF's own vocabulary (`tokenizer.ggml
 through `llama_tokenize`, as upstream llama.cpp does
 ([bundle-format.md](./bundle-format.md#tokenization)). The load-time check only shows that
 this adds BOS and EOS. `src/engine/tokenizer_parity.rs` checks the token ids themselves
-against references that do not come from llama.cpp or LTEmbed:
+against references that do not come from llama.cpp or LTEmbed, and the input byte bound on
+the same texts:
 
 - `test_tokenizer_json_matches_gguf_vocabulary`: the model's pinned `tokenizer.json`, run
   by the `tokenizers` crate, must give the same ids as the GGUF's vocabulary on a fixed
-  corpus of 25,401 texts. `tokenizers` is a dev-dependency for this test only; the library
+  corpus of 25,401 texts. `tokenizers` is a dev-dependency for the tests only; the library
   does not use it.
 - `test_gguf_vocabulary_matches_reference_token_ids`: the GGUF's vocabulary must give the
   ids of the 15 [token-id fixture](#token-id-fixture-testsfixturestoken_idsjson) cases,
@@ -345,6 +352,14 @@ against references that do not come from llama.cpp or LTEmbed:
   prompted golden inputs in the
   [llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson). That is
   40 inputs, up to 8192 tokens.
+- `test_byte_bound_admits_every_text_that_fits`: the
+  [input byte bound](./architecture.md#inputs-over-the-byte-bound) rejects no text that
+  fits. The GGUF's longest token, which sets the bound, must be as long as the longest token
+  of `tokenizer.json` (93 bytes). Each encoding of the corpus below, of 64 copies of that
+  token, of runs of six whitespace characters, and of every special token's text between
+  whitespace runs, must be within the bound for a `max_length` of its own token count. On
+  the pinned GGUF that is 76,656 encodings, at most 90.2 bytes per token. With the bound's
+  per-token length divided by 3, as if `▁` counted one byte, the test fails.
 
 The corpus of the first test:
 
@@ -379,7 +394,7 @@ million tokens. Any difference fails the test, which lists the first 20 with the
 their first differing token. There is no tolerance.
 
 On the pinned GGUF all 76,203 encodings and all 40 reference inputs are identical. On
-x86-64-v3 this was measured locally, and both tests take about 19 s together in a debug
+x86-64-v3 this was measured locally, and the three tests take about 20 s together in a debug
 build. CI runs them on both variants.
 
 **What a pass shows.** The GGUF's vocabulary agrees with the model's `tokenizer.json` on
@@ -416,10 +431,10 @@ LTEMBED_REQUIRE_TEST_BUNDLE=1 LTEMBED_TEST_BUNDLE_DIR="$PWD/gguf_bundle" \
 ```
 
 - **Skip or fail**: they follow the same rules as the Tier 2 integration tests
-  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). Both need `model.gguf` in
-  `LTEMBED_TEST_BUNDLE_DIR`, and the corpus test also the file
-  `LTEMBED_TEST_REFERENCE_TOKENIZER` names; with `LTEMBED_REQUIRE_TEST_BUNDLE=1` a missing
-  variable or file fails instead of skipping. Neither reads `build-info.json`.
+  ([Skipping vs. failing](#skipping-vs-failing-without-a-bundle)). All three need
+  `model.gguf` in `LTEMBED_TEST_BUNDLE_DIR`, and the corpus and byte-bound tests also the
+  file `LTEMBED_TEST_REFERENCE_TOKENIZER` names; with `LTEMBED_REQUIRE_TEST_BUNDLE=1` a
+  missing variable or file fails instead of skipping. None reads `build-info.json`.
 - **Corpus check**: the model-free unit test `test_corpus_reads_every_source`, part of
   `cargo test --lib`, checks that every source loads and that the `repeat` specs are
   expanded.

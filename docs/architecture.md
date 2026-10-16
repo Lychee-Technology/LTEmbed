@@ -90,6 +90,10 @@ failure returns `LTEmbedError::ModelLoad(_)`:
      that start with its BOS and end with its EOS token. This rejects a GGUF whose tokenizer
      metadata does not add both; it does not show that the vocabulary splits text like the
      model's own tokenizer (see [bundle-format.md](./bundle-format.md#tokenization)).
+
+   It then measures the vocabulary's longest token text in bytes (93 for this GGUF), which
+   sets the [input byte bound](#inputs-over-the-byte-bound). That is not a check and cannot
+   fail.
 6. Create one llama.cpp context: `embeddings = true`, `LLAMA_POOLING_TYPE_MEAN`,
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, flash attention `ENABLED`,
    `n_ctx = n_batch = n_ubatch = max_length`, `n_seq_max = 1`,
@@ -116,14 +120,17 @@ and the latency of an 8192-token input.
 
 `embed(input)` is `embed_batch(&[input])`. `embed_batch(&inputs)`:
 
-1. **Prefix.** `EmbeddingInput::query(text)` becomes `query_prefix + text`, and
+1. **Size check.** An input whose prefixed form would be longer than the
+   [byte bound](#inputs-over-the-byte-bound) fails the call with
+   `InputTooLong { tokens: None, .. }` before any input is prefixed or tokenized.
+2. **Prefix.** `EmbeddingInput::query(text)` becomes `query_prefix + text`, and
    `EmbeddingInput::document(text)` becomes `document_prefix + text`, once. Callers pass raw
    text; the engine adds the prefix.
-2. **Tokenize** each input with the GGUF's vocabulary (`llama_tokenize`, special tokens
+3. **Tokenize** each input with the GGUF's vocabulary (`llama_tokenize`, special tokens
    added and special-token text matched). `<bos>` and `<eos>` are added; nothing is padded.
    Nothing is truncated: if any input exceeds `max_length` tokens, the call returns
    `LTEmbedError::InputTooLong` and embeds none of the batch.
-3. **Backend.** Under one `Mutex`, for each input in order:
+4. **Backend.** Under one `Mutex`, for each input in order:
    - clear the KV memory;
    - run `llama_encode` on that single sequence, every token marked as an output;
    - copy the pooled, projected vector from `llama_get_embeddings_seq`:
@@ -133,11 +140,11 @@ and the latency of an 8192-token input.
    Inputs are encoded **one at a time**. A batch call saves call overhead, not model
    compute; multi-sequence batching is not implemented. A batch's outputs are
    bit-identical to embedding each input alone, and repeated calls are bit-identical.
-4. **Check** that every raw value is finite. A NaN or infinity fails the call with
+5. **Check** that every raw value is finite. A NaN or infinity fails the call with
    `Inference(Backend)` rather than being normalized into a vector of NaNs.
-5. **Truncate** each raw 768-d vector to its first `config.output_dimension` values
+6. **Truncate** each raw 768-d vector to its first `config.output_dimension` values
    (Matryoshka).
-6. **Normalize** to unit L2 norm if `config.l2_normalize`, with the norm accumulated in
+7. **Normalize** to unit L2 norm if `config.l2_normalize`, with the norm accumulated in
    `f64`. An all-zero vector is returned unchanged.
 
 Truncation comes before normalization, so a 512-wide output has unit norm, as the model card
@@ -234,6 +241,61 @@ peaks higher than LTEmbed because its context, made for 256 sequences, reserves 
 output buffer. Other jobs were loading the host during these runs; with `b11577` on the
 idle host the run times were 20.5 and 39.2 s (4074 tokens: 8.6 and 13.2 s).
 
+### Inputs over the byte bound
+
+The engine counts an input's tokens only after tokenizing all of it, and tokenizing costs
+time and memory in proportion to the text's size: llama.cpp builds the pre-tokenizer's
+pieces and the whole token vector before `llama_tokenize` returns, about 30 to 140 bytes per
+input byte at peak in the runs below, and the Gemma 4 pre-tokenizer splits only at
+newlines, so one piece can be the whole input. A text that cannot fit is therefore rejected
+before it is tokenized:
+
+- At load, the backend measures the vocabulary's longest token text: 93 bytes for this
+  GGUF, a run of 31 `▁` (U+2581), which an input of literal `▁` characters fills. The bound
+  is `max_length` times that, 761,856 bytes for `max_length` 8192, and at most
+  `i32::MAX - 2` bytes, the longest text `llama_tokenize` takes.
+- `embed_batch` first compares each input's size with its prefix against the bound. If one
+  is over it, the call returns `InputTooLong { tokens: None, bytes, max }` before any input
+  of the batch is prefixed or tokenized: there is no token count to report. Otherwise the
+  inputs are tokenized as before, and one of more than `max_length` tokens returns
+  `InputTooLong { tokens: Some(count), bytes, max }`.
+
+The bound rejects no text that fits, because this tokenizer never drops or contracts input.
+llama.cpp (`llama_vocab::impl::tokenize` in `src/llama-vocab.cpp`, `v0.7.0`) turns
+special-token text into its token, replaces each space in the rest with `▁` (3 bytes),
+splits it at newlines without losing a character, BPE-merges each piece, and spells a
+merged piece that is not a token as one `<0xXX>` byte token per byte. Every input byte so
+ends up in exactly one token whose text is at least as long as the input it covers, and a
+text of n tokens has at most n × 93 bytes. Two llama.cpp mechanisms could drop input, and
+neither applies: a token with the `LSTRIP` or `RSTRIP` attribute removes the whitespace
+beside its text, but llama.cpp sets those only for some other models, by name; and a byte
+without a `<0xXX>` token is skipped, but this vocabulary has all 256. The loader checks
+neither, just as it does not check that the vocabulary splits text like the model's own
+tokenizer: with a GGUF whose tokenization drops input, the bound could reject a text that
+fits. For the pinned GGUF, a document of 8183 copies of the longest token, 8192 tokens and
+761,039 bytes, embeds, and the [tokenizer parity](./testing.md#tokenizer-parity) corpus fits
+the bound at its own token count, at most 90.2 bytes per token.
+
+Rejecting 64 MiB inputs on x86-64-v3 (the Ryzen 5 5600G above), 1 thread, `max_length`
+8192, before (`59c6aee`) and with the bound. Each run is a fresh process that loads the
+release bundle, builds one document and embeds it; the peak includes the engine (0.32 GiB)
+and the input string itself:
+
+| 64 MiB of | Before | With the bound |
+|---|---|---|
+| `abcdefghijklmnopqrstuvwxyz` repeated, no spaces | 78.2 s, 9.15 GiB | under 0.01 ms, 0.35 GiB |
+| `lorem ipsum dolor sit amet ` repeated | 67.4 s, 5.70 GiB | under 0.01 ms, 0.35 GiB |
+| `中文测试文本` repeated | 8.3 s, 2.11 GiB | under 0.01 ms, 0.35 GiB |
+| `a\n` repeated | 8.3 s, 6.06 GiB | under 0.01 ms, 0.35 GiB |
+
+With the bound, the call adds nothing to the peak of building the input without embedding
+it. A text at the bound is still tokenized, so it sets what a rejected input can cost: the
+same four kinds at 761,856 bytes with the prefix took 0.57, 0.54, 0.06 and 0.06 s to
+reject, and peaked at 0.39 GiB at most. Ordinary text holds far fewer bytes per token than
+93, so it reaches 8192 tokens long before the bound: these inputs had 87,915, 141,089,
+126,982 and 761,844 tokens. The engine's own buffer for the token ids, `text.len() + 2` of
+them, is now at most 2.9 MiB.
+
 ## Concurrency
 
 `EmbeddingEngine` holds one llama.cpp context behind a `Mutex`. Concurrent calls on a
@@ -250,7 +312,7 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
 | `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
-| `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
+| `InputTooLong { tokens, bytes, max }` | An input is longer than `max_length` tokens. `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the [byte bound](#inputs-over-the-byte-bound) and not tokenized |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
 | `Inference(Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
 

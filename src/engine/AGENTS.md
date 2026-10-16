@@ -11,6 +11,8 @@ The current inference flow is conceptually:
 ```text
 EmbeddingInput
     ↓
+size check (an input over the byte bound is rejected untokenized)
+    ↓
 query/document prefix
     ↓
 tokenization (the GGUF's own vocabulary, through the backend)
@@ -37,12 +39,12 @@ Preserve separation between shared retrieval semantics and backend-specific infe
 The shared engine owns:
 
 - retrieval-prefix behavior;
-- maximum-length enforcement, on the backend's token ids, without truncation;
+- maximum-length enforcement, without truncation: first on the input's size in bytes against the bound the backend derives from its vocabulary (`EmbeddingBackend::max_input_bytes`), then on the backend's token ids;
 - post-processing;
 - output truncation;
 - optional normalization.
 
-A backend tokenizes with its model file's own vocabulary (`EmbeddingBackend::tokenize`), because the vocabulary lives in the GGUF, and returns the raw pooled representation expected by the shared engine.
+A backend tokenizes with its model file's own vocabulary (`EmbeddingBackend::tokenize`), and sizes the byte bound from it (`EmbeddingBackend::max_input_bytes`), because the vocabulary lives in the GGUF, and returns the raw pooled representation expected by the shared engine.
 
 Do not move shared semantics into `LlamaBackend` unless the architecture intentionally changes.
 

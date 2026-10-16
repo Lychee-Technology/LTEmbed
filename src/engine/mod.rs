@@ -18,7 +18,7 @@ pub use input::{EmbeddingInput, EmbeddingInputKind};
 
 use backend::EmbeddingBackend;
 use bundle::{require_file, ModelSpec};
-use inference::{postprocess_embedding, prefixed_text};
+use inference::{postprocess_embedding, prefix, prefixed_text};
 use llama::LlamaBackend;
 
 /// Width of EmbeddingGemma 2's pooled, projected output (hidden width 512, projected to 768).
@@ -41,6 +41,9 @@ pub struct EmbeddingEngine {
     backend: Box<dyn EmbeddingBackend>,
     spec: ModelSpec,
     config: EngineConfig,
+    /// No text of more bytes, prefix included, fits in `spec.max_length` tokens
+    /// ([`EmbeddingBackend::max_input_bytes`]).
+    max_input_bytes: usize,
 }
 
 impl std::fmt::Debug for EmbeddingEngine {
@@ -111,11 +114,30 @@ impl EmbeddingEngine {
             n_threads,
         )?;
 
-        Ok(Self {
-            backend: Box::new(backend),
+        Ok(Self::with_backend(Box::new(backend), spec, config))
+    }
+
+    fn with_backend(
+        backend: Box<dyn EmbeddingBackend>,
+        spec: ModelSpec,
+        config: EngineConfig,
+    ) -> Self {
+        let max_input_bytes = backend.max_input_bytes(spec.max_length);
+        Self {
+            backend,
             spec,
             config,
-        })
+            max_input_bytes,
+        }
+    }
+
+    /// Rejects `input` if its prefixed text is too long to fit in the bundle's `max_length`
+    /// tokens, without building or tokenizing that text.
+    fn check_input_size(&self, input: EmbeddingInput<'_>) -> Result<(), LTEmbedError> {
+        let bytes = prefix(input.kind, &self.spec)
+            .len()
+            .saturating_add(input.text.len());
+        check_input_bytes(bytes, self.max_input_bytes, self.spec.max_length)
     }
 
     /// The GGUF vocabulary's token ids for `text`, BOS and EOS included. A text of more than
@@ -124,7 +146,8 @@ impl EmbeddingEngine {
         let ids = self.backend.tokenize(text)?;
         if ids.len() > self.spec.max_length {
             return Err(LTEmbedError::InputTooLong {
-                tokens: ids.len(),
+                tokens: Some(ids.len()),
+                bytes: text.len(),
                 max: self.spec.max_length,
             });
         }
@@ -172,6 +195,10 @@ impl EmbeddingEngine {
 
         let overall_start = Instant::now();
 
+        for input in inputs {
+            self.check_input_size(*input)?;
+        }
+
         let prefix_start = Instant::now();
         let prefixed_inputs = inputs
             .iter()
@@ -217,5 +244,132 @@ impl EmbeddingEngine {
         });
 
         Ok((embeddings, profile))
+    }
+}
+
+/// `InputTooLong`, without a token count, if a text of `bytes` bytes is over
+/// `max_input_bytes`: it cannot fit in `max_length` tokens, so it is not tokenized.
+fn check_input_bytes(
+    bytes: usize,
+    max_input_bytes: usize,
+    max_length: usize,
+) -> Result<(), LTEmbedError> {
+    if bytes > max_input_bytes {
+        return Err(LTEmbedError::InputTooLong {
+            tokens: None,
+            bytes,
+            max: max_length,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::backend::BackendRunProfile;
+    use super::*;
+
+    /// Bytes each token of [`CountingBackend`] covers at most.
+    const TOKEN_BYTES: usize = 4;
+
+    /// A backend whose tokens cover up to `TOKEN_BYTES` bytes each, and that counts the texts
+    /// it tokenizes.
+    struct CountingBackend {
+        tokenized: Arc<AtomicUsize>,
+    }
+
+    impl EmbeddingBackend for CountingBackend {
+        fn raw_embedding_dimension(&self) -> usize {
+            RAW_EMBEDDING_DIMENSION
+        }
+
+        fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError> {
+            self.tokenized.fetch_add(1, Ordering::SeqCst);
+            // BOS, the text, EOS.
+            Ok(vec![0; text.len().div_ceil(TOKEN_BYTES) + 2])
+        }
+
+        fn max_input_bytes(&self, max_tokens: usize) -> usize {
+            max_tokens * TOKEN_BYTES
+        }
+
+        fn embed(
+            &self,
+            tokenized: &[Vec<u32>],
+            _collect_profile: bool,
+        ) -> Result<(Vec<Vec<f32>>, Option<BackendRunProfile>), LTEmbedError> {
+            let raw = vec![1.0; RAW_EMBEDDING_DIMENSION];
+            Ok((vec![raw; tokenized.len()], None))
+        }
+    }
+
+    const MAX_TOKENS: usize = 16;
+
+    /// An engine of `MAX_TOKENS` tokens on a [`CountingBackend`], whose byte bound is 64
+    /// bytes, and the count of texts it has tokenized.
+    fn counting_engine() -> (EmbeddingEngine, Arc<AtomicUsize>) {
+        let spec = ModelSpec {
+            max_length: MAX_TOKENS,
+            ..ModelSpec::defaults()
+        };
+        let tokenized = Arc::new(AtomicUsize::new(0));
+        let backend = Box::new(CountingBackend {
+            tokenized: Arc::clone(&tokenized),
+        });
+        let engine = EmbeddingEngine::with_backend(backend, spec, EngineConfig::default());
+        (engine, tokenized)
+    }
+
+    /// A document text whose prefixed form is `bytes` bytes long.
+    fn document_text(bytes: usize) -> String {
+        "x".repeat(bytes - DOCUMENT_PREFIX.len())
+    }
+
+    /// A text over the bound fails the whole batch before any input of it is tokenized, and
+    /// the error reports its prefixed size instead of a token count.
+    #[test]
+    fn test_text_over_the_byte_bound_is_rejected_before_tokenizing() {
+        let (engine, tokenized) = counting_engine();
+        let bound = MAX_TOKENS * TOKEN_BYTES;
+        let over = document_text(bound + 1);
+        let batch = [
+            EmbeddingInput::query("fits"),
+            EmbeddingInput::document(&over),
+        ];
+        match engine.embed_batch(&batch) {
+            Err(LTEmbedError::InputTooLong {
+                tokens: None,
+                bytes,
+                max,
+            }) => assert_eq!((bytes, max), (bound + 1, MAX_TOKENS)),
+            other => panic!("expected InputTooLong without a token count, got {other:?}"),
+        }
+        assert_eq!(tokenized.load(Ordering::SeqCst), 0);
+    }
+
+    /// A text at the bound is tokenized; one over `max_length` tokens reports its count.
+    #[test]
+    fn test_text_at_the_byte_bound_is_tokenized() {
+        let (engine, tokenized) = counting_engine();
+        let bound = MAX_TOKENS * TOKEN_BYTES;
+        let at = document_text(bound);
+        match engine.embed(EmbeddingInput::document(&at)) {
+            Err(LTEmbedError::InputTooLong { tokens, bytes, max }) => {
+                assert_eq!(
+                    (tokens, bytes, max),
+                    (Some(MAX_TOKENS + 2), bound, MAX_TOKENS)
+                );
+            }
+            other => panic!("expected InputTooLong with a token count, got {other:?}"),
+        }
+        assert_eq!(tokenized.load(Ordering::SeqCst), 1);
+
+        let fits = document_text(bound - 2 * TOKEN_BYTES);
+        let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
+        assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
+        assert_eq!(tokenized.load(Ordering::SeqCst), 2);
     }
 }

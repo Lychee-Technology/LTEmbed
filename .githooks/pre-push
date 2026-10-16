@@ -8,7 +8,7 @@ clippy_cmd=(cargo clippy --all-targets -- -D warnings)
 
 # The artifact contract .github/scripts/fetch-static-llama.sh accepts (EXPECTED_CONTRACT).
 # tests/test_pre_push_hook.py fails when the two differ.
-readonly expected_contract=6
+readonly expected_contract=7
 
 # check_release DIR NAME VARIANT TRIPLE
 #

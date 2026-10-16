@@ -218,11 +218,11 @@ jobs:
       CARGO_HOME: ${{ github.workspace }}/.cargo
       BUNDLE_DIR: ${{ github.workspace }}/gguf_bundle/${{ matrix.quant }}
       STATIC_LLAMA_REPO: Lychee-Technology/static-llama-cpp-rs-builder
-      STATIC_LLAMA_TAG: v0.1.159-3
-      STATIC_LLAMA_LLAMA_CPP_COMMIT: 6868a52cb337450658006ad2f9281c2eb63f1666
+      STATIC_LLAMA_TAG: v0.1.160-1
+      STATIC_LLAMA_LLAMA_CPP_COMMIT: 620d2225cc436ab0b001e3200e590e3b286ef9ab
       # Repo-pinned sha256 of the aarch64-graviton2 tarball. fetch-static-llama.sh exports it
       # as STATIC_LLAMA_SHA256, which the metadata step records.
-      STATIC_LLAMA_SHA256_AARCH64: 87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b
+      STATIC_LLAMA_SHA256_AARCH64: b39f2150292ee6f2aca472fa43448f581ce488725327f9b1f64c409082be106e
       BENCHMARK_RUNNER_LABELS: ubuntu-24.04-arm
     steps:
       - name: Checkout

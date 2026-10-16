@@ -108,7 +108,7 @@ handles one call at a time.
 
 Every `cargo build`, `test`, `clippy` or `run` needs `STATIC_LLAMA_DIR` set to the
 extracted, checksum-verified static llama.cpp release that `.github/workflows/ci.yml`
-pins (`v0.1.159-3`, llama.cpp `b11630`), in the variant for the host: `aarch64-graviton2`
+pins (`v0.1.160-1`, llama.cpp `v0.7.0`), in the variant for the host: `aarch64-graviton2`
 or `x86_64-v3`.
 
 ```bash

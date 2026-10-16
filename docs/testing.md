@@ -261,7 +261,7 @@ checkout at the release's commit and an extracted release (see its header for th
 details):
 
 ```bash
-COMMIT=6868a52cb337450658006ad2f9281c2eb63f1666   # STATIC_LLAMA_LLAMA_CPP_COMMIT
+COMMIT=620d2225cc436ab0b001e3200e590e3b286ef9ab   # STATIC_LLAMA_LLAMA_CPP_COMMIT
 git init .llama-artifacts/llama.cpp && git -C .llama-artifacts/llama.cpp fetch --depth 1 \
   https://github.com/ggml-org/llama.cpp "$COMMIT" && git -C .llama-artifacts/llama.cpp checkout FETCH_HEAD
 python3 scripts/assemble_gguf_bundle.py .llama-artifacts/bundle

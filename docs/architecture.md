@@ -27,8 +27,8 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-3` (llama.cpp `b11630`,
-  artifact contract `6`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.160-1` (llama.cpp `v0.7.0`,
+  artifact contract `7`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
   No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
   one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
   architecture and checks the contract version, variant and commit; `.githooks/pre-push`
@@ -152,8 +152,8 @@ per-stage milliseconds. The benchmark binary prints it when `LTEMBED_PROFILE=1`.
 
 The memory an input needs grows with its length. Peak resident memory
 (`/usr/bin/time -v`) of one fresh process that loads the release bundle (`UD-Q5_K_XL`,
-`max_length` 8192, flash attention on) and embeds one golden input, with the pinned static
-release `v0.1.159-3` and, for comparison, the previous `v0.1.159-2`:
+`max_length` 8192, flash attention on) and embeds one golden input, with static release
+`v0.1.159-3` and, for comparison, `v0.1.159-2`:
 
 | Input tokens | x86-64-v3 | aarch64 | x86-64-v3, `v0.1.159-2` | aarch64, `v0.1.159-2` |
 |---|---|---|---|---|
@@ -168,6 +168,9 @@ release `v0.1.159-3` and, for comparison, the previous `v0.1.159-2`:
   ([run](https://github.com/Lychee-Technology/LTEmbed/actions/runs/38688544781)).
 - One thread gives the same peaks. Both releases return bit-identical embeddings for every
   input on each architecture.
+- The pinned `v0.1.160-1` (llama.cpp `v0.7.0`) was measured the same way on x86-64-v3
+  only. Its peaks are within 0.001 GiB of `v0.1.159-3`'s at every length, and the
+  embeddings of all 25 golden inputs are bit-identical.
 
 That is about 0.32 GiB (aarch64: 0.41 GiB) plus 0.13 MiB per token of the longest input
 embedded so far. By llama.cpp's own account of this context, it goes to:
@@ -189,11 +192,17 @@ llama.cpp `b11630` (upstream
 reserves no host logits and `llama_get_logits` returns `NULL`; LTEmbed reads only the
 pooled embedding (`llama_get_embeddings_seq`).
 
-On the aarch64 runner at 4 threads, the first call took 0.06, 2.4, 15.2 and 44.7 s for the
-four lengths, and later calls of the same length 0.03, 2.3, 15.1 and 44.5 s; at 1 thread
-the 8192-token input took 174 s. Under `v0.1.159-2` warm calls took the same time to
-within 3%, and first calls up to 1.6 s longer, because they also allocated and zeroed the
-logits. Loading took 0.6–0.8 s. [benchmarking.md](./benchmarking.md#recorded-results) has warm
+On the aarch64 runner at 4 threads with `v0.1.159-3`, the first call took 0.06, 2.4, 15.2
+and 44.7 s for the four lengths, and later calls of the same length 0.03, 2.3, 15.1 and
+44.5 s; at 1 thread the 8192-token input took 174 s. Under `v0.1.159-2` warm calls took the
+same time to within 3%, and first calls up to 1.6 s longer, because they also allocated and
+zeroed the logits. Loading took 0.6–0.8 s. On x86-64-v3 at 6 threads, the median warm call
+under `v0.1.160-1` takes 40% less time than under `v0.1.159-3` at 14 tokens (15 instead of
+25 ms), 12% less at 89 and 1% less at 1024, but 3% more at 4074 and 6% more at 8192 (16.8
+instead of 15.8 s). llama.cpp `v0.7.0` again converts single FP16 values to FP32 on x86
+through a lookup table instead of F16C (upstream
+[#30343](https://github.com/ggml-org/llama.cpp/pull/30343)), the likely cause; it was not
+isolated. [benchmarking.md](./benchmarking.md#recorded-results) has warm
 latencies on x86-64-v3 and a Raspberry Pi 5, and how much long-input times vary between
 processes. Three consequences:
 

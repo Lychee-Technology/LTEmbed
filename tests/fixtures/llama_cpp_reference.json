@@ -8,9 +8,9 @@
     "sha256": "a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5bb983db7c7ac41"
   },
   "llama_cpp": {
-    "commit": "6868a52cb337450658006ad2f9281c2eb63f1666",
+    "commit": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
     "tool": "llama-embedding (examples/embedding/embedding.cpp)",
-    "tool_commit": "6868a52",
+    "tool_commit": "620d222",
     "arguments": ["--no-escape", "--embd-separator", "<#LTEMBED-NO-SEPARATOR#>", "--pooling", "mean", "--attention", "non-causal", "--flash-attn", "on", "--embd-normalize", "-1", "--embd-output-format", "json", "--verbose-prompt", "-c", "8192", "-b", "8192", "-ub", "8192"]
   },
   "raw_dim": 768,
@@ -118,8 +118,8 @@
   ],
   "variants": {
     "aarch64-graviton2": {
-      "static_release": "v0.1.159-3",
-      "archive_sha256": "87b568369b2717e5987ed5f595eaaa5718a82d203f83c6d9735e0b2cf642f96b",
+      "static_release": "v0.1.160-1",
+      "archive_sha256": "b39f2150292ee6f2aca472fa43448f581ce488725327f9b1f64c409082be106e",
       "embeddings": [
         {
           "name": "query_en",
@@ -224,8 +224,8 @@
       ]
     },
     "x86_64-v3": {
-      "static_release": "v0.1.159-3",
-      "archive_sha256": "448448f0548ef7d69737042ecd781dcd2c5f25d8c14debd66db455e00a58644c",
+      "static_release": "v0.1.160-1",
+      "archive_sha256": "835ab81e49b76c16c61581c4230e5663a8562b42472d58052ba3470363f4f316",
       "embeddings": [
         {
           "name": "query_en",

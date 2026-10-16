@@ -352,7 +352,7 @@ impl LlamaBackend {
             // model's SentenceTransformers pooling does (`include_prompt: true`). The GGUF's own
             // declaration was checked above; this states it rather than relying on it.
             cparams.pooling_type = ffi::LLAMA_POOLING_TYPE_MEAN;
-            // No effect with the pinned llama.cpp (b11630): `llama_encode` always runs non-causal
+            // No effect with the pinned llama.cpp (v0.7.0): `llama_encode` always runs non-causal
             // (bidirectional) attention, whatever this says, and with `n_batch = n_ctx` the
             // setting changes no other parameter; embeddings are bit-identical with
             // LLAMA_ATTENTION_TYPE_CAUSAL. It states what the model needs, as its GGUF declares

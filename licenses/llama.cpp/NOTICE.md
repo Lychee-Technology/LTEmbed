@@ -2,17 +2,17 @@
 
 LTEmbed links the prebuilt `libllama.a`, `libggml.a`, `libggml-cpu.a` and
 `libggml-base.a` archives through raw FFI. The current CI pin is
-`Lychee-Technology/static-llama-cpp-rs-builder` release **`v0.1.159-3`**, compiling
-**llama.cpp `b11630`** (embedded version `0.6.0-dev`) at commit
-**`6868a52cb337450658006ad2f9281c2eb63f1666`**, as both variants' `build-info.json`
+`Lychee-Technology/static-llama-cpp-rs-builder` release **`v0.1.160-1`**, compiling
+**llama.cpp `v0.7.0`** (embedded version `0.7.0-dev`) at commit
+**`620d2225cc436ab0b001e3200e590e3b286ef9ab`**, as both variants' `build-info.json`
 records. These are separate third-party materials, not relicensed under LTEmbed's
 `MIT OR Apache-2.0` source license.
 
 ## llama.cpp and ggml
 
 - Upstream: <https://github.com/ggml-org/llama.cpp>
-- Pinned source: <https://github.com/ggml-org/llama.cpp/tree/6868a52cb337450658006ad2f9281c2eb63f1666>
-- License source: <https://raw.githubusercontent.com/ggml-org/llama.cpp/6868a52cb337450658006ad2f9281c2eb63f1666/LICENSE>
+- Pinned source: <https://github.com/ggml-org/llama.cpp/tree/620d2225cc436ab0b001e3200e590e3b286ef9ab>
+- License source: <https://raw.githubusercontent.com/ggml-org/llama.cpp/620d2225cc436ab0b001e3200e590e3b286ef9ab/LICENSE>
 - Preserved license: [LICENSE-MIT.txt](./LICENSE-MIT.txt), sha256
   `94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d`
 - Supplied copyright: **Copyright (c) 2023-2026 The ggml authors**.
@@ -27,10 +27,10 @@ copyright, permission notice and warranty disclaimer without changes.
 The artifact also supplies a separate MIT license for builder materials:
 
 - Repository: <https://github.com/Lychee-Technology/static-llama-cpp-rs-builder>
-- Release: <https://github.com/Lychee-Technology/static-llama-cpp-rs-builder/releases/tag/v0.1.159-3>
+- Release: <https://github.com/Lychee-Technology/static-llama-cpp-rs-builder/releases/tag/v0.1.160-1>
 - Builder commit recorded in both variants' `build-info.json`:
-  **`4e0102bd01ab5c072d229ecd915108ec345ef715`**.
-- License source: <https://raw.githubusercontent.com/Lychee-Technology/static-llama-cpp-rs-builder/4e0102bd01ab5c072d229ecd915108ec345ef715/LICENSE>
+  **`1783fe49d11b020750dfb256a8413b633afa2cfa`**.
+- License source: <https://raw.githubusercontent.com/Lychee-Technology/static-llama-cpp-rs-builder/1783fe49d11b020750dfb256a8413b633afa2cfa/LICENSE>
 - Preserved license: [LICENSE-BUILDER-MIT.txt](./LICENSE-BUILDER-MIT.txt), sha256
   `02df995a98a425ea888076c5c62189c2e67a63e3b3197a93375a87a2367ed12d`
 - Supplied copyright: **Copyright (c) 2026 Lychee Technology Inc.**

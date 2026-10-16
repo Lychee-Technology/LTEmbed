@@ -27,8 +27,8 @@ EmbeddingEngine                      src/engine/mod.rs
   from [`Lychee-Technology/static-llama-cpp-rs-builder`](https://github.com/Lychee-Technology/static-llama-cpp-rs-builder)
   (`libllama`, `libggml`, `libggml-cpu`, `libggml-base`, plus `stdc++`, `pthread`, `m`,
   `dl`; no OpenMP) and exposes the release's generated `bindings.rs` to
-  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.159-3` (llama.cpp `b11630`,
-  artifact contract `6`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
+  `src/engine/llama/ffi.rs`. The pinned release is `v0.1.160-1` (llama.cpp `v0.7.0`,
+  artifact contract `7`), which ships an `aarch64-graviton2` and an `x86_64-v3` variant.
   No single file holds the whole pin: the workflows set the tag, the llama.cpp commit and
   one SHA-256 per variant; `fetch-static-llama.sh` picks the variant for the runner's
   architecture and checks the contract version, variant and commit; `.githooks/pre-push`

@@ -407,7 +407,6 @@ fn valid_build_info() -> serde_json::Value {
             "query_prefix": "task: search result | query: ",
             "document_prefix": "title: none | text: ",
             "raw_embedding_dimension": 768,
-            "output_embedding_dimension": 768,
             "max_length": 8192
         }
     })

@@ -262,6 +262,23 @@ unsafe fn check_gguf_special_tokens(vocab: *const ffi::llama_vocab) -> Result<()
     )
 }
 
+/// Checks that a sequence of `n_tokens` tokens fits one `llama_encode` call on a context of
+/// `n_ctx` tokens.
+///
+/// The engine never passes an empty sequence, because the GGUF's tokenization adds BOS and
+/// EOS (checked at load), nor one longer than the bundle's `max_length`, which sizes the
+/// context: it returns `InputTooLong` first. A sequence outside `1..=n_ctx` is therefore an
+/// internal error. It must not reach llama.cpp, which rejects an empty batch and aborts the
+/// process on a sequence longer than its micro-batch.
+fn check_sequence_length(n_tokens: usize, n_ctx: usize) -> Result<(), LTEmbedError> {
+    if n_tokens == 0 || n_tokens > n_ctx {
+        return Err(LTEmbedError::Inference(InferenceError::Internal(format!(
+            "the backend got a sequence of {n_tokens} tokens, outside 1..={n_ctx}"
+        ))));
+    }
+    Ok(())
+}
+
 impl LlamaBackend {
     /// Load a GGUF model as a CPU embedding backend.
     ///
@@ -335,8 +352,12 @@ impl LlamaBackend {
             // model's SentenceTransformers pooling does (`include_prompt: true`). The GGUF's own
             // declaration was checked above; this states it rather than relying on it.
             cparams.pooling_type = ffi::LLAMA_POOLING_TYPE_MEAN;
-            // Encoder embedding model: force bidirectional (non-causal) attention rather than
-            // relying on the architecture default, so pooling sees full-context representations.
+            // No effect with the pinned llama.cpp (b11630): `llama_encode` always runs non-causal
+            // (bidirectional) attention, whatever this says, and with `n_batch = n_ctx` the
+            // setting changes no other parameter; embeddings are bit-identical with
+            // LLAMA_ATTENTION_TYPE_CAUSAL. It states what the model needs, as its GGUF declares
+            // (`gemma-embedding2.attention.causal = false`), in case a later llama.cpp reads
+            // it in `llama_encode`.
             cparams.attention_type = ffi::LLAMA_ATTENTION_TYPE_NON_CAUSAL;
             // Stated rather than left to AUTO, which also resolves to enabled on CPU. Flash
             // attention stores K and V in F16 (both are RMS-normed in this architecture); the
@@ -389,15 +410,7 @@ impl LlamaBackend {
         ctx: *mut ffi::llama_context,
         tokens: &[u32],
     ) -> Result<Vec<f32>, LTEmbedError> {
-        if tokens.is_empty() {
-            return Err(LTEmbedError::Inference(InferenceError::AllPadding));
-        }
-        if tokens.len() > self.n_ctx {
-            return Err(LTEmbedError::Inference(InferenceError::SequenceTooLong {
-                encoded: tokens.len(),
-                model: self.n_ctx,
-            }));
-        }
+        check_sequence_length(tokens.len(), self.n_ctx)?;
 
         // Fresh KV state per independent input.
         ffi::llama_memory_clear(ffi::llama_get_memory(ctx), true);
@@ -596,6 +609,28 @@ mod tests {
         let msg = runtime_error(check_special_tokens(&[7], 7, 7));
         assert!(msg.contains("adds no EOS"), "{msg}");
         check_special_tokens(&[7, 7], 7, 7).unwrap();
+    }
+
+    #[test]
+    fn test_check_sequence_length_accepts_one_to_the_context_length() {
+        for n_tokens in [1, 2, 8191, 8192] {
+            check_sequence_length(n_tokens, 8192).unwrap();
+        }
+    }
+
+    /// Never reached through the engine, which returns `InputTooLong` first; llama.cpp would
+    /// abort on the long sequence.
+    #[test]
+    fn test_check_sequence_length_rejects_empty_and_overlong_sequences() {
+        for n_tokens in [0, 8193] {
+            match check_sequence_length(n_tokens, 8192) {
+                Err(LTEmbedError::Inference(InferenceError::Internal(msg))) => {
+                    assert!(msg.contains(&format!("{n_tokens} tokens")), "{msg}");
+                    assert!(msg.contains("1..=8192"), "{msg}");
+                }
+                other => panic!("{n_tokens} tokens: expected Inference(Internal), got {other:?}"),
+            }
+        }
     }
 
     #[test]

@@ -106,9 +106,10 @@ the CPU passes the x86-64-v3 check in `.github/scripts/x86-64-v3.sh`, which
 `.githooks/pre-push` also uses. The script and the hook reject any artifact contract other
 than `6`, and any `target_triple` other than that of the variant they expect. When bumping
 the release, update the tag, the llama.cpp commit and both SHA-256 pins in `ci.yml`, and
-the same variables in `benchmark-arm64.yml`. Update the script and the hook if the new
-release changes an asset name, a variant or the contract version; `tests/test_pre_push_hook.py`
-fails if the hook's `expected_contract` differs from the script's `EXPECTED_CONTRACT`.
+the same variables in `benchmark-arm64.yml`; `tests/test_reference_generators.py` fails
+while the two differ. Update the script and the hook if the new release changes an asset
+name, a variant or the contract version; `tests/test_pre_push_hook.py` fails if the hook's
+`expected_contract` differs from the script's `EXPECTED_CONTRACT`.
 Update [licenses/llama.cpp/NOTICE.md](../licenses/llama.cpp/NOTICE.md) as well, and compare its
 license copies with the new release's `LICENSES/`; `tests/test_reference_generators.py` fails
 while the notice names another release or llama.cpp commit than `ci.yml`, or while a copy
@@ -260,7 +261,6 @@ The example prints the embedding count, the dimension (`512`) and the first five
 |---|---|
 | `src/engine/` | `EmbeddingEngine`, bundle parsing, config, inputs, postprocessing |
 | `src/engine/llama/` | `LlamaBackend` and the FFI include |
-| `src/traits/tokenizer.rs` | The public `Tokenizer` trait and `TokenizerOutput`, which the engine does not use |
 | `src/error.rs` | `LTEmbedError`, `ModelLoadError`, `InferenceError` |
 | `src/benchmarking.rs`, `src/bin/benchmark_ltembed.rs` | Benchmark scenarios and CLI ([benchmarking.md](./benchmarking.md)) |
 | `examples/api_usage.rs` | Minimal API example |

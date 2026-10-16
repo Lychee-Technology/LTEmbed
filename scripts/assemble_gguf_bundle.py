@@ -111,7 +111,6 @@ def build_info(quant: str) -> dict:
             "query_prefix": QUERY_PREFIX,
             "document_prefix": DOCUMENT_PREFIX,
             "raw_embedding_dimension": RAW_EMBEDDING_DIMENSION,
-            "output_embedding_dimension": RAW_EMBEDDING_DIMENSION,
             "max_length": MAX_LENGTH,
         },
     }

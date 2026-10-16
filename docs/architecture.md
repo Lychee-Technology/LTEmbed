@@ -94,7 +94,9 @@ failure returns `LTEmbedError::ModelLoad(_)`:
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, flash attention `ENABLED`,
    `n_ctx = n_batch = n_ubatch = max_length`, `n_seq_max = 1`,
    `n_threads = n_threads_batch = n_threads`; then check that the context reports mean
-   pooling.
+   pooling. The attention type has no effect: `llama_encode` always runs non-causal
+   attention, and the GGUF declares it too. The engine sets it to state what the model
+   needs.
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three
@@ -241,7 +243,7 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
-| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
+| `Inference(Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
 
 ## Platform constraint
 

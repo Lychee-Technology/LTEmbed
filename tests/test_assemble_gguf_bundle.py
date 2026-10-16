@@ -170,8 +170,6 @@ class PinTests(unittest.TestCase):
         self.assertEqual(metadata["query_prefix"], constant("QUERY_PREFIX"))
         self.assertEqual(metadata["document_prefix"], constant("DOCUMENT_PREFIX"))
         self.assertEqual(metadata["raw_embedding_dimension"], constant("RAW_EMBEDDING_DIMENSION"))
-        self.assertEqual(metadata["output_embedding_dimension"],
-                         constant("RAW_EMBEDDING_DIMENSION"))
         self.assertEqual(metadata["max_length"], constant("MAX_LENGTH"))
         self.assertEqual(metadata["pooling"], "mean")
 
@@ -188,7 +186,6 @@ class PinTests(unittest.TestCase):
                 "query_prefix": "task: search result | query: ",
                 "document_prefix": "title: none | text: ",
                 "raw_embedding_dimension": 768,
-                "output_embedding_dimension": 768,
                 "max_length": 8192,
             },
         })

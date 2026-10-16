@@ -3,7 +3,9 @@
 The golden fixture (scripts/generate_fixtures.py) and the llama.cpp reference
 (scripts/generate_llama_cpp_reference.py) are generated offline from pinned model files and
 a pinned static llama.cpp release. These tests check the generators' pure helpers and that
-the committed fixtures, the generators and the CI pins still name the same artifacts.
+the committed fixtures, the generators and the CI pins still name the same artifacts. They
+also check that the other files repeating CI's static llama.cpp pins, the llama.cpp notice
+and the ARM64 benchmark workflow, name the same release.
 """
 
 import contextlib
@@ -23,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 FIXTURES = ROOT / "tests" / "fixtures"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+BENCHMARK_WORKFLOW = ROOT / ".github" / "workflows" / "benchmark-arm64.yml"
 LLAMA_CPP_NOTICE = ROOT / "licenses" / "llama.cpp" / "NOTICE.md"
 
 
@@ -256,6 +259,21 @@ class PinConsistencyTests(unittest.TestCase):
         for variant, section in committed["variants"].items():
             self.assertEqual(section["static_release"], reference.STATIC_RELEASE, variant)
             self.assertEqual(section["archive_sha256"], reference.VARIANTS[variant], variant)
+
+
+class BenchmarkWorkflowPinTests(unittest.TestCase):
+    """benchmark-arm64.yml sets its own copy of ci.yml's static llama.cpp pins."""
+
+    def test_benchmark_workflow_pins_the_ci_static_release(self):
+        pins = {}
+        for name, value in re.findall(r"^ +(STATIC_LLAMA_\w+): *(.*?) *$",
+                                      BENCHMARK_WORKFLOW.read_text(encoding="utf-8"), re.M):
+            pins.setdefault(name, []).append(value)
+        # It runs on ARM64 runners only, so it pins no x86_64 tarball.
+        self.assertEqual(sorted(pins), ["STATIC_LLAMA_LLAMA_CPP_COMMIT", "STATIC_LLAMA_REPO",
+                                        "STATIC_LLAMA_SHA256_AARCH64", "STATIC_LLAMA_TAG"])
+        for name, values in pins.items():
+            self.assertEqual(values, [ci_env(name)], name)
 
 
 class LlamaCppNoticeTests(unittest.TestCase):

@@ -158,11 +158,6 @@ reports cosine and norms. It expects payloads with `results[].scenario` and
 produces that shape: `benchmark_ltembed` lost its `correctness` mode in #149, and
 `bench_pytorch.py` runs only retrieval.
 
-### `compare_q4f16_onnx_vs_pytorch.py`
-
-ONNX Runtime era. Compares a q4f16 ONNX model, run through `onnxruntime`, with the PyTorch
-reference. It does not apply to GGUF bundles.
-
 ## Documentation
 
 ### `check_doc_references.py`

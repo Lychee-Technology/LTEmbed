@@ -1,32 +1,8 @@
 use approx::assert_relative_eq;
 use ltembed::benchmarking::{
-    benchmark_scenarios, scenario_by_name, scenario_inputs, scenario_token_lengths,
-    selected_scenarios, LatencyStats,
+    benchmark_scenarios, scenario_by_name, scenario_inputs, selected_scenarios, LatencyStats,
 };
 use ltembed::engine::EmbeddingInputKind;
-use ltembed::error::LTEmbedError;
-use ltembed::traits::tokenizer::{Tokenizer, TokenizerOutput};
-
-#[derive(Debug)]
-struct CountingTokenizer;
-
-impl Tokenizer for CountingTokenizer {
-    fn encode(&self, text: &str, max_length: usize) -> Result<TokenizerOutput, LTEmbedError> {
-        let tokens = text.split_whitespace().count() + 2;
-        if tokens > max_length {
-            return Err(LTEmbedError::InputTooLong {
-                tokens,
-                max: max_length,
-            });
-        }
-
-        Ok(TokenizerOutput {
-            input_ids: vec![1; tokens],
-            attention_mask: vec![1; tokens],
-            token_type_ids: vec![0; tokens],
-        })
-    }
-}
 
 #[test]
 fn test_benchmark_scenarios_cover_all_five() {
@@ -65,7 +41,7 @@ fn test_corpus_scenarios_yield_expected_input_counts_and_kinds() {
     assert_eq!(long.len(), 1);
     assert_eq!(long[0].kind, EmbeddingInputKind::Query);
     // Long must dwarf medium but stay under the token budget after the query prefix
-    // (~4 chars/token heuristic against BENCHMARK_MAX_LENGTH = 8192).
+    // (~4 chars/token heuristic against MAX_LENGTH = 8192).
     assert!(long[0].text.len() > 4 * medium[0].text.len());
     assert!(long[0].text.len() < 28_000);
 
@@ -118,15 +94,4 @@ fn test_single_scenarios_carry_query_kind() {
     let en = scenario_inputs(scenario_by_name("single/en").expect("exists"));
     assert_eq!(en.len(), 1);
     assert_eq!(en[0].kind, EmbeddingInputKind::Query);
-}
-
-#[test]
-fn test_scenario_token_lengths_follow_tokenizer_outputs() {
-    let tokenizer = CountingTokenizer;
-    let scenario = scenario_by_name("single/zh").expect("scenario should exist");
-
-    let lengths = scenario_token_lengths(&tokenizer, scenario, 512).unwrap();
-
-    assert_eq!(lengths.len(), 1);
-    assert!(lengths[0] > 0);
 }

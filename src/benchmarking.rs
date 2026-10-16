@@ -1,6 +1,4 @@
-use crate::engine::{EmbeddingInputKind, DOCUMENT_PREFIX, QUERY_PREFIX};
-use crate::error::LTEmbedError;
-use crate::traits::tokenizer::Tokenizer;
+use crate::engine::EmbeddingInputKind;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
@@ -29,7 +27,6 @@ pub struct BenchmarkInput {
 
 pub const ZH_TEXT: &str = "他感冒了";
 pub const EN_TEXT: &str = "He caught a cold.";
-pub const BENCHMARK_MAX_LENGTH: usize = 8192;
 
 const BENCHMARK_SCENARIOS: [BenchmarkScenario; 5] = [
     BenchmarkScenario {
@@ -121,21 +118,6 @@ pub fn scenario_inputs(scenario: &BenchmarkScenario) -> Vec<BenchmarkInput> {
     }
 }
 
-pub fn scenario_token_lengths<T: Tokenizer>(
-    tokenizer: &T,
-    scenario: &BenchmarkScenario,
-    max_length: usize,
-) -> Result<Vec<usize>, LTEmbedError> {
-    scenario_inputs(scenario)
-        .into_iter()
-        .map(|input| {
-            tokenizer
-                .encode(&prefixed_text(&input), max_length)
-                .map(|encoded| encoded.input_ids.len())
-        })
-        .collect()
-}
-
 fn query_input(text: &str) -> BenchmarkInput {
     BenchmarkInput {
         text: text.to_string(),
@@ -150,13 +132,6 @@ fn corpus_input(entry: &CorpusEntry) -> BenchmarkInput {
             CorpusKind::Query => EmbeddingInputKind::Query,
             CorpusKind::Document => EmbeddingInputKind::Document,
         },
-    }
-}
-
-fn prefixed_text(input: &BenchmarkInput) -> String {
-    match input.kind {
-        EmbeddingInputKind::Query => format!("{QUERY_PREFIX}{}", input.text),
-        EmbeddingInputKind::Document => format!("{DOCUMENT_PREFIX}{}", input.text),
     }
 }
 

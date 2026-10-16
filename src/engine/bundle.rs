@@ -31,8 +31,6 @@ struct BuildMetadata {
     query_prefix: String,
     document_prefix: String,
     raw_embedding_dimension: usize,
-    #[allow(dead_code)]
-    output_embedding_dimension: usize,
     max_length: usize,
 }
 
@@ -157,7 +155,6 @@ mod tests {
                 "query_prefix": "task: search result | query: ",
                 "document_prefix": "title: none | text: ",
                 "raw_embedding_dimension": 768,
-                "output_embedding_dimension": 768,
                 "max_length": 8192
             }
         })
@@ -234,6 +231,22 @@ mod tests {
         assert_eq!(spec.document_prefix, DOCUMENT_PREFIX);
         assert_eq!(spec.raw_embedding_dimension, RAW_EMBEDDING_DIMENSION);
         assert_eq!(spec.max_length, MAX_LENGTH);
+    }
+
+    /// Bundles assembled before LTEmbed stopped writing `output_embedding_dimension` still
+    /// load, whatever its value: the output size comes from `EngineConfig`.
+    #[test]
+    fn test_output_embedding_dimension_is_not_read() {
+        for value in [
+            serde_json::json!(768),
+            serde_json::json!(512),
+            serde_json::json!("768"),
+        ] {
+            let mut build_info = release_build_info();
+            build_info["model_metadata"]["output_embedding_dimension"] = value;
+            let spec = parse(&build_info).unwrap();
+            assert_eq!(spec.raw_embedding_dimension, RAW_EMBEDDING_DIMENSION);
+        }
     }
 
     /// A smaller `max_length` is a supported way to bound memory; zero or more than the

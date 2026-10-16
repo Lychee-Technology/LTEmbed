@@ -105,14 +105,15 @@ The engine reads only the fields below. Unknown fields such as `quant` are ignor
     "query_prefix": "task: search result | query: ",
     "document_prefix": "title: none | text: ",
     "raw_embedding_dimension": 768,
-    "output_embedding_dimension": 768,
     "max_length": 8192
   }
 }
 ```
 
 This is exactly what `scripts/assemble_gguf_bundle.py` writes for the default quant; for
-another quant only `quant` changes.
+another quant only `quant` changes. Bundles assembled by earlier versions of the script also
+have `model_metadata.output_embedding_dimension`. The engine ignores it, like any other
+unknown field: the output size comes from `EngineConfig`.
 
 | Field | Required | Rule | Used for |
 |---|---|---|---|
@@ -123,7 +124,6 @@ another quant only `quant` changes.
 | `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text |
 | `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text |
 | `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
-| `model_metadata.output_embedding_dimension` | yes (integer) | — | **Not used.** The output size comes from `EngineConfig`. |
 | `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |
 

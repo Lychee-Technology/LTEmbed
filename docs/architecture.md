@@ -241,7 +241,7 @@ shared engine are safe but run one at a time. If the mutex is poisoned, calls re
 | `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
 | `InputTooLong { tokens, max }` | An input tokenizes to more than `max_length` tokens |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
-| `Inference(SequenceTooLong / AllPadding / Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
+| `Inference(Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
 
 ## Platform constraint
 

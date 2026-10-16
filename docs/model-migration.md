@@ -35,6 +35,9 @@ and code that names a removed one no longer compiles:
   and nothing replaces them.
 - **`ltembed::benchmarking::scenario_token_lengths` and `BENCHMARK_MAX_LENGTH` are
   removed.** The function counted tokens with a `Tokenizer`.
+- **`InferenceError::SequenceTooLong` and `InferenceError::AllPadding` are removed.** An
+  input longer than the bundle's `max_length` is `LTEmbedError::InputTooLong`, which the
+  engine returns before inference runs, as before.
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 

@@ -65,16 +65,10 @@ pub enum ModelLoadError {
 
 /// Failure classes surfaced while running inference on an already-loaded engine.
 ///
-/// `SequenceTooLong`, `AllPadding`, and `OutputShape` are the cases most useful
-/// to match precisely; the remainder are broader buckets.
+/// An input that is too long is not one of them: it is `LTEmbedError::InputTooLong`, returned
+/// before the backend runs.
 #[derive(Debug, Error)]
 pub enum InferenceError {
-    #[error("encoded input length {encoded} exceeds model context length {model}")]
-    SequenceTooLong { encoded: usize, model: usize },
-
-    #[error("attention mask contains only padding")]
-    AllPadding,
-
     /// Model output rank / dimension mismatch.
     #[error("{0}")]
     OutputShape(String),
@@ -119,13 +113,12 @@ mod tests {
 
     #[test]
     fn test_inference_error_display() {
-        let e = LTEmbedError::Inference(InferenceError::SequenceTooLong {
-            encoded: 9000,
-            model: 8192,
-        });
+        let e = LTEmbedError::Inference(InferenceError::Backend(
+            "llama_encode failed (rc=-3)".to_string(),
+        ));
         assert_eq!(
             e.to_string(),
-            "Inference failed: encoded input length 9000 exceeds model context length 8192"
+            "Inference failed: llama_encode failed (rc=-3)"
         );
     }
 

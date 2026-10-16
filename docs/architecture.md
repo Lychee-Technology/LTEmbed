@@ -94,7 +94,9 @@ failure returns `LTEmbedError::ModelLoad(_)`:
    `LLAMA_ATTENTION_TYPE_NON_CAUSAL`, flash attention `ENABLED`,
    `n_ctx = n_batch = n_ubatch = max_length`, `n_seq_max = 1`,
    `n_threads = n_threads_batch = n_threads`; then check that the context reports mean
-   pooling.
+   pooling. The attention type has no effect: `llama_encode` always runs non-causal
+   attention, and the GGUF declares it too. The engine sets it to state what the model
+   needs.
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three

@@ -352,8 +352,12 @@ impl LlamaBackend {
             // model's SentenceTransformers pooling does (`include_prompt: true`). The GGUF's own
             // declaration was checked above; this states it rather than relying on it.
             cparams.pooling_type = ffi::LLAMA_POOLING_TYPE_MEAN;
-            // Encoder embedding model: force bidirectional (non-causal) attention rather than
-            // relying on the architecture default, so pooling sees full-context representations.
+            // No effect with the pinned llama.cpp (b11630): `llama_encode` always runs non-causal
+            // (bidirectional) attention, whatever this says, and with `n_batch = n_ctx` the
+            // setting changes no other parameter; embeddings are bit-identical with
+            // LLAMA_ATTENTION_TYPE_CAUSAL. It states what the model needs, as its GGUF declares
+            // (`gemma-embedding2.attention.causal = false`), in case a later llama.cpp reads
+            // it in `llama_encode`.
             cparams.attention_type = ffi::LLAMA_ATTENTION_TYPE_NON_CAUSAL;
             // Stated rather than left to AUTO, which also resolves to enabled on CPU. Flash
             // attention stores K and V in F16 (both are RMS-normed in this architecture); the

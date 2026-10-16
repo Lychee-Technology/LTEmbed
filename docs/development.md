@@ -260,7 +260,6 @@ The example prints the embedding count, the dimension (`512`) and the first five
 |---|---|
 | `src/engine/` | `EmbeddingEngine`, bundle parsing, config, inputs, postprocessing |
 | `src/engine/llama/` | `LlamaBackend` and the FFI include |
-| `src/traits/tokenizer.rs` | The public `Tokenizer` trait and `TokenizerOutput`, which the engine does not use |
 | `src/error.rs` | `LTEmbedError`, `ModelLoadError`, `InferenceError` |
 | `src/benchmarking.rs`, `src/bin/benchmark_ltembed.rs` | Benchmark scenarios and CLI ([benchmarking.md](./benchmarking.md)) |
 | `examples/api_usage.rs` | Minimal API example |

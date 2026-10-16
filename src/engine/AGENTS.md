@@ -67,7 +67,7 @@ The current model/runtime contract is described in `docs/architecture.md` § "Mo
 - `QUERY_PREFIX` / `DOCUMENT_PREFIX` (EmbeddingGemma 2's `query` and `document` prompts);
 - pooling: mean over every token, then the model's 512→768 projection. The backend returns the projected `n_embd_out` vector, never the 512-wide hidden state.
 
-At load time the engine reads the raw dimension, maximum length, and prefixes from the bundle's `build-info.json`; the constants do not override them, except that `max_length` must lie in `1..=MAX_LENGTH`. `EMBEDDING_DIMENSION` is the `EngineConfig::default()` output size. The same values are also repeated elsewhere, such as `BENCHMARK_MAX_LENGTH` in `src/benchmarking.rs`, so changing a constant alone is an incomplete change.
+At load time the engine reads the raw dimension, maximum length, and prefixes from the bundle's `build-info.json`; the constants do not override them, except that `max_length` must lie in `1..=MAX_LENGTH`. `EMBEDDING_DIMENSION` is the `EngineConfig::default()` output size. The same values are also repeated elsewhere, such as in the `build-info.json` that `scripts/assemble_gguf_bundle.py` writes, so changing a constant alone is an incomplete change.
 
 If intentionally changing one, inspect and update all related runtime validation, constants, bundle metadata, tests, fixtures, benchmark tools, CI/release bundle assembly, and documentation.
 

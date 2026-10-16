@@ -26,14 +26,15 @@ results are archived in
 The embedding API keeps its signatures: `EmbeddingEngine`, `EmbeddingInput::query` /
 `EmbeddingInput::document` and `EngineConfig` work as before, and the engine still adds the
 prefix itself. Code that embeds raw text only through them compiles unchanged; it needs a
-new bundle, and its stored vectors must be recomputed (below). Two other public items
-changed:
+new bundle, and its stored vectors must be recomputed (below). Other public items changed,
+and code that names a removed one no longer compiles:
 
-- **`ltembed::traits::tokenizer::HFTokenizer` is removed**, with its `from_file` and
-  `encode_batch`. Code that names it no longer compiles. The engine tokenizes with the GGUF's
-  own vocabulary, the library no longer depends on `tokenizers`, and nothing replaces
-  `HFTokenizer`. The `Tokenizer` trait and `TokenizerOutput` are still exported, but nothing
-  in the library implements them.
+- **The `ltembed::traits` module is removed**: `traits::tokenizer::HFTokenizer`, with its
+  `from_file` and `encode_batch`, the `Tokenizer` trait and `TokenizerOutput`. The engine
+  tokenizes with the GGUF's own vocabulary, the library no longer depends on `tokenizers`,
+  and nothing replaces them.
+- **`ltembed::benchmarking::scenario_token_lengths` and `BENCHMARK_MAX_LENGTH` are
+  removed.** The function counted tokens with a `Tokenizer`.
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 

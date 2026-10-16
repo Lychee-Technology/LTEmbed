@@ -55,7 +55,11 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
-`tests/test_bench_pytorch.py` and `tests/test_compare_q4f16_onnx_vs_pytorch.py` skip.
+6 tests skip: the 3 in `tests/test_bench_pytorch.py` that run the PyTorch runner's
+`load_model` and `main` with real torch, and the 3 in
+`tests/test_compare_q4f16_onnx_vs_pytorch.py`, which stay gated on torch until #185 removes
+that ONNX-era script. The runner's other tests need only `numpy`
+([Python tests](#python-tests)).
 
 **`Lint`**: `python3 scripts/check_doc_references.py` with the runner's own `python3`
 (see [Documentation references](#documentation-references)), then fetch static llama,
@@ -444,6 +448,13 @@ license text and attribution in `licenses/embeddinggemma-2/`, which name the pin
 static release and llama.cpp commit that `ci.yml` pins, and that its license copies have the
 sha256 it records.
 `tests/CN_EN_Data.csv` is the source data for the CN/EN retrieval evaluation.
+
+`tests/test_bench_pytorch.py` checks the PyTorch runner with a fake model. The runner
+imports `torch`, `transformers` and `sentence_transformers` only in the functions that load
+and run the model. The tests that do not call those functions block the three imports, so
+on any machine they fail if the rest of the runner needs one of them. The tests of
+`load_model`, which compare real torch dtypes, and of `main` need torch and skip without
+it.
 
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub

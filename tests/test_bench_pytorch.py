@@ -1,18 +1,22 @@
 import contextlib
 import importlib.util
 import io
+import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
+
 try:
-    import numpy as np
-    import sentence_transformers  # noqa: F401
+    import sentence_transformers
     import torch
-except ModuleNotFoundError:  # heavy optional deps; CI's python-tests job runs without them
+    import transformers
+except ModuleNotFoundError:  # heavy optional deps; CI's Python script tests job runs without them
     torch = None
 
 
@@ -20,6 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "bench_pytorch.py"
 ORCHESTRATOR_PATH = ROOT / "scripts" / "run_embedding_benchmarks.py"
 ENGINE_PATH = ROOT / "src" / "engine" / "mod.rs"
+# The runner imports these only in the functions that load and run the model.
+# BenchPyTorchTests blocks them, so its tests show that the rest runs with numpy alone, as in
+# CI's Python script tests job, even where they are installed.
+TORCH_MODULES = ("torch", "transformers", "sentence_transformers")
 
 
 def load_module(path=MODULE_PATH, name="bench_pytorch"):
@@ -32,7 +40,7 @@ def load_module(path=MODULE_PATH, name="bench_pytorch"):
 
 # The raw pooled and projected vector per kind, before the pipeline's final Normalize: the
 # vector LTEmbed returns with l2_normalize off. Far from unit norm, as the real one is.
-RAW = None if torch is None else {
+RAW = {
     "query": np.arange(1, 769, dtype=np.float32) * 3.0,
     "document": np.linspace(-2.0, 5.0, 768, dtype=np.float32) * 700.0,
 }
@@ -68,8 +76,11 @@ class FakeModel:
         return np.tile(raw / np.linalg.norm(raw), (len(texts), 1))
 
 
-@unittest.skipUnless(torch is not None, "torch/sentence-transformers not installed")
 class BenchPyTorchTests(unittest.TestCase):
+    def setUp(self):
+        # `import name` raises ModuleNotFoundError while sys.modules maps name to None.
+        self.enterContext(mock.patch.dict(sys.modules, dict.fromkeys(TORCH_MODULES)))
+
     def test_prompts_match_the_engine_prefixes(self):
         bench = load_module()
         source = ENGINE_PATH.read_text(encoding="utf-8")
@@ -152,11 +163,14 @@ class BenchPyTorchTests(unittest.TestCase):
         self.assertEqual(bench.progress_label("retrieval", "cn-en-crosslingual-v1", "start"),
                          "retrieval cn-en-crosslingual-v1 start")
 
+
+@unittest.skipUnless(torch is not None, "torch/sentence-transformers not installed")
+class BenchPyTorchWithTorchTests(unittest.TestCase):
     def test_load_model_loads_the_float32_text_tower_on_cpu(self):
         bench = load_module()
         fake = FakeModel(bench.PROMPTS, dtype=torch.float32)
         with mock.patch.object(
-            bench.sentence_transformers, "SentenceTransformer", return_value=fake
+            sentence_transformers, "SentenceTransformer", return_value=fake
         ) as constructor:
             self.assertIs(bench.load_model("fake-model"), fake)
         constructor.assert_called_once_with(
@@ -174,9 +188,46 @@ class BenchPyTorchTests(unittest.TestCase):
             (FakeModel(bench.PROMPTS, dtype=torch.bfloat16), "float32"),
         ):
             with mock.patch.object(
-                bench.sentence_transformers, "SentenceTransformer", return_value=fake
+                sentence_transformers, "SentenceTransformer", return_value=fake
             ), self.assertRaisesRegex(ValueError, message):
                 bench.load_model("fake-model")
+
+    def test_main_prints_only_the_retrieval_payload(self):
+        bench = load_module()
+        model = FakeModel(bench.PROMPTS)
+        case = {
+            "name": "case",
+            "queries": [{"id": "q1", "text": "q"}],
+            "documents": [{"id": "d1", "text": "d"}, {"id": "d2", "text": "e"}],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases_path = Path(tmpdir) / "cases.json"
+            cases_path.write_text(json.dumps({"cases": [case]}), encoding="utf-8")
+            argv = ["bench_pytorch.py", "--mode", "retrieval", "--model-name-or-path", "m",
+                    "--retrieval-eval-path", str(cases_path), "--output-dimension", "256",
+                    "--threads", "3"]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(bench, "load_model", return_value=model) as load_model, \
+                    mock.patch.object(torch, "set_num_threads") as set_num_threads, \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                bench.main()
+        load_model.assert_called_once_with("m")
+        set_num_threads.assert_called_once_with(3)
+        self.assertEqual(model.calls,
+                         [(["q"], "query", 1), (["d"], "document", 1), (["e"], "document", 1)])
+        payload = json.loads(stdout.getvalue())
+        [result] = payload.pop("results")
+        self.assertEqual(payload, {
+            "implementation": "pytorch",
+            "implementation_version": torch.__version__,
+            "transformers_version": transformers.__version__,
+            "sentence_transformers_version": sentence_transformers.__version__,
+        })
+        self.assertEqual(result["dataset_name"], "case")
+        self.assertEqual([item["id"] for item in result["queries"]], ["q1"])
+        self.assertEqual([item["id"] for item in result["documents"]], ["d1", "d2"])
+        for item in result["queries"] + result["documents"]:
+            self.assertEqual(len(item["embedding"]), 256)
 
 
 if __name__ == "__main__":

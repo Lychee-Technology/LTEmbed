@@ -58,8 +58,14 @@ if [[ "$(uname -m)" != "$architecture" ]]; then
 fi
 
 # common/build-info.cpp, as llama.cpp's CMake writes it. `--version` prints the commit,
-# which generate_llama_cpp_reference.py checks.
-sed -e "s/@LLAMA_BUILD_NUMBER@/${tag#b}/" \
+# which generate_llama_cpp_reference.py checks. CMake's build number is the commit count,
+# which a nightly tag (b11630) names; a release tag (v0.7.0) does not, and a shallow
+# checkout cannot count, so it is 0, as CMake sets it without git.
+build_number=0
+if [[ "$tag" =~ ^b([0-9]+)$ ]]; then
+  build_number="${BASH_REMATCH[1]}"
+fi
+sed -e "s/@LLAMA_BUILD_NUMBER@/${build_number}/" \
     -e "s/@LLAMA_BUILD_COMMIT@/${commit:0:7}/" \
     -e "s/@BUILD_COMPILER@/$(g++ -dumpfullversion | sed 's/^/GNU /')/" \
     -e "s/@BUILD_TARGET@/$(uname -s) $(uname -m)/" \

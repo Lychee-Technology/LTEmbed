@@ -83,14 +83,32 @@ queries alike.
 
 The equal width is the main hazard. An index whose schema checks only the dimension accepts
 the new vectors next to the old ones without an error, and search then returns poor results
-for no visible reason. Nothing in LTEmbed can detect a mixed index; it has to be prevented
-when the index is rebuilt.
+for no visible reason. LTEmbed cannot inspect an index, so a mixed index has to be prevented
+when vectors are written: tag the index with the engine's embedding space and check the tag
+(below).
 
 ## Moving an index
 
-1. **Record the model with every vector**, or at least with every index: the bundle's
-   `target_id` and quant (`build-info.json`), or the model `sha256` from the bundle's
-   `provenance.json`. This makes a mixed index detectable later.
+1. **Tag every index with the embedding space of the engines that fill it.**
+   `EmbeddingEngine::embedding_space()` names the sha256 of the `model.gguf` the engine
+   loaded, the prompts it adds, and its `output_dimension` and `l2_normalize`; vectors are
+   comparable only between engines whose spaces are equal. Store its string form when the
+   index is created, and compare it with the engine's before every write and search:
+
+   ```rust
+   let space = engine.embedding_space()?.to_string();
+   // When creating the index: store `space` in its metadata.
+   // When opening it, before adding to or searching it:
+   if stored_space != space {
+       return Err(format!("the index holds vectors of {stored_space}, not {space}").into());
+   }
+   ```
+
+   The space is computed from what the engine uses, not read from the bundle's
+   `build-info.json` or `provenance.json`, so an edited bundle cannot claim another model's
+   space ([architecture.md](./architecture.md#embedding-space)). An index from an LTEmbed
+   version without `embedding_space()`, such as every Jina index, has no tag: treat it as
+   foreign.
 2. **Build a new index beside the old one.** Re-embed every document with the new engine
    into a separate collection or table, keeping the old one serving.
 3. **Switch queries and documents together.** Queries must be embedded with the same model

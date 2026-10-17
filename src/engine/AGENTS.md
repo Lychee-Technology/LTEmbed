@@ -30,6 +30,24 @@ optional L2 normalization
 
 Preserve separation between shared retrieval semantics and backend-specific inference.
 
+## Embedding Space
+
+`EmbeddingEngine::embedding_space()` names the vector space of an engine's output:
+the sha256 of the `model.gguf` it loaded, the prefixes it adds, and its `EngineConfig`
+(`src/engine/space.rs`, `docs/architecture.md` § "Embedding space"). Callers store its string
+form beside their indexes and refuse to mix vectors whose spaces differ. So:
+
+- build it only from what the engine uses. Do not add bundle claims such as `target_id`,
+  `quant`, `provenance.json` or GGUF `general.*` metadata: a bundle edited by hand must not
+  be able to report another model's space;
+- add a setting to it if, and only if, the setting changes vectors by more than rounding;
+- bump `STRING_FORM_VERSION` when the same model file and settings would give different
+  vectors (pooling, projection, truncation, normalization, prefix handling); otherwise
+  stored tags match vectors they no longer describe. A change to the string form itself
+  needs a bump too, and makes every stored tag stop matching, so that callers rebuild;
+- keep the hash lazy. Hashing at load would add to every load (measured in
+  `docs/architecture.md` § "Embedding space").
+
 ## Backend Boundary
 
 `EmbeddingBackend` is an internal abstraction.

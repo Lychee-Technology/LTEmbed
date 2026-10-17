@@ -34,6 +34,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
 
+    // Store this beside an index, and compare it with the engine's before adding to or
+    // searching the index: vectors from engines whose embedding spaces differ (another model
+    // file, prompt, width or normalization) are not comparable.
+    let embedding_space = engine.embedding_space()?;
+
     let inputs = [
         EmbeddingInput::query("Hello, world!"),
         EmbeddingInput::query("LTEmbed Rust API example"),
@@ -48,6 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|value| format!("{value:.6}"))
         .collect();
 
+    println!("embedding_space: {embedding_space}");
     println!("inputs: {}", embeddings.len());
     println!("embedding_dim: {}", first.len());
     println!("first_embedding_head: [{}]", preview.join(", "));

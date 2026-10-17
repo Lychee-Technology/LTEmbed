@@ -96,7 +96,12 @@ The `build-info.json` range check for `max_length` (`1..=8192`) is covered by un
 cover the [byte bound](./architecture.md#inputs-over-the-byte-bound) without a model: an
 input over it fails its batch before any input is tokenized, one at it is tokenized, and a
 text over `i32::MAX` bytes is `InputTooLong` for any vocabulary, checked on its length
-alone.
+alone. Unit tests in `src/engine/space.rs` and `src/engine/mod.rs` cover the
+[embedding space](./architecture.md#embedding-space) without a model: the release bundle's
+exact string form, a different string for a change to any field, the escaping of `%`, `;`
+and non-ASCII bytes in prompts, the file hash against FIPS 180-2 test vectors, a hash that
+stays that of the opened file after its path is replaced or removed, and an engine that
+reports its own file, prompts and config and keeps the first result.
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
 `model.gguf` and `build-info.json`:
@@ -119,9 +124,13 @@ alone.
 | `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
 | `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
 | `test_gguf_without_eos_returns_model_load_error` | A copy of the GGUF with `tokenizer.ggml.add_eos_token` set to false fails the load-time tokenization check, naming the missing EOS. A copy without `add_bos_token` would still load: llama.cpp forces it on for this tokenizer, so the BOS half of the check has unit tests only. |
+| `test_embedding_space_names_the_release_gguf_and_settings` | The test bundle's [embedding space](./architecture.md#embedding-space) has the release GGUF's sha256 (from the llama.cpp reference), the model's prompts and the engine's config; a different `output_dimension` or `l2_normalize` changes it, 4 threads instead of 1 do not |
+| `test_edited_bundle_metadata_cannot_claim_another_space` | With `target_id`, `quant` and `max_length` edited in `build-info.json` and a `provenance.json` that names another model, an engine gives the same vector and the same space; with an edited `query_prefix`, another vector and a space with that prefix |
+| `test_embedding_space_names_the_gguf_file_the_engine_loaded` | A copy of the GGUF with `quantize.imatrix.chunks_count` changed, which llama.cpp ignores, embeds identically but has a space with the copy's sha256. An engine loaded before `model.gguf` was replaced by the copy still reports the release GGUF's sha256 |
 
-The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error` and
-`test_gguf_without_eos_returns_model_load_error`, about 210 MB each, go to Cargo's
+The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error`,
+`test_gguf_without_eos_returns_model_load_error` and
+`test_embedding_space_names_the_gguf_file_the_engine_loaded`, about 210 MB each, go to Cargo's
 integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
 than `/tmp`, and are removed afterwards, even when the test fails. No crafted
 GGUF is committed. The tests that swap one bundle file symlink the others instead of

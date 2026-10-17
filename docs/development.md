@@ -257,7 +257,8 @@ cargo run --release --bin benchmark_ltembed -- --mode retrieval --bundle-dir ggu
   --output-dimension 512 --l2-normalize true
 ```
 
-The example prints the embedding count, the dimension (`512`) and the first five values.
+The example prints the engine's embedding space, the embedding count, the dimension (`512`)
+and the first five values.
 
 ## Repository layout
 

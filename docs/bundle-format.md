@@ -128,8 +128,8 @@ unknown field: the output size comes from `EngineConfig`.
 | `model_metadata.model_format` | no | If present, must be `"gguf"`; else `UnsupportedModelFormat`. A missing field is accepted for older minimal bundles. | Rejecting ONNX-era bundles |
 | `model_metadata.pooling` | yes | `"mean"`; else `UnsupportedPooling` | Validation only; the backend always uses mean pooling |
 | `model_metadata.input_kind` | yes | `"retrieval"` or `"text"`; else `UnsupportedInputKind` | Validation only |
-| `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text |
-| `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text |
+| `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text; part of the [embedding space](./architecture.md#embedding-space) |
+| `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text; part of the embedding space |
 | `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
 | `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`), the input byte bound (`max_length` × the vocabulary's longest token, 93 bytes) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |
@@ -162,6 +162,10 @@ To check a downloaded bundle:
 ```bash
 cd gguf_bundle && sha256sum -c SHA256SUMS
 ```
+
+The engine reads neither file. `EmbeddingEngine::embedding_space()` hashes `model.gguf`
+itself, so its `model_sha256` is the `model.gguf` line of an intact bundle's `SHA256SUMS`
+whatever the two files say ([architecture.md](./architecture.md#embedding-space)).
 
 ## Assembling a bundle
 

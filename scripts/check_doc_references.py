@@ -47,6 +47,7 @@ NOT_REPO_PATHS = frozenset(
         "model.gguf",
         "tokenizer.json",
         "build-info.json",
+        "provenance.json",
         # ONNX-era file names, listed in docs/AGENTS.md as terminology to scrutinize.
         "model.ort",
         "libonnxruntime.so",

@@ -24,6 +24,11 @@ serde = { version = "1", features = ["derive"] }
 # Error handling
 thiserror = "2"
 
+# The sha256 of model.gguf in `EmbeddingEngine::embedding_space`. Pure Rust; it detects the
+# SHA extensions of x86-64 (SHA-NI) and aarch64 (FEAT_SHA256) at run time. The tests also use
+# it, to check the GGUF and the reference tokenizer.json against their pinned hashes.
+sha2 = { version = "0.11", default-features = false }
+
 [[example]]
 name = "api_usage"
 path = "examples/api_usage.rs"
@@ -43,12 +48,15 @@ force-frame-pointers = true
 opt-level = 3
 lto = "thin"
 
+# Unoptimized, sha2 takes seconds to hash the 210 MB GGUF, which the tests do several times
+# (`EmbeddingEngine::embedding_space` and the fixture checks). Only this repository's own
+# dev and test builds use this; a crate that depends on LTEmbed uses its own profiles.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [dev-dependencies]
 approx = "0.5"
 serde = { version = "1", features = ["derive"] }
-# Hashes the release GGUF against tests/fixtures/llama_cpp_reference.json, and the reference
-# tokenizer.json against tests/fixtures/token_ids.json.
-sha2 = "0.11"
 # Test-only: the engine tokenizes with the GGUF's own vocabulary, and neither the library nor a
 # bundle carries a tokenizer.json. The tokenizer parity test (src/engine/tokenizer_parity.rs)
 # loads the model's pinned tokenizer.json with this crate and compares it with the GGUF's

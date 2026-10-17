@@ -104,6 +104,10 @@ failure returns `LTEmbedError::ModelLoad(_)`:
    pooling. The attention type has no effect: `llama_encode` always runs non-causal
    attention, and the GGUF declares it too. The engine sets it to state what the model
    needs.
+7. Check that `model.gguf` is still the file opened in step 5: the same device and inode
+   (`Runtime` on failure). llama.cpp opens the path itself, so a file renamed over it in
+   between, or the path's removal, could leave the engine holding a file other than the one
+   it loaded, and its [embedding space](#embedding-space) would name that file.
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three
@@ -406,7 +410,8 @@ llama.cpp loaded the file, and hashes it: 0.11 s for the release GGUF on x86-64-
 Ryzen 5 5600G above, with SHA-NI; not measured on aarch64). Loading has already put the file
 in the page cache: llama.cpp maps it with `MAP_POPULATE`. Later calls return the stored
 value. Because the handle is the engine's own, replacing `model.gguf` after the engine
-loaded it does not change that engine's space. The engine does not hash at load: hashing
+loaded it does not change that engine's space, and a load during which the path was
+replaced fails ([Load path](#load-path), step 7). The engine does not hash at load: hashing
 before loading took the median load, over five runs each, from 0.54 s to 0.68 s with a warm
 page cache and from 0.71 s to 0.79 s with a cold one, and every caller would pay that,
 whether or not it asks for the space.
@@ -419,7 +424,7 @@ whether or not it asks for the space.
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
+| `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure, a `model.gguf` replaced while it loaded |
 | `InputTooLong { tokens, bytes, max }` | An input is longer than `max_length` tokens. `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the [byte bound](#inputs-over-the-byte-bound) and not tokenized |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
 | `Io(_)` | `embedding_space()` cannot read `model.gguf` |

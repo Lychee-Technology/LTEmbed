@@ -1,7 +1,7 @@
 use std::fmt::{self, Write as _};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -103,7 +103,9 @@ fn write_escaped(f: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
 }
 
 /// The bundle's `model.gguf`, opened before the backend loads it and kept open, so that its
-/// hash is that of the file the backend loaded even if the path is replaced afterwards.
+/// hash is that of the file the backend loaded even if the path is replaced afterwards. The
+/// backend opens the path itself, so [`ModelFile::check_still_at_path`] checks, once it has,
+/// that the path did not change in between.
 pub(crate) struct ModelFile {
     path: PathBuf,
     file: File,
@@ -121,6 +123,29 @@ impl ModelFile {
             path: path.to_path_buf(),
             file,
         })
+    }
+
+    /// Fails unless the path still names the file this handle opened (the same device and
+    /// inode). Called once the backend has loaded the path: if another file was renamed over
+    /// it, or it was removed, the backend may have read a file other than this one.
+    pub(crate) fn check_still_at_path(&self) -> Result<(), LTEmbedError> {
+        let runtime = |msg: String| LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg));
+        let same_file = match (self.file.metadata(), fs::metadata(&self.path)) {
+            (Ok(opened), Ok(now)) => (opened.dev(), opened.ino()) == (now.dev(), now.ino()),
+            (Err(err), _) | (_, Err(err)) => {
+                return Err(runtime(format!(
+                    "failed to check that GGUF model at {} did not change while it loaded: {err}",
+                    self.path.display()
+                )));
+            }
+        };
+        if !same_file {
+            return Err(runtime(format!(
+                "GGUF model at {} was replaced while it loaded; load it again",
+                self.path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// The file's sha256 in lowercase hex. It reads at explicit offsets rather than through the
@@ -298,6 +323,42 @@ mod tests {
 
         fs::remove_file(&path).unwrap();
         assert_eq!(model_file.sha256().unwrap(), abc);
+    }
+
+    /// The path must still name the opened file, through a symlink too: a symlink renamed over
+    /// it, as a deployment swaps a model, or its removal fails the check.
+    #[test]
+    fn test_model_file_check_fails_once_the_path_names_another_file() {
+        let target = unique_temp_path("model.gguf");
+        fs::write(&target, b"abc").unwrap();
+        let path = unique_temp_path("link.gguf");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let model_file = ModelFile::open(&path).unwrap();
+        model_file.check_still_at_path().unwrap();
+
+        // The same contents in another file are still another file.
+        let copy = unique_temp_path("copy.gguf");
+        fs::write(&copy, b"abc").unwrap();
+        let link = unique_temp_path("new-link.gguf");
+        std::os::unix::fs::symlink(&copy, &link).unwrap();
+        fs::rename(&link, &path).unwrap();
+        match model_file.check_still_at_path() {
+            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+                assert!(msg.contains(&path.display().to_string()), "{msg}");
+                assert!(msg.contains("replaced"), "{msg}");
+            }
+            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        }
+
+        fs::remove_file(&path).unwrap();
+        match model_file.check_still_at_path() {
+            Err(LTEmbedError::ModelLoad(ModelLoadError::Runtime(msg))) => {
+                assert!(msg.contains(&path.display().to_string()), "{msg}");
+            }
+            other => panic!("expected ModelLoad(Runtime), got {other:?}"),
+        }
+        fs::remove_file(target).unwrap();
+        fs::remove_file(copy).unwrap();
     }
 
     #[test]

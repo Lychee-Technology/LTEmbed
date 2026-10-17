@@ -53,7 +53,10 @@ loader checks, failing with `ModelLoad(Runtime)`:
 - the GGUF declares `<architecture>.pooling_type` as mean. A GGUF that declares another
   pooling, or none, is rejected: the backend always pools with mean;
 - the GGUF's tokenization adds BOS and EOS (see [Tokenization](#tokenization));
-- the llama.cpp context reports mean pooling once created.
+- the llama.cpp context reports mean pooling once created;
+- `model.gguf` is still, once loaded, the file the engine opened just before: a file
+  renamed over the path, or its removal, during the load fails it, so that the engine's
+  [embedding space](./architecture.md#embedding-space) names the file llama.cpp read.
 
 The engine needs llama.cpp support for `gemma-embedding2`. The pinned static release
 (`v0.1.160-1`, llama.cpp `v0.7.0`) has it, as did `v0.1.159-3` (llama.cpp `b11630`) and

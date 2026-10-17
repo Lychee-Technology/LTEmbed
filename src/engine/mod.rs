@@ -124,6 +124,9 @@ impl EmbeddingEngine {
             spec.max_length,
             n_threads,
         )?;
+        // llama.cpp opened the path again. A file renamed over it in between may be the one
+        // the backend loaded, and the space would name another file.
+        model_file.check_still_at_path()?;
 
         Ok(Self::with_backend(
             Box::new(backend),

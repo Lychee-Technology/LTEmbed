@@ -100,8 +100,9 @@ alone. Unit tests in `src/engine/space.rs` and `src/engine/mod.rs` cover the
 [embedding space](./architecture.md#embedding-space) without a model: the release bundle's
 exact string form, a different string for a change to any field, the escaping of `%`, `;`
 and non-ASCII bytes in prompts, the file hash against FIPS 180-2 test vectors, a hash that
-stays that of the opened file after its path is replaced or removed, and an engine that
-reports its own file, prompts and config and keeps the first result.
+stays that of the opened file after its path is replaced or removed, the load check that
+fails once the path names another file (a symlink renamed over it) or none (removed), and
+an engine that reports its own file, prompts and config and keeps the first result.
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
 `model.gguf` and `build-info.json`:

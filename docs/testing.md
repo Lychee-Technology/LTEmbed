@@ -90,6 +90,10 @@ temp directory and check load-time validation:
   fixtures; `test_llama_cpp_reference_matches_golden_inputs` checks that
   [the llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson) covers
   the same inputs and has vectors for the variant the tests were built for.
+- the llama.cpp reference's two variants agree as closely as the
+  [embedding space](./architecture.md#embedding-space), which does not name the variant,
+  assumes: `test_llama_cpp_reference_variants_agree_within_one_space` requires a cosine of at
+  least 0.999 and norms within 2% for every input at every trained width.
 
 The `build-info.json` range check for `max_length` (`1..=8192`) is covered by unit tests in
 `src/engine/bundle.rs`. Unit tests in `src/engine/mod.rs` and `src/engine/llama/mod.rs`
@@ -266,9 +270,9 @@ LTEmbed but none of LTEmbed's code: it tokenizes the prompted text and builds it
 itself. The settings are LTEmbed's: mean pooling, non-causal attention, flash
 attention on, `n_ctx = n_batch = n_ubatch = 8192`, no normalization.
 
-The kernels differ between the variants (their vectors agree to a mean cosine of 0.99963,
-and 0.99907 on the worst input), so the fixture holds one set of raw 768-wide vectors per
-variant, plus the token ids the GGUF
+The kernels differ between the variants (their raw vectors agree to a mean cosine of
+0.99961, and 0.99901 on the worst input, with norms up to 1.55% apart), so the fixture holds
+one set of raw 768-wide vectors per variant, plus the token ids the GGUF
 gave, the GGUF identity, the llama.cpp commit and the tool's arguments. LTEmbed matches its
 own variant's vectors to the tool's 7-decimal output: the gate is cosine ≥ 0.99999 and a
 norm within 1e-4. Measured on x86-64-v3, the two agree to cosine 1 − 4·10⁻¹⁶.

@@ -38,6 +38,16 @@ const GOLDEN_MIN_COSINE: f64 = 0.995;
 const LLAMA_CPP_MIN_COSINE: f64 = 0.99999;
 /// Largest allowed relative difference between those two vectors' norms.
 const LLAMA_CPP_MAX_NORM_ERROR: f64 = 1e-4;
+/// Lowest cosine allowed between the llama.cpp reference's two variants (x86-64-v3 and
+/// aarch64-graviton2), per input and at every trained width. Their kernels differ, so they
+/// agree less closely than the bound above. The embedding space does not name the variant, so
+/// this is how far apart the vectors of two engines with equal spaces may be
+/// (docs/architecture.md § "Embedding space"). Measured at `v0.1.160-1`: 0.99901 at worst
+/// (768 wide).
+const CPU_VARIANT_MIN_COSINE: f64 = 0.999;
+/// Largest allowed relative difference between those vectors' norms. Measured: 0.0155 at 768
+/// wide, 0.0179 at 128.
+const CPU_VARIANT_MAX_NORM_ERROR: f64 = 0.02;
 
 /// The test bundle directory if it holds `files`. Otherwise the test should return early
 /// (`None`), unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic instead.
@@ -132,10 +142,12 @@ fn norm(v: &[f32]) -> f64 {
 
 /// Asserts that a setting the embedding space leaves out moved `vector` from `expected` by
 /// floating-point rounding at most, with the bound the llama.cpp reference test allows for the
-/// same computation rounded differently. The space leaves a setting out only on that ground
-/// (`src/engine/AGENTS.md` § "Embedding Space"). On x86-64-v3 the vectors are bit-identical
-/// (`docs/architecture.md` § "Embedding space"). If a llama.cpp release moves them further,
-/// find out why before adding the setting to the space.
+/// same computation on the same kernels. The space itself tolerates more: it leaves out a
+/// setting that moves vectors no further than the two CPU variants differ
+/// (`CPU_VARIANT_MIN_COSINE`, `src/engine/AGENTS.md` § "Embedding Space"). The settings checked
+/// here run the same kernels on one variant, though, and on x86-64-v3 their vectors are
+/// bit-identical (`docs/architecture.md` § "Embedding space"). If a llama.cpp release moves
+/// them further, find out why before deciding whether the setting belongs in the space.
 fn assert_rounding_at_most(vector: &[f32], expected: &[f32], setting: &str) {
     let similarity = cosine(vector, expected);
     assert!(
@@ -756,6 +768,40 @@ fn test_llama_cpp_reference_matches_golden_inputs() {
     for (fixture, input) in golden.fixtures.iter().zip(&reference.inputs) {
         assert_eq!(input.token_ids.len(), fixture.tokens, "{}", fixture.name);
     }
+}
+
+/// Needs no bundle: the reference's two variants agree within the bound the embedding space
+/// assumes, at every width the golden fixture lists. The space does not name the variant, so
+/// an index can hold vectors from x86-64-v3 and aarch64 engines alike. If a regenerated
+/// reference fails this, revisit that decision (`src/engine/AGENTS.md` § "Embedding Space")
+/// rather than only widening the bound.
+#[test]
+fn test_llama_cpp_reference_variants_agree_within_one_space() {
+    let golden = golden_fixtures();
+    let reference = llama_cpp_reference(&golden);
+    let [x86, arm] = ["x86_64-v3", "aarch64-graviton2"].map(|variant| {
+        &reference
+            .variants
+            .get(variant)
+            .unwrap_or_else(|| panic!("{LLAMA_CPP_REFERENCE} has no {variant} section"))
+            .embeddings
+    });
+    let mut failures = Vec::new();
+    for (x86, arm) in x86.iter().zip(arm) {
+        for &dim in &golden.dims {
+            let (x86_vector, arm_vector) = (&x86.embedding[..dim], &arm.embedding[..dim]);
+            let similarity = cosine(x86_vector, arm_vector);
+            let (a, b) = (norm(x86_vector), norm(arm_vector));
+            let norm_error = a.max(b) / a.min(b) - 1.0;
+            if similarity < CPU_VARIANT_MIN_COSINE || norm_error > CPU_VARIANT_MAX_NORM_ERROR {
+                failures.push(format!(
+                    "{} at {dim}: cosine {similarity:.6}, norm error {norm_error:.4}",
+                    x86.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The engine against the F32 PyTorch golden at every width the fixture lists (768, 512, 256

@@ -380,18 +380,28 @@ tokenizes or pools, or when the form itself changes. Otherwise the form stays th
 across LTEmbed versions. [model-migration.md](./model-migration.md#moving-an-index) shows
 how to tag an index with it.
 
-**Settings that change vectors by rounding at most are left out**, so that changing them
-does not force an index rebuild:
+**Settings that change how the arithmetic is done, not what is computed, are left out**, so
+that changing them does not force an index rebuild. They may move vectors as far as the two
+CPU variants of one llama.cpp release are apart, and no further:
 
-- the thread count and the bundle's `max_length`: vectors are bit-identical with 1 and 4
-  threads, and with `max_length` 64 and 8192 (x86-64-v3, three texts as queries and as
-  documents);
-- the static llama.cpp release and its CPU variant: their kernels round differently, but
-  each variant stays within the [golden gates](./testing.md#gates-and-how-they-were-set) of
-  the F32 model. A release that changed how the model tokenizes or pools would change
-  vectors by more than that; it would come with a new version of the string form instead
-  (the release bump steps in
-  [development.md](./development.md#static-llamacpp-artifacts) include that decision).
+- the CPU variant of the static llama.cpp release. The space is the same on x86-64-v3 and
+  aarch64, so an index built on one can be searched from the other. Their kernels differ,
+  and their vectors differ by more than rounding: over the 25 inputs of the
+  [llama.cpp reference](./testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson),
+  the cosine between the two variants' raw vectors is 0.99961 on average and 0.99901 at
+  worst, and their norms are up to 1.55% apart (1.8% when truncated to 128). That is less
+  than quantization costs: against the F32 model, the release GGUF reaches a cosine of
+  0.9969 at worst. With `l2_normalize` off, vectors from the two architectures can differ in
+  norm by that much under equal spaces. A test keeps the reference's variants within a
+  cosine of 0.999 and 2% in norm at every trained width;
+- the thread count and the bundle's `max_length`. On one variant they run the same kernels,
+  and vectors are bit-identical with 1 and 4 threads, and with `max_length` 64 and 8192
+  (x86-64-v3, three texts as queries and as documents);
+- the llama.cpp release, while its kernels move vectors no further than the variants are
+  apart. A release whose kernels moved them further, or that changed how the model
+  tokenizes or pools, would come with a new version of the string form instead (the release
+  bump steps in [development.md](./development.md#static-llamacpp-artifacts) include that
+  decision).
 
 **What the bundle claims is left out too.** `build-info.json`'s `target_id` and `quant`,
 `provenance.json`, and the GGUF's own `general.*` metadata describe the model, but the

@@ -130,7 +130,12 @@ and settings other vectors (`src/engine/AGENTS.md` § "Embedding Space"). Compar
 regenerated sections of `tests/fixtures/llama_cpp_reference.json` with the old ones: if
 every token id and vector is unchanged, as from `v0.1.159-3` to `v0.1.160-1`, no bump is
 needed. Otherwise find the cause in the llama.cpp diff (tokenization is in its
-`src/llama-vocab.cpp`, pooling in `src/llama-graph.cpp`) and bump if it is either.
+`src/llama-vocab.cpp`, pooling in `src/llama-graph.cpp`) and bump if it is either. A change
+in the kernels alone needs no bump while it moves each variant's vectors no further from
+the old ones than the two variants are apart (`CPU_VARIANT_MIN_COSINE` and
+`CPU_VARIANT_MAX_NORM_ERROR` in `tests/integration_tests.rs`, which
+`test_llama_cpp_reference_variants_agree_within_one_space` checks between the variants).
+Beyond that, bump as well.
 
 ## Native builds
 

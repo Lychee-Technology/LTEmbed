@@ -40,13 +40,20 @@ form beside their indexes and refuse to mix vectors whose spaces differ. So:
 - build it only from what the engine uses. Do not add bundle claims such as `target_id`,
   `quant`, `provenance.json` or GGUF `general.*` metadata: a bundle edited by hand must not
   be able to report another model's space;
-- add a setting to it if, and only if, the setting changes vectors by more than rounding;
+- add a setting to it if it changes what the engine computes. Leave one out only if it
+  changes how the arithmetic is done (the thread count, `max_length`, the CPU variant, a
+  llama.cpp release's kernels) and moves vectors no further than the two CPU variants of
+  one release are apart: cosine 0.999 and norms 2% apart at worst, well under what
+  quantization costs (`CPU_VARIANT_MIN_COSINE` in `tests/integration_tests.rs`). The space
+  is the same on both variants so that an index can move between the supported
+  architectures; if the variants drift further apart, revisit that, not only the bound;
 - bump `STRING_FORM_VERSION` when the same model file and settings would give different
   vectors (pooling, projection, truncation, normalization, prefix handling, or a llama.cpp
-  release that changes how the model tokenizes or pools); otherwise stored tags match
-  vectors they no longer describe. `docs/development.md` § "Static llama.cpp artifacts"
-  makes that decision part of every release bump. A change to the string form itself
-  needs a bump too, and makes every stored tag stop matching, so that callers rebuild;
+  release that changes how the model tokenizes or pools, or whose kernels move vectors
+  further than the bound above); otherwise stored tags match vectors they no longer
+  describe. `docs/development.md` § "Static llama.cpp artifacts" makes that decision part
+  of every release bump. A change to the string form itself needs a bump too, and makes
+  every stored tag stop matching, so that callers rebuild;
 - keep the hash lazy. Hashing at load would add to every load (measured in
   `docs/architecture.md` § "Embedding space").
 

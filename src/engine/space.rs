@@ -30,9 +30,12 @@ const HASH_CHUNK: usize = 1 << 16;
 /// Every field is something the engine uses, not something its bundle claims. The model is
 /// identified by the sha256 of the `model.gguf` it loaded, not by `build-info.json`'s
 /// `target_id` or `quant` or by `provenance.json`, so a bundle whose metadata was edited
-/// cannot report another model's space. Settings that change vectors only by floating-point
-/// rounding, such as the thread count, the bundle's `max_length` or the llama.cpp release,
-/// are not part of it (`docs/architecture.md` § "Embedding space").
+/// cannot report another model's space. Settings that change how the arithmetic is done but
+/// not what is computed, such as the thread count, the bundle's `max_length`, or the
+/// llama.cpp release and its CPU variant, are not part of it (`docs/architecture.md`
+/// § "Embedding space"). So equal spaces do not mean bit-identical vectors: on the test
+/// suite's reference inputs, the x86-64-v3 and aarch64 builds agree to a cosine of 0.999 or
+/// more, and with [`EngineConfig::l2_normalize`] off their norms differ by up to 2%.
 ///
 /// Its string form ([`fmt::Display`]) is meant to be stored beside an index:
 ///

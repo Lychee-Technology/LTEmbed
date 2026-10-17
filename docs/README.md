@@ -17,6 +17,7 @@ llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README]
 | See the model's license and attribution | [licenses/embeddinggemma-2/NOTICE.md](../licenses/embeddinggemma-2/NOTICE.md) |
 | Move an existing index from the previous model, or update code that used `HFTokenizer` | [model-migration.md](./model-migration.md) |
 | Tag an index with the model and settings its vectors depend on | [architecture.md → Embedding space](./architecture.md#embedding-space) |
+| Check whether a text fits the token limit, or split it to fit | [getting-started.md → Token limit](./getting-started.md#token-limit) |
 | Know how LTEmbed's source, the model and the native dependencies are licensed | [README licensing](../README.md#licensing) |
 | Redistribute llama.cpp/ggml or statically linked binaries | [Native dependency licenses and attribution](../licenses/llama.cpp/NOTICE.md) |
 | Use the Python benchmark and fixture scripts | [scripts/README.md](../scripts/README.md) |

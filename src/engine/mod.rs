@@ -178,6 +178,38 @@ impl EmbeddingEngine {
             .get_or_init(|| EmbeddingSpace::new(model_sha256, &self.spec, self.config)))
     }
 
+    /// The longest input [`EmbeddingEngine::embed`] accepts, in tokens as
+    /// [`EmbeddingEngine::token_count`] counts them: the bundle's `max_length` from
+    /// `build-info.json`, at most [`MAX_LENGTH`]. An input of more tokens is rejected with
+    /// `LTEmbedError::InputTooLong`, never truncated.
+    pub fn max_length(&self) -> usize {
+        self.spec.max_length
+    }
+
+    /// The number of tokens `input` takes: its text with the query or document prefix the
+    /// engine adds, tokenized with the GGUF's own vocabulary, BOS and EOS included. This is the
+    /// count [`EmbeddingEngine::embed`] compares with [`EmbeddingEngine::max_length`], and it
+    /// is returned whether or not the input fits, so that text can be split to fit before it
+    /// is embedded: `embed` rejects an input of more than `max_length()` tokens with
+    /// `InputTooLong { tokens: Some(count), .. }`, where `count` is this value.
+    ///
+    /// Takes no lock: it does not wait for another call's inference on the same engine
+    /// (`docs/architecture.md` § "Concurrency").
+    ///
+    /// # Errors
+    ///
+    /// Returns `LTEmbedError::InputTooLong { tokens: None, bytes, max }` without tokenizing
+    /// `input` if its prefixed text is over the engine's byte bound: no text of `bytes` bytes
+    /// fits in `max` tokens of the vocabulary, and tokenizing one costs time and memory in
+    /// proportion to its size (`docs/architecture.md` § "Inputs over the byte bound"). `embed`
+    /// rejects such an input the same way. Returns `LTEmbedError::Tokenization` if the text
+    /// cannot be tokenized.
+    pub fn token_count(&self, input: EmbeddingInput<'_>) -> Result<usize, LTEmbedError> {
+        self.check_input_size(input)?;
+        let text = prefixed_text(input, &self.spec);
+        Ok(self.backend.tokenize(&text)?.len())
+    }
+
     /// Rejects `input` if its prefixed text is too long to fit in the bundle's `max_length`
     /// tokens, without building or tokenizing that text.
     fn check_input_size(&self, input: EmbeddingInput<'_>) -> Result<(), LTEmbedError> {
@@ -436,6 +468,56 @@ mod tests {
         let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
         assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         assert_eq!(tokenized.load(Ordering::SeqCst), 2);
+    }
+
+    /// `token_count` counts the prefixed text's tokens, BOS and EOS included: the count `embed`
+    /// compares with `max_length`, which `max_length()` reports. A text of more than
+    /// `max_length` tokens is counted too, and `embed` rejects it naming that count.
+    #[test]
+    fn test_token_count_is_the_count_embed_compares_with_max_length() {
+        let (engine, tokenized) = counting_engine();
+        assert_eq!(engine.max_length(), MAX_TOKENS);
+
+        let tokens_of = |text: &str| text.len().div_ceil(TOKEN_BYTES) + 2;
+        assert_eq!(
+            engine.token_count(EmbeddingInput::query("hello")).unwrap(),
+            tokens_of(&format!("{QUERY_PREFIX}hello"))
+        );
+        assert_eq!(
+            engine
+                .token_count(EmbeddingInput::document("hello"))
+                .unwrap(),
+            tokens_of(&format!("{DOCUMENT_PREFIX}hello"))
+        );
+        assert_eq!(tokenized.load(Ordering::SeqCst), 2);
+
+        let at_bound = document_text(MAX_TOKENS * TOKEN_BYTES);
+        let count = engine
+            .token_count(EmbeddingInput::document(&at_bound))
+            .unwrap();
+        assert_eq!(count, MAX_TOKENS + 2);
+        match engine.embed(EmbeddingInput::document(&at_bound)) {
+            Err(LTEmbedError::InputTooLong { tokens, .. }) => assert_eq!(tokens, Some(count)),
+            other => panic!("expected InputTooLong with a token count, got {other:?}"),
+        }
+    }
+
+    /// A text over the byte bound cannot fit, so `token_count` rejects it as `embed` does,
+    /// without tokenizing it.
+    #[test]
+    fn test_token_count_rejects_a_text_over_the_byte_bound_without_tokenizing() {
+        let (engine, tokenized) = counting_engine();
+        let bound = MAX_TOKENS * TOKEN_BYTES;
+        let over = document_text(bound + 1);
+        match engine.token_count(EmbeddingInput::document(&over)) {
+            Err(LTEmbedError::InputTooLong {
+                tokens: None,
+                bytes,
+                max,
+            }) => assert_eq!((bytes, max), (bound + 1, MAX_TOKENS)),
+            other => panic!("expected InputTooLong without a token count, got {other:?}"),
+        }
+        assert_eq!(tokenized.load(Ordering::SeqCst), 0);
     }
 
     /// [`CountingBackend`] measures nothing, so a profiled call fails instead of reporting a

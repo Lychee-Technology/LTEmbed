@@ -101,7 +101,11 @@ The `build-info.json` range check for `max_length` (`1..=8192`) is covered by un
 cover the [byte bound](./architecture.md#inputs-over-the-byte-bound) without a model: an
 input over it fails its batch before any input is tokenized, one at it is tokenized, and a
 text over `i32::MAX` bytes is `InputTooLong` for any vocabulary, checked on its length
-alone. Unit tests in `src/engine/space.rs` and `src/engine/mod.rs` cover the
+alone. Unit tests in `src/engine/mod.rs` cover `token_count` and `max_length()` without a
+model: the count is that of the prefixed text, BOS and EOS included, a count over
+`max_length` is returned and is the one `embed`'s `InputTooLong` then names, a text over the
+bound is rejected without being tokenized, and `max_length()` is the bundle's limit. Unit
+tests in `src/engine/space.rs` and `src/engine/mod.rs` cover the
 [embedding space](./architecture.md#embedding-space) without a model: the release bundle's
 exact string form, a different string for a change to any field, the escaping of `%`, `;`
 and non-ASCII bytes in prompts, the file hash against FIPS 180-2 test vectors, a hash that
@@ -123,9 +127,10 @@ an engine that reports its own file, prompts and config and keeps the first resu
 | `test_default_config_output_is_normalized_and_512_wide` | `EngineConfig::default()` output has 512 values and unit norm |
 | `test_bundle_without_tokenizer_json_loads_and_ignores_one` | A directory of only `model.gguf` and `build-info.json` loads and gives the same vector as the test bundle, and still does with an unparseable `tokenizer.json` beside them |
 | `test_long_input_returns_input_too_long_error` | An input of more than 8192 tokens returns `InputTooLong { max: 8192 }` with its full token count and its size with the prefix |
-| `test_input_of_the_longest_tokens_that_fits_embeds` | The [byte bound](./architecture.md#inputs-over-the-byte-bound) rejects no input that fits: a document of 8183 copies of the vocabulary's longest token (31 × `▁`), exactly 8192 tokens and 761,039 bytes, embeds, and one more copy returns `InputTooLong { tokens: Some(8193) }`: it is tokenized, not rejected by its size |
-| `test_input_over_the_byte_bound_is_rejected_without_tokenizing` | Inputs one byte over the bound (8192 × 93 bytes, prefix included) and of 64 MiB return `InputTooLong { tokens: None }` with their size; one at the bound is tokenized and counted |
-| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, an input of exactly 64 tokens embeds and one of 65 returns `InputTooLong { tokens: Some(65), max: 64 }`. The two texts are found with an engine whose `max_length` is 8: every candidate has more than 8 tokens and fewer bytes than that engine's byte bound, so its `InputTooLong` names the candidate's token count. |
+| `test_token_count_matches_the_golden_fixtures` | `token_count` equals the count the [golden fixture](#golden-fixture-testsfixturestest_fixturesjson) recorded with the model's own tokenizer, prompt, BOS and EOS included, for each of its 25 inputs, the 8192-token one included; `max_length()` is the fixture's `max_length` |
+| `test_input_of_the_longest_tokens_that_fits_embeds` | The [byte bound](./architecture.md#inputs-over-the-byte-bound) rejects no input that fits: a document of 8183 copies of the vocabulary's longest token (31 × `▁`), exactly 8192 tokens and 761,039 bytes, embeds, and one more copy returns `InputTooLong { tokens: Some(8193) }`: it is tokenized, not rejected by its size. `token_count` gives 8192 and 8193 for the two, and `max_length()` 8192 |
+| `test_input_over_the_byte_bound_is_rejected_without_tokenizing` | Inputs one byte over the bound (8192 × 93 bytes, prefix included) and of 64 MiB return `InputTooLong { tokens: None }` with their size, from `embed` and from `token_count`; one at the bound is tokenized and counted, and `embed`'s `InputTooLong` names `token_count`'s count |
+| `test_bundle_max_length_is_enforced_without_truncation` | With `max_length` 64, `max_length()` is 64, an input that `token_count` counts as exactly 64 tokens embeds, and one it counts as 65 returns `InputTooLong { tokens: Some(65), max: 64 }`. `token_count` finds the two texts, counting past the limit. |
 | `test_gguf_width_mismatch_returns_model_load_error` | With `raw_embedding_dimension` 1024, loading fails with `ModelLoad(Runtime)` |
 | `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
 | `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |

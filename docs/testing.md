@@ -50,8 +50,9 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    plain `cargo test --lib` (step 3) skips as ignored.
 8. `cargo test --test integration_tests`. The llama.cpp reference test and
    `test_input_of_the_longest_tokens_that_fits_embeds` each embed an 8192-token input while
-   other tests run their own engines; the whole test process peaks at about 3.4 GiB on
-   x86-64-v3 ([architecture.md](./architecture.md#long-inputs-and-memory)).
+   other tests run their own engines; the whole test process peaks at 3.8–4.1 GiB on a
+   12-thread x86-64-v3 host, with the default of one test thread per CPU
+   ([architecture.md](./architecture.md#long-inputs-and-memory)). Fewer test threads lower it.
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so

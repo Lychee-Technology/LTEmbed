@@ -1173,8 +1173,13 @@ fn test_embedding_space_names_the_release_gguf_and_settings() {
         return;
     };
     let reference = llama_cpp_reference(&golden_fixtures());
-    let release = make_engine(&bundle_dir);
-    let space = release.embedding_space().unwrap().clone();
+    let input = EmbeddingInput::document("Four threads embedded this.");
+    // One engine at a time, each dropped once checked: each holds an 8192-token context.
+    let (space, vector) = {
+        let release = make_engine(&bundle_dir);
+        let space = release.embedding_space().unwrap().clone();
+        (space, release.embed(input).unwrap())
+    };
     assert_eq!(space.model_sha256, reference.gguf.sha256);
     assert_eq!(
         (space.query_prefix.as_str(), space.document_prefix.as_str()),
@@ -1185,14 +1190,11 @@ fn test_embedding_space_names_the_release_gguf_and_settings() {
         (EMBEDDING_DIMENSION, true)
     );
 
-    let threads = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, 4);
-    let input = EmbeddingInput::document("Four threads embedded this.");
-    assert_rounding_at_most(
-        &threads.embed(input).unwrap(),
-        &release.embed(input).unwrap(),
-        "4 threads",
-    );
-    assert_eq!(*threads.embedding_space().unwrap(), space);
+    {
+        let threads = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, 4);
+        assert_rounding_at_most(&threads.embed(input).unwrap(), &vector, "4 threads");
+        assert_eq!(*threads.embedding_space().unwrap(), space);
+    }
     for (output_dimension, l2_normalize) in [(256, true), (EMBEDDING_DIMENSION, false)] {
         let engine = make_engine_with(&bundle_dir, output_dimension, l2_normalize, 1);
         let other = engine.embedding_space().unwrap();
@@ -1214,11 +1216,12 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
         return;
     };
     let input = EmbeddingInput::query("Which model embedded this?");
-    let release = make_engine(&bundle_dir);
-    let (space, vector) = (
-        release.embedding_space().unwrap(),
-        release.embed(input).unwrap(),
-    );
+    // One engine at a time, each dropped once checked: each holds an 8192-token context.
+    let (space, vector) = {
+        let release = make_engine(&bundle_dir);
+        let space = release.embedding_space().unwrap().clone();
+        (space, release.embed(input).unwrap())
+    };
 
     let claims_dir = unique_temp_dir();
     fs::create_dir_all(&claims_dir).unwrap();
@@ -1236,9 +1239,11 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
         }
     });
     fs::write(claims_dir.join("provenance.json"), provenance.to_string()).unwrap();
-    let claims = make_engine(&claims_dir);
-    assert_eq!(claims.embed(input).unwrap(), vector);
-    assert_eq!(claims.embedding_space().unwrap(), space);
+    {
+        let claims = make_engine(&claims_dir);
+        assert_eq!(claims.embed(input).unwrap(), vector);
+        assert_eq!(*claims.embedding_space().unwrap(), space);
+    }
     fs::remove_dir_all(claims_dir).unwrap();
 
     let max_length_dir = unique_temp_dir();
@@ -1247,9 +1252,11 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
     write_edited_bundle_build_info(&bundle_dir, &max_length_dir, |build_info| {
         build_info["model_metadata"]["max_length"] = 64.into();
     });
-    let max_length = make_engine(&max_length_dir);
-    assert_rounding_at_most(&max_length.embed(input).unwrap(), &vector, "max_length 64");
-    assert_eq!(max_length.embedding_space().unwrap(), space);
+    {
+        let max_length = make_engine(&max_length_dir);
+        assert_rounding_at_most(&max_length.embed(input).unwrap(), &vector, "max_length 64");
+        assert_eq!(*max_length.embedding_space().unwrap(), space);
+    }
     fs::remove_dir_all(max_length_dir).unwrap();
 
     let prompt_dir = unique_temp_dir();
@@ -1258,15 +1265,17 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
     write_edited_bundle_build_info(&bundle_dir, &prompt_dir, |build_info| {
         build_info["model_metadata"]["query_prefix"] = "Query: ".into();
     });
-    let prompt = make_engine(&prompt_dir);
-    assert_ne!(prompt.embed(input).unwrap(), vector);
-    let mut expected = space.clone();
-    expected.query_prefix = "Query: ".into();
-    assert_eq!(*prompt.embedding_space().unwrap(), expected);
-    assert_ne!(
-        prompt.embedding_space().unwrap().to_string(),
-        space.to_string()
-    );
+    {
+        let prompt = make_engine(&prompt_dir);
+        assert_ne!(prompt.embed(input).unwrap(), vector);
+        let mut expected = space.clone();
+        expected.query_prefix = "Query: ".into();
+        assert_eq!(*prompt.embedding_space().unwrap(), expected);
+        assert_ne!(
+            prompt.embedding_space().unwrap().to_string(),
+            space.to_string()
+        );
+    }
     fs::remove_dir_all(prompt_dir).unwrap();
 }
 
@@ -1292,22 +1301,26 @@ fn test_embedding_space_names_the_gguf_file_the_engine_loaded() {
     fs::create_dir(&dir).unwrap();
     link_bundle_files(&bundle_dir, &dir, &["model.gguf", "build-info.json"]);
 
-    let loaded = make_engine(&dir);
-    // Swap the file the way a deployment would: rename a new link over the old one.
-    let link = temp_dir.path().join("model.gguf.new");
-    std::os::unix::fs::symlink(&copy, &link).unwrap();
-    fs::rename(&link, dir.join("model.gguf")).unwrap();
+    let input = EmbeddingInput::document("The same weights in another file.");
+    // The engine that loaded the release GGUF is checked after the swap, then dropped before
+    // the next engine loads: each holds an 8192-token context.
+    let (before, vector) = {
+        let loaded = make_engine(&dir);
+        // Swap the file the way a deployment would: rename a new link over the old one.
+        let link = temp_dir.path().join("model.gguf.new");
+        std::os::unix::fs::symlink(&copy, &link).unwrap();
+        fs::rename(&link, dir.join("model.gguf")).unwrap();
+        let before = loaded.embedding_space().unwrap().clone();
+        (before, loaded.embed(input).unwrap())
+    };
     let reloaded = make_engine(&dir);
 
-    let before = loaded.embedding_space().unwrap();
     assert_eq!(before.model_sha256, reference.gguf.sha256);
     let mut expected = before.clone();
     expected.model_sha256 = file_sha256_hex(&copy);
     assert_ne!(expected.model_sha256, before.model_sha256);
     assert_eq!(*reloaded.embedding_space().unwrap(), expected);
-
-    let input = EmbeddingInput::document("The same weights in another file.");
-    assert_eq!(loaded.embed(input).unwrap(), reloaded.embed(input).unwrap());
+    assert_eq!(reloaded.embed(input).unwrap(), vector);
 }
 
 /// An input of more than `MAX_LENGTH` tokens is rejected before inference, with its full

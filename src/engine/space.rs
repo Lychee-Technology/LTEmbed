@@ -13,8 +13,8 @@ use super::config::EngineConfig;
 
 /// Version of [`EmbeddingSpace`]'s string form. Bump it when the same model file and settings
 /// would give different vectors, for example if the pooling, truncation or normalization
-/// changes, or when the form itself changes, so that indexes tagged with the old form no
-/// longer match.
+/// changes, or a llama.cpp release changes how the model tokenizes or pools, or when the form
+/// itself changes, so that indexes tagged with the old form no longer match.
 const STRING_FORM_VERSION: u32 = 1;
 
 /// Bytes [`ModelFile::sha256`] reads at a time.

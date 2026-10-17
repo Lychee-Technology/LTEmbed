@@ -371,9 +371,10 @@ ltembed-space/1;model-sha256=a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5b
 In the prefixes, `%`, `;` and every byte outside printable ASCII are written as `%XX`, so
 the form is printable ASCII and no two spaces share one. The number after `ltembed-space/`
 changes when the same model file and settings would give different vectors, for example if
-LTEmbed changed its pooling or normalization, or when the form itself changes. Otherwise
-the form stays the same across LTEmbed versions. [model-migration.md](./model-migration.md#moving-an-index)
-shows how to tag an index with it.
+LTEmbed changed its pooling or normalization, or a llama.cpp release changed how the model
+tokenizes or pools, or when the form itself changes. Otherwise the form stays the same
+across LTEmbed versions. [model-migration.md](./model-migration.md#moving-an-index) shows
+how to tag an index with it.
 
 **Settings that change vectors by rounding at most are left out**, so that changing them
 does not force an index rebuild:
@@ -383,7 +384,10 @@ does not force an index rebuild:
   documents);
 - the static llama.cpp release and its CPU variant: their kernels round differently, but
   each variant stays within the [golden gates](./testing.md#gates-and-how-they-were-set) of
-  the F32 model.
+  the F32 model. A release that changed how the model tokenizes or pools would change
+  vectors by more than that; it would come with a new version of the string form instead
+  (the release bump steps in
+  [development.md](./development.md#static-llamacpp-artifacts) include that decision).
 
 **What the bundle claims is left out too.** `build-info.json`'s `target_id` and `quant`,
 `provenance.json`, and the GGUF's own `general.*` metadata describe the model, but the

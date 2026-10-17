@@ -42,8 +42,10 @@ form beside their indexes and refuse to mix vectors whose spaces differ. So:
   be able to report another model's space;
 - add a setting to it if, and only if, the setting changes vectors by more than rounding;
 - bump `STRING_FORM_VERSION` when the same model file and settings would give different
-  vectors (pooling, projection, truncation, normalization, prefix handling); otherwise
-  stored tags match vectors they no longer describe. A change to the string form itself
+  vectors (pooling, projection, truncation, normalization, prefix handling, or a llama.cpp
+  release that changes how the model tokenizes or pools); otherwise stored tags match
+  vectors they no longer describe. `docs/development.md` § "Static llama.cpp artifacts"
+  makes that decision part of every release bump. A change to the string form itself
   needs a bump too, and makes every stored tag stop matching, so that callers rebuild;
 - keep the hash lazy. Hashing at load would add to every load (measured in
   `docs/architecture.md` § "Embedding space").

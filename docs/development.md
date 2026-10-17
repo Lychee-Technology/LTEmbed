@@ -122,7 +122,20 @@ run the tokenizer parity and integration tests on both variants. The engine toke
 without the backend's lock, and a data race can pass the concurrency test, so also check
 the new llama.cpp commit against the argument at `tokenize_with_vocab` in
 `src/engine/llama/mod.rs` that `llama_tokenize` only reads shared state
-([architecture.md](./architecture.md#concurrency)).
+([architecture.md](./architecture.md#concurrency)). Stored
+[embedding spaces](./architecture.md#embedding-space) do not name the release, so also
+decide whether the new one needs a bump of `STRING_FORM_VERSION` in `src/engine/space.rs`.
+It does if it changes how this model tokenizes or pools, which gives the same `model.gguf`
+and settings other vectors (`src/engine/AGENTS.md` § "Embedding Space"). Compare the
+regenerated sections of `tests/fixtures/llama_cpp_reference.json` with the old ones: if
+every token id and vector is unchanged, as from `v0.1.159-3` to `v0.1.160-1`, no bump is
+needed. Otherwise find the cause in the llama.cpp diff (tokenization is in its
+`src/llama-vocab.cpp`, pooling in `src/llama-graph.cpp`) and bump if it is either. A change
+in the kernels alone needs no bump while it moves each variant's vectors no further from
+the old ones than the two variants are apart (`CPU_VARIANT_MIN_COSINE` and
+`CPU_VARIANT_MAX_NORM_ERROR` in `tests/integration_tests.rs`, which
+`test_llama_cpp_reference_variants_agree_within_one_space` checks between the variants).
+Beyond that, bump as well.
 
 ## Native builds
 
@@ -243,7 +256,8 @@ The tokenizer parity tests and the model-backed integration tests need a bundle 
 `python3 scripts/assemble_gguf_bundle.py gguf_bundle --reference-tokenizer reference-tokenizer.json`
 ([bundle-format.md](./bundle-format.md#assembling-a-bundle)), which downloads the same pinned
 files CI uses. The integration tests, which embed two 8192-token inputs while other tests
-run their own engines, peak at about 3.4 GiB of memory on x86-64-v3.
+run their own engines, peak at 3.8–4.1 GiB of memory on a 12-thread x86-64-v3 host with the
+default test parallelism.
 
 ## End-to-end sanity check
 
@@ -257,7 +271,8 @@ cargo run --release --bin benchmark_ltembed -- --mode retrieval --bundle-dir ggu
   --output-dimension 512 --l2-normalize true
 ```
 
-The example prints the embedding count, the dimension (`512`) and the first five values.
+The example prints the engine's embedding space, the embedding count, the dimension (`512`)
+and the first five values.
 
 ## Repository layout
 

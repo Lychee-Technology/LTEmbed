@@ -30,6 +30,33 @@ optional L2 normalization
 
 Preserve separation between shared retrieval semantics and backend-specific inference.
 
+## Embedding Space
+
+`EmbeddingEngine::embedding_space()` names the vector space of an engine's output:
+the sha256 of the `model.gguf` it loaded, the prefixes it adds, and its `EngineConfig`
+(`src/engine/space.rs`, `docs/architecture.md` § "Embedding space"). Callers store its string
+form beside their indexes and refuse to mix vectors whose spaces differ. So:
+
+- build it only from what the engine uses. Do not add bundle claims such as `target_id`,
+  `quant`, `provenance.json` or GGUF `general.*` metadata: a bundle edited by hand must not
+  be able to report another model's space;
+- add a setting to it if it changes what the engine computes. Leave one out only if it
+  changes how the arithmetic is done (the thread count, `max_length`, the CPU variant, a
+  llama.cpp release's kernels) and moves vectors no further than the two CPU variants of
+  one release are apart: cosine 0.999 and norms 2% apart at worst, well under what
+  quantization costs (`CPU_VARIANT_MIN_COSINE` in `tests/integration_tests.rs`). The space
+  is the same on both variants so that an index can move between the supported
+  architectures; if the variants drift further apart, revisit that, not only the bound;
+- bump `STRING_FORM_VERSION` when the same model file and settings would give different
+  vectors (pooling, projection, truncation, normalization, prefix handling, or a llama.cpp
+  release that changes how the model tokenizes or pools, or whose kernels move vectors
+  further than the bound above); otherwise stored tags match vectors they no longer
+  describe. `docs/development.md` § "Static llama.cpp artifacts" makes that decision part
+  of every release bump. A change to the string form itself needs a bump too, and makes
+  every stored tag stop matching, so that callers rebuild;
+- keep the hash lazy. Hashing at load would add to every load (measured in
+  `docs/architecture.md` § "Embedding space").
+
 ## Backend Boundary
 
 `EmbeddingBackend` is an internal abstraction.
@@ -87,7 +114,7 @@ gguf_bundle/
 
 Use `bundle.rs` and `scripts/assemble_gguf_bundle.py`, which every workflow uses to build its bundle, as the authoritative metadata contract. `docs/bundle-format.md` documents it and must stay in sync.
 
-Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata (including a `max_length` outside `1..=8192`), a GGUF that fails to load, a GGUF pooled width (`n_embd_out`) that differs from `raw_embedding_dimension`, a GGUF that does not declare mean pooling, and a GGUF whose tokenization of `SPECIAL_TOKENS_CHECK_TEXT` does not start with its BOS and end with its EOS. A `tokenizer.json` in the directory is not read. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
+Loading fails explicitly only for what it checks: missing files, unreadable or unsupported `build-info.json` metadata (including a `max_length` outside `1..=8192`), a GGUF that fails to load, a GGUF pooled width (`n_embd_out`) that differs from `raw_embedding_dimension`, a GGUF that does not declare mean pooling, a GGUF whose tokenization of `SPECIAL_TOKENS_CHECK_TEXT` does not start with its BOS and end with its EOS, and a `model.gguf` path that no longer names the file the engine opened before llama.cpp loaded it. A `tokenizer.json` in the directory is not read. `docs/architecture.md` § "Load path" lists the steps and `docs/bundle-format.md` the per-field rules. Keep these checks explicit. A new check needs a test and a matching update to both documents.
 
 The BOS/EOS check is a sanity check, not an identity check. It rejects a GGUF whose tokenization lost the special tokens the model wraps every input in, but a GGUF whose vocabulary splits text differently from the model's own tokenizer loads without error and produces wrong embeddings; only the bundle-gated tests catch that, and only for the GGUF and inputs they run (`docs/testing.md`). So:
 

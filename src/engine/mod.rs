@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
@@ -9,17 +10,20 @@ mod config;
 mod inference;
 mod input;
 mod llama;
+mod space;
 #[cfg(test)]
 mod tokenizer_parity;
 
 pub use config::EngineConfig;
 pub use inference::EmbedBatchProfile;
 pub use input::{EmbeddingInput, EmbeddingInputKind};
+pub use space::EmbeddingSpace;
 
 use backend::EmbeddingBackend;
 use bundle::{require_file, ModelSpec};
 use inference::{postprocess_embedding, prefix, prefixed_text};
 use llama::LlamaBackend;
+use space::ModelFile;
 
 /// Width of EmbeddingGemma 2's pooled, projected output (hidden width 512, projected to 768).
 pub const RAW_EMBEDDING_DIMENSION: usize = 768;
@@ -44,6 +48,10 @@ pub struct EmbeddingEngine {
     /// No text of more bytes, prefix included, fits in `spec.max_length` tokens
     /// ([`EmbeddingBackend::max_input_bytes`]).
     max_input_bytes: usize,
+    /// The `model.gguf` the backend loaded, hashed by [`EmbeddingEngine::embedding_space`].
+    model_file: ModelFile,
+    /// Set by the first [`EmbeddingEngine::embedding_space`] call that succeeds.
+    embedding_space: OnceLock<EmbeddingSpace>,
 }
 
 impl std::fmt::Debug for EmbeddingEngine {
@@ -104,6 +112,9 @@ impl EmbeddingEngine {
         config.validate(spec.raw_embedding_dimension)?;
         Self::validate_threads(n_threads)?;
 
+        // Opened before llama.cpp opens the same path, and kept open, so that the embedding
+        // space names the file the backend loaded even if the path is replaced later.
+        let model_file = ModelFile::open(model_path)?;
         // Loading checks that the GGUF declares mean pooling, the only pooling the bundle
         // metadata accepts (`ModelSpec::from_build_info`), and that its tokenization adds
         // BOS and EOS.
@@ -113,14 +124,23 @@ impl EmbeddingEngine {
             spec.max_length,
             n_threads,
         )?;
+        // llama.cpp opened the path again. A file renamed over it in between may be the one
+        // the backend loaded, and the space would name another file.
+        model_file.check_still_at_path()?;
 
-        Ok(Self::with_backend(Box::new(backend), spec, config))
+        Ok(Self::with_backend(
+            Box::new(backend),
+            spec,
+            config,
+            model_file,
+        ))
     }
 
     fn with_backend(
         backend: Box<dyn EmbeddingBackend>,
         spec: ModelSpec,
         config: EngineConfig,
+        model_file: ModelFile,
     ) -> Self {
         let max_input_bytes = backend.max_input_bytes(spec.max_length);
         Self {
@@ -128,7 +148,34 @@ impl EmbeddingEngine {
             spec,
             config,
             max_input_bytes,
+            model_file,
+            embedding_space: OnceLock::new(),
         }
+    }
+
+    /// The vector space this engine embeds into: the sha256 of the `model.gguf` it loaded, the
+    /// query and document prefixes it adds, and its [`EngineConfig`]. Vectors from engines
+    /// whose spaces are equal are comparable. Store the space's string form beside an index
+    /// and compare it with the engine's before adding to or searching the index
+    /// (`docs/model-migration.md` § "Moving an index").
+    ///
+    /// The first call reads and hashes the model file, through the handle the engine opened
+    /// when it loaded the file: about 0.11 s for the release GGUF on x86-64-v3. Later calls
+    /// return the same value without reading the file again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LTEmbedError::Io` if the model file cannot be read. A later call tries again.
+    pub fn embedding_space(&self) -> Result<&EmbeddingSpace, LTEmbedError> {
+        if let Some(space) = self.embedding_space.get() {
+            return Ok(space);
+        }
+        // Threads that make the first call at the same time each hash the file; the first
+        // result is kept, and the others are equal to it.
+        let model_sha256 = self.model_file.sha256()?;
+        Ok(self
+            .embedding_space
+            .get_or_init(|| EmbeddingSpace::new(model_sha256, &self.spec, self.config)))
     }
 
     /// Rejects `input` if its prefixed text is too long to fit in the bundle's `max_length`
@@ -263,6 +310,7 @@ fn check_input_bytes(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -305,6 +353,21 @@ mod tests {
 
     const MAX_TOKENS: usize = 16;
 
+    /// A [`ModelFile`] holding `contents`. Its path is removed at once: the engine reads the
+    /// file through the handle it keeps.
+    fn model_file(contents: &[u8]) -> ModelFile {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ltembed-engine-unit-tests-{}-{}.gguf",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, contents).unwrap();
+        let file = ModelFile::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        file
+    }
+
     /// An engine of `MAX_TOKENS` tokens on a [`CountingBackend`], whose byte bound is 64
     /// bytes, and the count of texts it has tokenized.
     fn counting_engine() -> (EmbeddingEngine, Arc<AtomicUsize>) {
@@ -316,7 +379,12 @@ mod tests {
         let backend = Box::new(CountingBackend {
             tokenized: Arc::clone(&tokenized),
         });
-        let engine = EmbeddingEngine::with_backend(backend, spec, EngineConfig::default());
+        let engine = EmbeddingEngine::with_backend(
+            backend,
+            spec,
+            EngineConfig::default(),
+            model_file(b"abc"),
+        );
         (engine, tokenized)
     }
 
@@ -384,5 +452,36 @@ mod tests {
             engine.embed_batch_profiled(&[]).unwrap(),
             (Vec::new(), EmbedBatchProfile::empty())
         );
+    }
+
+    /// The space names the contents of the model file the engine holds, the prefixes it adds
+    /// and its config. The first call's result is kept.
+    #[test]
+    fn test_embedding_space_names_the_model_file_prefixes_and_config() {
+        let spec = ModelSpec {
+            query_prefix: "Query: ".into(),
+            document_prefix: "Document: ".into(),
+            ..ModelSpec::defaults()
+        };
+        let config = EngineConfig {
+            output_dimension: 256,
+            l2_normalize: false,
+        };
+        let backend = Box::new(CountingBackend {
+            tokenized: Arc::default(),
+        });
+        let engine = EmbeddingEngine::with_backend(backend, spec, config, model_file(b"abc"));
+
+        let space = engine.embedding_space().unwrap();
+        assert_eq!(
+            space.model_sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            (space.query_prefix.as_str(), space.document_prefix.as_str()),
+            ("Query: ", "Document: ")
+        );
+        assert_eq!((space.output_dimension, space.l2_normalize), (256, false));
+        assert!(std::ptr::eq(space, engine.embedding_space().unwrap()));
     }
 }

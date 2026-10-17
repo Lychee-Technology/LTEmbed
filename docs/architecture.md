@@ -10,13 +10,15 @@ see [bundle-format.md](./bundle-format.md); for build setup see
 EmbeddingEngine                      src/engine/mod.rs
 ├── ModelSpec      (build-info.json)  src/engine/bundle.rs
 ├── EngineConfig   (caller)           src/engine/config.rs
+├── EmbeddingSpace (model.gguf hash)  src/engine/space.rs
 └── Box<dyn EmbeddingBackend>         src/engine/backend.rs   (pub(crate))
     └── LlamaBackend (model.gguf)     src/engine/llama/       (only implementation)
         └── raw FFI → static llama.cpp / ggml archives (build.rs)
 ```
 
 - **`EmbeddingEngine`** is the public entry point. It owns the shared pipeline: prefixing,
-  the input length limit, Matryoshka truncation and normalization.
+  the input length limit, Matryoshka truncation and normalization. It also reports the
+  [embedding space](#embedding-space) its vectors belong to.
 - **`EmbeddingBackend`** is a crate-private trait. A backend tokenizes text with the
   model's own vocabulary (`tokenize`), and for tokenized inputs returns one raw,
   un-normalized, pooled vector of `raw_embedding_dimension` floats per input (`embed`).
@@ -81,7 +83,8 @@ failure returns `LTEmbedError::ModelLoad(_)`:
    `1 <= max_length <= 8192` (see [bundle-format.md](./bundle-format.md#build-infojson)).
 3. Validate `EngineConfig`: `0 < output_dimension <= raw_embedding_dimension` (`Config`).
 4. Validate `n_threads > 0` (`Config`).
-5. Load the GGUF on CPU (`n_gpu_layers = 0`) and check (`Runtime` on failure):
+5. Open `model.gguf`, keeping the handle for [`embedding_space()`](#embedding-space), then
+   load the GGUF on CPU (`n_gpu_layers = 0`) and check (`Runtime` on failure):
    - `n_embd_out`, the length of each pooled vector, equals `raw_embedding_dimension`, and
      `n_embd` is a valid width. For EmbeddingGemma 2 these are 768 and 512; a bundle that
      declared 512 would read the first 512 projected values, so it is rejected.
@@ -101,6 +104,10 @@ failure returns `LTEmbedError::ModelLoad(_)`:
    pooling. The attention type has no effect: `llama_encode` always runs non-causal
    attention, and the GGUF declares it too. The engine sets it to state what the model
    needs.
+7. Check that `model.gguf` is still the file opened in step 5: the same device and inode
+   (`Runtime` on failure). llama.cpp opens the path itself, so a file renamed over it in
+   between, or the path's removal, could leave the engine holding a file other than the one
+   it loaded, and its [embedding space](#embedding-space) would name that file.
 
 llama.cpp's process-wide backend is initialized once and never freed. Its log callback drops
 INFO/DEBUG lines and forwards WARN and above to stderr. Loading this GGUF prints three
@@ -345,6 +352,80 @@ and sometimes longer: a thread that releases a `std::sync::Mutex` and at once lo
 again can keep it from a waiting thread. Now neither waits for the other, and the measured
 thread's latency is the same as alone.
 
+## Embedding space
+
+`EmbeddingEngine::embedding_space()` returns an `EmbeddingSpace`, which names what decides
+whether two engines' vectors can be compared. Vectors belong in one index only if the
+engines that computed them have equal spaces. It holds:
+
+| Field | Taken from | Why |
+|---|---|---|
+| `model_sha256` | The sha256 of the `model.gguf` the engine loaded | The weights, and the vocabulary that tokenizes, are in this file. Another model, quant or revision is another file. |
+| `query_prefix`, `document_prefix` | The prompts the engine adds (`build-info.json`) | Another prompt gives other vectors from the same weights |
+| `output_dimension` | `EngineConfig` | A 256-wide vector is not comparable with a 512-wide one |
+| `l2_normalize` | `EngineConfig` | Normalized and raw vectors give different dot products |
+
+For the release bundle at `EngineConfig::default()`, its string form, which an index
+stores, is:
+
+```
+ltembed-space/1;model-sha256=a9d7a3b7eb421113f05e964e10882676f10fff83811b7876d5bb983db7c7ac41;query-prefix=task: search result | query: ;document-prefix=title: none | text: ;output-dimension=512;l2-normalize=true
+```
+
+In the prefixes, `%`, `;` and every byte outside printable ASCII are written as `%XX`, so
+the form is printable ASCII and no two spaces share one. The number after `ltembed-space/`
+changes when the same model file and settings would give different vectors, for example if
+LTEmbed changed its pooling or normalization, or a llama.cpp release changed how the model
+tokenizes or pools, or when the form itself changes. Otherwise the form stays the same
+across LTEmbed versions. [model-migration.md](./model-migration.md#moving-an-index) shows
+how to tag an index with it.
+
+**Settings that change how the arithmetic is done, not what is computed, are left out**, so
+that changing them does not force an index rebuild. They may move vectors as far as the two
+CPU variants of one llama.cpp release are apart, and no further:
+
+- the CPU variant of the static llama.cpp release. The space is the same on x86-64-v3 and
+  aarch64, so an index built on one can be searched from the other. Their kernels differ,
+  and their vectors differ by more than rounding: over the 25 inputs of the
+  [llama.cpp reference](./testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson),
+  the cosine between the two variants' raw vectors is 0.99961 on average and 0.99901 at
+  worst, and their norms are up to 1.55% apart (1.8% when truncated to 128). That is less
+  than quantization costs: against the F32 model, the release GGUF reaches a cosine of
+  0.9969 at worst. With `l2_normalize` off, vectors from the two architectures can differ in
+  norm by that much under equal spaces. A test keeps the reference's variants within a
+  cosine of 0.999 and 2% in norm at every trained width;
+- the thread count and the bundle's `max_length`. On one variant they run the same kernels,
+  and vectors are bit-identical with 1 and 4 threads, and with `max_length` 64 and 8192
+  (x86-64-v3, three texts as queries and as documents);
+- the llama.cpp release, while its kernels move vectors no further than the variants are
+  apart. A release whose kernels moved them further, or that changed how the model
+  tokenizes or pools, would come with a new version of the string form instead (the release
+  bump steps in [development.md](./development.md#static-llamacpp-artifacts) include that
+  decision).
+
+**What the bundle claims is left out too.** `build-info.json`'s `target_id` and `quant`,
+`provenance.json`, and the GGUF's own `general.*` metadata describe the model, but the
+engine does not run them. A GGUF copied into a bundle leaves `build-info.json`'s `quant` as
+it was, and the release GGUF declares `general.file_type` 17 (`Q5_K_M`, not `UD-Q5_K_XL`)
+and no revision. So a bundle whose metadata was edited cannot report another model's
+space: editing `target_id`, `quant`, `max_length` or `provenance.json` leaves the space as
+it is, editing a prompt changes it, and so does any change to `model.gguf`, even to
+metadata llama.cpp ignores. That last case gives the same
+weights another space, which costs a rebuild but never mixes vectors. Equal spaces show
+that vectors are comparable, not that they are right: a GGUF of another model loads if it
+passes the [load checks](#load-path), and gets a space of its own.
+
+**Cost.** The first call reads `model.gguf`, through a handle the engine opened just before
+llama.cpp loaded the file, and hashes it: 0.11 s for the release GGUF on x86-64-v3 (the
+Ryzen 5 5600G above, with SHA-NI; not measured on aarch64). Loading has already put the file
+in the page cache: llama.cpp maps it with `MAP_POPULATE`. Later calls return the stored
+value. Because the handle is the engine's own, replacing `model.gguf` after the engine
+loaded it does not change that engine's space, and a load during which the path was
+replaced fails ([Load path](#load-path), step 7). The engine does not hash at load: hashing
+before loading took the median load, over five runs each, from 0.54 s to 0.68 s with a warm
+page cache and from 0.71 s to 0.79 s with a cold one, and every caller would pay that,
+whether or not it asks for the space.
+
 ## Errors
 
 | Variant | When |
@@ -353,9 +434,10 @@ thread's latency is the same as alone.
 | `ModelLoad(UnsupportedModelFormat / UnsupportedInputKind / UnsupportedPooling)` | `build-info.json` describes an incompatible model |
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
-| `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
+| `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure, a `model.gguf` replaced while it loaded |
 | `InputTooLong { tokens, bytes, max }` | An input is longer than `max_length` tokens. `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the [byte bound](#inputs-over-the-byte-bound) and not tokenized |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
+| `Io(_)` | `embedding_space()` cannot read `model.gguf` |
 | `Inference(Backend / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code, a null pooled embedding from `llama_get_embeddings_seq`, or a raw vector with a NaN or infinite value |
 
 ## Platform constraint

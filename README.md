@@ -104,6 +104,11 @@ text.
 `from_gguf_bundle_dir_with_threads` sets the llama.cpp thread count (default 1). One engine
 handles one call at a time.
 
+**Tagging an index.** `engine.embedding_space()` names the model file, prompts and settings
+the vectors depend on. Store its string form with an index and check it before every write
+and search, so that vectors of different models or settings are never mixed
+([docs/model-migration.md](./docs/model-migration.md#moving-an-index)).
+
 ## Building
 
 Every `cargo build`, `test`, `clippy` or `run` needs `STATIC_LLAMA_DIR` set to the

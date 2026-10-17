@@ -50,8 +50,9 @@ variant. `Lint` and `Python script tests` run on `ubuntu-24.04-arm` only.
    plain `cargo test --lib` (step 3) skips as ignored.
 8. `cargo test --test integration_tests`. The llama.cpp reference test and
    `test_input_of_the_longest_tokens_that_fits_embeds` each embed an 8192-token input while
-   other tests run their own engines; the whole test process peaks at about 3.4 GiB on
-   x86-64-v3 ([architecture.md](./architecture.md#long-inputs-and-memory)).
+   other tests run their own engines; the whole test process peaks at 3.8–4.1 GiB on a
+   12-thread x86-64-v3 host, with the default of one test thread per CPU
+   ([architecture.md](./architecture.md#long-inputs-and-memory)). Fewer test threads lower it.
 
 **`Python script tests`**: Python 3.13, `pip install pytest numpy`, then
 `python3 -m pytest tests/ -q`. `torch` and `sentence-transformers` are not installed, so
@@ -90,13 +91,23 @@ temp directory and check load-time validation:
   fixtures; `test_llama_cpp_reference_matches_golden_inputs` checks that
   [the llama.cpp reference](#llamacpp-reference-testsfixturesllama_cpp_referencejson) covers
   the same inputs and has vectors for the variant the tests were built for.
+- the llama.cpp reference's two variants agree as closely as the
+  [embedding space](./architecture.md#embedding-space), which does not name the variant,
+  assumes: `test_llama_cpp_reference_variants_agree_within_one_space` requires a cosine of at
+  least 0.999 and norms within 2% for every input at every trained width.
 
 The `build-info.json` range check for `max_length` (`1..=8192`) is covered by unit tests in
 `src/engine/bundle.rs`. Unit tests in `src/engine/mod.rs` and `src/engine/llama/mod.rs`
 cover the [byte bound](./architecture.md#inputs-over-the-byte-bound) without a model: an
 input over it fails its batch before any input is tokenized, one at it is tokenized, and a
 text over `i32::MAX` bytes is `InputTooLong` for any vocabulary, checked on its length
-alone.
+alone. Unit tests in `src/engine/space.rs` and `src/engine/mod.rs` cover the
+[embedding space](./architecture.md#embedding-space) without a model: the release bundle's
+exact string form, a different string for a change to any field, the escaping of `%`, `;`
+and non-ASCII bytes in prompts, the file hash against FIPS 180-2 test vectors, a hash that
+stays that of the opened file after its path is replaced or removed, the load check that
+fails once the path names another file (a symlink renamed over it) or none (removed), and
+an engine that reports its own file, prompts and config and keeps the first result.
 
 **Tier 2** needs a real bundle in `LTEMBED_TEST_BUNDLE_DIR`. Every Tier 2 test reads its
 `model.gguf` and `build-info.json`:
@@ -119,9 +130,13 @@ alone.
 | `test_hidden_width_as_raw_dimension_returns_model_load_error` | With `raw_embedding_dimension` 512, the hidden width, loading fails: the engine must return the projected 768-wide vector |
 | `test_gguf_without_mean_pooling_returns_model_load_error` | A copy of the GGUF with `<arch>.pooling_type` changed to 3 (last) fails to load with `ModelLoad(Runtime)` |
 | `test_gguf_without_eos_returns_model_load_error` | A copy of the GGUF with `tokenizer.ggml.add_eos_token` set to false fails the load-time tokenization check, naming the missing EOS. A copy without `add_bos_token` would still load: llama.cpp forces it on for this tokenizer, so the BOS half of the check has unit tests only. |
+| `test_embedding_space_names_the_release_gguf_and_settings` | The test bundle's [embedding space](./architecture.md#embedding-space) has the release GGUF's sha256 (from the llama.cpp reference), the model's prompts and the engine's config; a different `output_dimension` or `l2_normalize` changes it. 4 threads instead of 1 do not, and move the vector by rounding at most (cosine ≥ 0.99999) |
+| `test_edited_bundle_metadata_cannot_claim_another_space` | With `target_id` and `quant` edited in `build-info.json` and a `provenance.json` that names another model, an engine gives the same vector and the same space; with `max_length` 64, the same space and a vector within rounding (cosine ≥ 0.99999); with an edited `query_prefix`, another vector and a space with that prefix |
+| `test_embedding_space_names_the_gguf_file_the_engine_loaded` | A copy of the GGUF with `quantize.imatrix.chunks_count` changed, which llama.cpp ignores, embeds identically but has a space with the copy's sha256. An engine loaded before `model.gguf` was replaced by the copy still reports the release GGUF's sha256 |
 
-The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error` and
-`test_gguf_without_eos_returns_model_load_error`, about 210 MB each, go to Cargo's
+The GGUF copies in `test_gguf_without_mean_pooling_returns_model_load_error`,
+`test_gguf_without_eos_returns_model_load_error` and
+`test_embedding_space_names_the_gguf_file_the_engine_loaded`, about 210 MB each, go to Cargo's
 integration-test scratch directory (`CARGO_TARGET_TMPDIR`, `target/tmp/` by default) rather
 than `/tmp`, and are removed afterwards, even when the test fails. No crafted
 GGUF is committed. The tests that swap one bundle file symlink the others instead of
@@ -256,9 +271,9 @@ LTEmbed but none of LTEmbed's code: it tokenizes the prompted text and builds it
 itself. The settings are LTEmbed's: mean pooling, non-causal attention, flash
 attention on, `n_ctx = n_batch = n_ubatch = 8192`, no normalization.
 
-The kernels differ between the variants (their vectors agree to a mean cosine of 0.99963,
-and 0.99907 on the worst input), so the fixture holds one set of raw 768-wide vectors per
-variant, plus the token ids the GGUF
+The kernels differ between the variants (their raw vectors agree to a mean cosine of
+0.99961, and 0.99901 on the worst input, with norms up to 1.55% apart), so the fixture holds
+one set of raw 768-wide vectors per variant, plus the token ids the GGUF
 gave, the GGUF identity, the llama.cpp commit and the tool's arguments. LTEmbed matches its
 own variant's vectors to the tool's 7-decimal output: the gate is cosine ≥ 0.99999 and a
 norm within 1e-4. Measured on x86-64-v3, the two agree to cosine 1 − 4·10⁻¹⁶.

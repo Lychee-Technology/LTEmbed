@@ -38,6 +38,16 @@ const GOLDEN_MIN_COSINE: f64 = 0.995;
 const LLAMA_CPP_MIN_COSINE: f64 = 0.99999;
 /// Largest allowed relative difference between those two vectors' norms.
 const LLAMA_CPP_MAX_NORM_ERROR: f64 = 1e-4;
+/// Lowest cosine allowed between the llama.cpp reference's two variants (x86-64-v3 and
+/// aarch64-graviton2), per input and at every trained width. Their kernels differ, so they
+/// agree less closely than the bound above. The embedding space does not name the variant, so
+/// this is how far apart the vectors of two engines with equal spaces may be
+/// (docs/architecture.md § "Embedding space"). Measured at `v0.1.160-1`: 0.99901 at worst
+/// (768 wide).
+const CPU_VARIANT_MIN_COSINE: f64 = 0.999;
+/// Largest allowed relative difference between those vectors' norms. Measured: 0.0155 at 768
+/// wide, 0.0179 at 128.
+const CPU_VARIANT_MAX_NORM_ERROR: f64 = 0.02;
 
 /// The test bundle directory if it holds `files`. Otherwise the test should return early
 /// (`None`), unless `LTEMBED_REQUIRE_TEST_BUNDLE=1`, which makes this panic instead.
@@ -128,6 +138,22 @@ fn norm(v: &[f32]) -> f64 {
         .map(|&x| f64::from(x) * f64::from(x))
         .sum::<f64>()
         .sqrt()
+}
+
+/// Asserts that a setting the embedding space leaves out moved `vector` from `expected` by
+/// floating-point rounding at most, with the bound the llama.cpp reference test allows for the
+/// same computation on the same kernels. The space itself tolerates more: it leaves out a
+/// setting that moves vectors no further than the two CPU variants differ
+/// (`CPU_VARIANT_MIN_COSINE`, `src/engine/AGENTS.md` § "Embedding Space"). The settings checked
+/// here run the same kernels on one variant, though, and on x86-64-v3 their vectors are
+/// bit-identical (`docs/architecture.md` § "Embedding space"). If a llama.cpp release moves
+/// them further, find out why before deciding whether the setting belongs in the space.
+fn assert_rounding_at_most(vector: &[f32], expected: &[f32], setting: &str) {
+    let similarity = cosine(vector, expected);
+    assert!(
+        similarity >= LLAMA_CPP_MIN_COSINE,
+        "{setting}: cosine {similarity:.9} < {LLAMA_CPP_MIN_COSINE}"
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -368,6 +394,25 @@ fn llama_cpp_reference(golden: &FixtureFile) -> LlamaCppReference {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The sha256 of the file at `path`, read a chunk at a time rather than whole.
+fn file_sha256_hex(path: &Path) -> String {
+    let mut file = File::open(path).unwrap();
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    hasher
+        .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
@@ -723,6 +768,40 @@ fn test_llama_cpp_reference_matches_golden_inputs() {
     for (fixture, input) in golden.fixtures.iter().zip(&reference.inputs) {
         assert_eq!(input.token_ids.len(), fixture.tokens, "{}", fixture.name);
     }
+}
+
+/// Needs no bundle: the reference's two variants agree within the bound the embedding space
+/// assumes, at every width the golden fixture lists. The space does not name the variant, so
+/// an index can hold vectors from x86-64-v3 and aarch64 engines alike. If a regenerated
+/// reference fails this, revisit that decision (`src/engine/AGENTS.md` § "Embedding Space")
+/// rather than only widening the bound.
+#[test]
+fn test_llama_cpp_reference_variants_agree_within_one_space() {
+    let golden = golden_fixtures();
+    let reference = llama_cpp_reference(&golden);
+    let [x86, arm] = ["x86_64-v3", "aarch64-graviton2"].map(|variant| {
+        &reference
+            .variants
+            .get(variant)
+            .unwrap_or_else(|| panic!("{LLAMA_CPP_REFERENCE} has no {variant} section"))
+            .embeddings
+    });
+    let mut failures = Vec::new();
+    for (x86, arm) in x86.iter().zip(arm) {
+        for &dim in &golden.dims {
+            let (x86_vector, arm_vector) = (&x86.embedding[..dim], &arm.embedding[..dim]);
+            let similarity = cosine(x86_vector, arm_vector);
+            let (a, b) = (norm(x86_vector), norm(arm_vector));
+            let norm_error = a.max(b) / a.min(b) - 1.0;
+            if similarity < CPU_VARIANT_MIN_COSINE || norm_error > CPU_VARIANT_MAX_NORM_ERROR {
+                failures.push(format!(
+                    "{} at {dim}: cosine {similarity:.6}, norm error {norm_error:.4}",
+                    x86.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The engine against the F32 PyTorch golden at every width the fixture lists (768, 512, 256
@@ -1083,6 +1162,165 @@ fn test_gguf_without_eos_returns_model_load_error() {
         Err(other) => panic!("expected ModelLoad(Runtime), got {other:?}"),
         Ok(_) => panic!("the bundle loaded with {key} = false in its GGUF"),
     }
+}
+
+/// The test bundle's embedding space names the GGUF the llama.cpp reference was generated
+/// from (the release GGUF), the model's prompts and the engine's config. The config's two
+/// fields change it; the thread count, which changes vectors by rounding at most, does not.
+#[test]
+fn test_embedding_space_names_the_release_gguf_and_settings() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let reference = llama_cpp_reference(&golden_fixtures());
+    let input = EmbeddingInput::document("Four threads embedded this.");
+    // One engine at a time, each dropped once checked: each holds an 8192-token context.
+    let (space, vector) = {
+        let release = make_engine(&bundle_dir);
+        let space = release.embedding_space().unwrap().clone();
+        (space, release.embed(input).unwrap())
+    };
+    assert_eq!(space.model_sha256, reference.gguf.sha256);
+    assert_eq!(
+        (space.query_prefix.as_str(), space.document_prefix.as_str()),
+        (QUERY_PREFIX, DOCUMENT_PREFIX)
+    );
+    assert_eq!(
+        (space.output_dimension, space.l2_normalize),
+        (EMBEDDING_DIMENSION, true)
+    );
+
+    {
+        let threads = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, 4);
+        assert_rounding_at_most(&threads.embed(input).unwrap(), &vector, "4 threads");
+        assert_eq!(*threads.embedding_space().unwrap(), space);
+    }
+    for (output_dimension, l2_normalize) in [(256, true), (EMBEDDING_DIMENSION, false)] {
+        let engine = make_engine_with(&bundle_dir, output_dimension, l2_normalize, 1);
+        let other = engine.embedding_space().unwrap();
+        let mut expected = space.clone();
+        expected.output_dimension = output_dimension;
+        expected.l2_normalize = l2_normalize;
+        assert_eq!(*other, expected);
+        assert_ne!(other.to_string(), space.to_string());
+    }
+}
+
+/// A bundle cannot claim another space through its metadata. `target_id` and `quant` in
+/// `build-info.json`, and `provenance.json`, are not read and change no vector; `max_length`
+/// sizes the context and changes vectors by rounding at most. None of them changes the space.
+/// A prompt changes the vectors, and the space.
+#[test]
+fn test_edited_bundle_metadata_cannot_claim_another_space() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let input = EmbeddingInput::query("Which model embedded this?");
+    // One engine at a time, each dropped once checked: each holds an 8192-token context.
+    let (space, vector) = {
+        let release = make_engine(&bundle_dir);
+        let space = release.embedding_space().unwrap().clone();
+        (space, release.embed(input).unwrap())
+    };
+
+    let claims_dir = unique_temp_dir();
+    fs::create_dir_all(&claims_dir).unwrap();
+    link_bundle_files(&bundle_dir, &claims_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &claims_dir, |build_info| {
+        build_info["target_id"] = "jinaai/jina-embeddings-v5-text-nano-retrieval".into();
+        build_info["model_metadata"]["quant"] = "Q8_0".into();
+    });
+    let provenance = serde_json::json!({
+        "files": {
+            "model.gguf": {
+                "repo": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+                "sha256": "0".repeat(64)
+            }
+        }
+    });
+    fs::write(claims_dir.join("provenance.json"), provenance.to_string()).unwrap();
+    {
+        let claims = make_engine(&claims_dir);
+        assert_eq!(claims.embed(input).unwrap(), vector);
+        assert_eq!(*claims.embedding_space().unwrap(), space);
+    }
+    fs::remove_dir_all(claims_dir).unwrap();
+
+    let max_length_dir = unique_temp_dir();
+    fs::create_dir_all(&max_length_dir).unwrap();
+    link_bundle_files(&bundle_dir, &max_length_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &max_length_dir, |build_info| {
+        build_info["model_metadata"]["max_length"] = 64.into();
+    });
+    {
+        let max_length = make_engine(&max_length_dir);
+        assert_rounding_at_most(&max_length.embed(input).unwrap(), &vector, "max_length 64");
+        assert_eq!(*max_length.embedding_space().unwrap(), space);
+    }
+    fs::remove_dir_all(max_length_dir).unwrap();
+
+    let prompt_dir = unique_temp_dir();
+    fs::create_dir_all(&prompt_dir).unwrap();
+    link_bundle_files(&bundle_dir, &prompt_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &prompt_dir, |build_info| {
+        build_info["model_metadata"]["query_prefix"] = "Query: ".into();
+    });
+    {
+        let prompt = make_engine(&prompt_dir);
+        assert_ne!(prompt.embed(input).unwrap(), vector);
+        let mut expected = space.clone();
+        expected.query_prefix = "Query: ".into();
+        assert_eq!(*prompt.embedding_space().unwrap(), expected);
+        assert_ne!(
+            prompt.embedding_space().unwrap().to_string(),
+            space.to_string()
+        );
+    }
+    fs::remove_dir_all(prompt_dir).unwrap();
+}
+
+/// The space names the bytes of the `model.gguf` an engine loaded, whatever
+/// `build-info.json` says. A copy of the GGUF with a metadata value that llama.cpp ignores
+/// changed embeds identically, but is another file, so it has another space. An engine that
+/// loaded the release GGUF keeps naming it after `model.gguf` is replaced by the copy.
+#[test]
+fn test_embedding_space_names_the_gguf_file_the_engine_loaded() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let reference = llama_cpp_reference(&golden_fixtures());
+    // The GGUF copy is about 210 MB.
+    let temp_dir = TempDir::new();
+    let copy = temp_dir.path().join("edited.gguf");
+    GgufFile::read(&bundle_dir.join("model.gguf")).copy_with_u32(
+        &copy,
+        "quantize.imatrix.chunks_count",
+        231,
+    );
+    let dir = temp_dir.path().join("bundle");
+    fs::create_dir(&dir).unwrap();
+    link_bundle_files(&bundle_dir, &dir, &["model.gguf", "build-info.json"]);
+
+    let input = EmbeddingInput::document("The same weights in another file.");
+    // The engine that loaded the release GGUF is checked after the swap, then dropped before
+    // the next engine loads: each holds an 8192-token context.
+    let (before, vector) = {
+        let loaded = make_engine(&dir);
+        // Swap the file the way a deployment would: rename a new link over the old one.
+        let link = temp_dir.path().join("model.gguf.new");
+        std::os::unix::fs::symlink(&copy, &link).unwrap();
+        fs::rename(&link, dir.join("model.gguf")).unwrap();
+        let before = loaded.embedding_space().unwrap().clone();
+        (before, loaded.embed(input).unwrap())
+    };
+    let reloaded = make_engine(&dir);
+
+    assert_eq!(before.model_sha256, reference.gguf.sha256);
+    let mut expected = before.clone();
+    expected.model_sha256 = file_sha256_hex(&copy);
+    assert_ne!(expected.model_sha256, before.model_sha256);
+    assert_eq!(*reloaded.embedding_space().unwrap(), expected);
+    assert_eq!(reloaded.embed(input).unwrap(), vector);
 }
 
 /// An input of more than `MAX_LENGTH` tokens is rejected before inference, with its full

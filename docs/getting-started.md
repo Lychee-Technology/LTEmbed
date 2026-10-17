@@ -62,9 +62,11 @@ cargo run --example api_usage
 ```
 
 `examples/api_usage.rs` looks for `gguf_bundle/` in the current directory and its parents,
-embeds two queries, and prints:
+embeds two queries, and prints the engine's [embedding space](#tagging-an-index) and the
+first embedding's head:
 
 ```
+embedding_space: ltembed-space/1;model-sha256=a9d7a3b7…;query-prefix=task: search result | query: ;document-prefix=title: none | text: ;output-dimension=512;l2-normalize=true
 inputs: 2
 embedding_dim: 512
 first_embedding_head: [...]
@@ -107,6 +109,15 @@ applied twice.
 
 `EngineConfig::default()` gives `512` and `true`. Pick one setting and use it for both
 indexing and querying.
+
+### Tagging an index
+
+`engine.embedding_space()?` names the vector space the engine embeds into: the sha256 of
+its `model.gguf`, the prompts it adds, and its `EngineConfig`. Vectors are comparable only
+between engines whose spaces are equal. Store its string form (`to_string()`) with an index
+and compare it with the engine's before adding to or searching the index; see
+[model-migration.md](./model-migration.md#moving-an-index). The first call hashes
+`model.gguf`, about 0.1 s; later calls return the stored value.
 
 ### Threads and concurrency
 

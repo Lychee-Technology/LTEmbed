@@ -29,6 +29,7 @@ Treat changes to the following as potentially breaking:
 - `EmbeddingInput`;
 - `EmbeddingInputKind`;
 - `EngineConfig`;
+- `EmbeddingSpace` and its string form, which callers store beside their indexes;
 - exported constants;
 - externally observable error behavior.
 

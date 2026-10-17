@@ -4,7 +4,8 @@
 //! runs it as a non-causal embedding model with mean pooling, and returns the raw,
 //! un-normalized pooled vector per input. For EmbeddingGemma 2 that is the 768-wide output of
 //! the model's 512→768 projection, not its 512-wide hidden state. It also tokenizes, with the
-//! GGUF's own vocabulary: the engine has no other tokenizer. Prefixing, the input length
+//! GGUF's own vocabulary: the engine has no other tokenizer. Inference runs one input at a
+//! time under the context's mutex; tokenizing takes no lock. Prefixing, the input length
 //! limit and truncation/normalization are handled by the shared engine layer.
 
 mod ffi;
@@ -12,7 +13,7 @@ mod ffi;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, Once, PoisonError};
 use std::time::Instant;
 
 use crate::error::{InferenceError, LTEmbedError, ModelLoadError};
@@ -44,28 +45,36 @@ fn ensure_backend_initialized() {
     });
 }
 
-/// Owns the raw llama.cpp handles. The pointers are only ever touched behind the
-/// [`LlamaBackend`] mutex, so it is sound to move the struct across threads.
+/// Owns the raw llama.cpp handles: the model, and the one context the backend runs it in.
+///
+/// `llama_encode` writes to the context (its KV memory and output buffers), so the context is
+/// used only behind `ctx`'s mutex, by one thread at a time. The model is used without a lock:
+/// after `load`, the backend only tokenizes with its vocabulary, which only reads it, from any
+/// number of threads and while another runs `llama_encode` (see [`tokenize_with_vocab`]).
 struct ModelContext {
     model: *mut ffi::llama_model,
-    ctx: *mut ffi::llama_context,
+    ctx: Mutex<*mut ffi::llama_context>,
 }
 
-// Safety: the handles are accessed exclusively through `LlamaBackend`'s `Mutex`, which
-// serializes all FFI calls that read or mutate them.
+// Safety: llama.cpp ties neither handle to the thread that created it. Shared across threads,
+// the context is only used under its mutex, and the model only to tokenize, which is safe
+// concurrently (see `tokenize_with_vocab`).
 unsafe impl Send for ModelContext {}
+unsafe impl Sync for ModelContext {}
 
 impl Drop for ModelContext {
     fn drop(&mut self) {
+        // A poisoned mutex still holds the context, which is freed before its model.
+        let ctx = *self.ctx.get_mut().unwrap_or_else(PoisonError::into_inner);
         unsafe {
-            ffi::llama_free(self.ctx);
+            ffi::llama_free(ctx);
             ffi::llama_model_free(self.model);
         }
     }
 }
 
 pub(crate) struct LlamaBackend {
-    inner: Mutex<ModelContext>,
+    inner: ModelContext,
     /// Length of each pooled vector. `load` checked that the GGUF's `n_embd_out` equals it
     /// (see [`check_embedding_widths`]).
     raw_dim: usize,
@@ -176,6 +185,29 @@ const MAX_TOKENIZE_BYTES: usize = i32::MAX as usize - 2;
 
 /// Tokenizes the whole of `text` with `vocab`, adding the special tokens the GGUF declares
 /// (BOS/EOS) and matching special-token text, as llama.cpp's own tools do.
+///
+/// Safe to call from several threads at once, and while another thread runs `llama_encode` on
+/// the model, because with the pinned llama.cpp (`v0.7.0`; recheck on an upgrade) tokenizing
+/// only reads shared state:
+///
+/// - `llama_tokenize` calls the `const` `llama_vocab::tokenize` (`src/llama-vocab.cpp`). Only
+///   `llama_vocab::impl::load` writes the vocabulary: its token maps, BPE ranks, special-token
+///   cache and tokenizer object are built while the model loads and never change afterwards.
+/// - A call's working state is its own: `llama_vocab::impl::tokenize` builds the token vector,
+///   the special-token fragments and the BPE session (`llm_tokenizer_bpe_session`, with its
+///   symbols and merge queue) as locals.
+/// - This vocabulary's pre-tokenizer (`LLAMA_VOCAB_PRE_TYPE_GEMMA4`) splits at newlines with
+///   `unicode_regex_split_custom_newlines` (`src/unicode.cpp`), not `std::regex`. The only
+///   statics on the path are `const` tables behind thread-safe initialization guards, and
+///   the load-time tokenization ([`check_gguf_special_tokens`]) initializes them first anyway.
+/// - A text that already starts with BOS or ends with EOS makes `check_double_bos_eos` log a
+///   warning, through the log callback that [`ensure_backend_initialized`] sets once, before
+///   any model loads.
+/// - `llama_encode` holds the model as a `const llama_model &` (`src/llama-context.h`) and
+///   only reads the vocabulary, to check token ids.
+///
+/// Upstream's server does the same: it tokenizes requests on its HTTP threads with the shared
+/// vocabulary while its main loop runs inference.
 ///
 /// Safety: `vocab` belongs to a live model.
 unsafe fn tokenize_with_vocab(
@@ -455,7 +487,10 @@ impl LlamaBackend {
             ffi::llama_set_embeddings(ctx, true);
 
             Ok(Self {
-                inner: Mutex::new(ModelContext { model, ctx }),
+                inner: ModelContext {
+                    model,
+                    ctx: Mutex::new(ctx),
+                },
                 raw_dim: raw_embedding_dimension,
                 n_ctx: context_length,
                 longest_token_bytes,
@@ -465,8 +500,8 @@ impl LlamaBackend {
 
     /// Raw, un-normalized pooled embedding for a single tokenized input.
     ///
-    /// Safety: caller holds the backend mutex (via `&ModelContext`), so no other FFI call
-    /// touches `ctx` concurrently.
+    /// Safety: the caller holds `ctx`'s mutex, so no other FFI call touches `ctx`
+    /// concurrently.
     unsafe fn embed_one(
         &self,
         ctx: *mut ffi::llama_context,
@@ -519,13 +554,11 @@ impl EmbeddingBackend for LlamaBackend {
         self.raw_dim
     }
 
+    /// Takes no lock: tokenizing is safe while other threads tokenize or run inference (see
+    /// [`tokenize_with_vocab`]).
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, LTEmbedError> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| LTEmbedError::Inference(InferenceError::MutexPoisoned))?;
-        // Safety: the guard keeps the model alive and serializes FFI calls on it.
-        unsafe { tokenize_with_vocab(ffi::llama_model_get_vocab(guard.model), text) }
+        // Safety: `self` keeps the model alive.
+        unsafe { tokenize_with_vocab(ffi::llama_model_get_vocab(self.inner.model), text) }
             .map_err(LTEmbedError::Tokenization)
     }
 
@@ -540,9 +573,10 @@ impl EmbeddingBackend for LlamaBackend {
     ) -> Result<(Vec<Vec<f32>>, Option<BackendRunProfile>), LTEmbedError> {
         let guard = self
             .inner
+            .ctx
             .lock()
             .map_err(|_| LTEmbedError::Inference(InferenceError::MutexPoisoned))?;
-        let ctx = guard.ctx;
+        let ctx = *guard;
 
         let mut embeddings = Vec::with_capacity(tokenized.len());
         let mut run_ms = 0.0;

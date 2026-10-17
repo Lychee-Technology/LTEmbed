@@ -127,7 +127,8 @@ and the latency of an 8192-token input.
    `EmbeddingInput::document(text)` becomes `document_prefix + text`, once. Callers pass raw
    text; the engine adds the prefix.
 3. **Tokenize** each input with the GGUF's vocabulary (`llama_tokenize`, special tokens
-   added and special-token text matched). `<bos>` and `<eos>` are added; nothing is padded.
+   added and special-token text matched), without taking the backend's lock
+   ([Concurrency](#concurrency)). `<bos>` and `<eos>` are added; nothing is padded.
    Nothing is truncated: if any input exceeds `max_length` tokens, the call returns
    `LTEmbedError::InputTooLong` and embeds none of the batch.
 4. **Backend.** Under one `Mutex`, for each input in order:
@@ -298,10 +299,51 @@ them, is now at most 2.9 MiB.
 
 ## Concurrency
 
-`EmbeddingEngine` holds one llama.cpp context behind a `Mutex`. Concurrent calls on a
-shared engine are safe but run one at a time. If the mutex is poisoned, calls return
-`InferenceError::MutexPoisoned`. For parallelism, either load several engines or raise
-`n_threads` to parallelize inside each call.
+`EmbeddingEngine` holds one llama.cpp context behind a `Mutex`. `llama_encode` writes to
+the context, so concurrent calls on a shared engine encode their inputs one at a time. They
+tokenize without the mutex, so a thread tokenizing a long input does not hold up another
+thread's inference, and inference does not hold up tokenizing. If the mutex is poisoned,
+calls that reach inference return `InferenceError::MutexPoisoned`. For parallel inference,
+either load several engines or raise `n_threads` to parallelize inside each call.
+
+Tokenizing needs no lock because, in the pinned llama.cpp (`v0.7.0`), `llama_tokenize` only
+reads state that several threads share:
+
+- It calls the `const` `llama_vocab::tokenize` (`src/llama-vocab.cpp`). Only
+  `llama_vocab::impl::load` writes the vocabulary, while the model loads.
+- Each call builds its own working state as locals: the token vector, the special-token
+  fragments and the BPE session.
+- The Gemma 4 pre-tokenizer splits at newlines without `std::regex`. The only statics on
+  the path are `const` tables behind thread-safe initialization guards, and the load-time
+  BOS/EOS check initializes them before any other thread can tokenize.
+- `llama_encode` holds the model as a `const llama_model &` and only reads the vocabulary.
+
+`tokenize_with_vocab` in `src/engine/llama/mod.rs` records the argument with its
+references. Upstream's server relies on the same, tokenizing requests on its HTTP threads
+while its main loop runs inference. A ThreadSanitizer build of llama.cpp `620d222` reported
+no race over 4,320 `llama_tokenize` calls on 8 threads made while another thread ran
+`llama_encode` with LTEmbed's context settings, and every call returned the single-thread
+token ids. The argument holds for this llama.cpp only: recheck it when the static release
+changes ([development.md](./development.md#static-llamacpp-artifacts)).
+`test_concurrent_calls_match_a_single_thread` checks that 8 threads sharing an engine get
+exactly the results one thread gets
+([testing.md](./testing.md#integration-tests-tier-1-and-tier-2)).
+
+Latency of one thread's calls on an engine that a second thread also uses, before
+(`5b8ca0a`, tokenizing under the mutex) and now, on x86-64-v3 (the Ryzen 5 5600G above), 1
+llama.cpp thread, `max_length` 8192. The measured thread sleeps 100 ms before each of its
+calls; the other thread calls back to back. The builds alternated over two runs; Before
+and Now give each run, Alone the range over all four:
+
+| Measured thread | Other thread | Alone | Before | Now |
+|---|---|---|---|---|
+| 60 short queries (`hello`, 10 tokens with the prompt) | rejects a document of 761,856 bytes with its prefix and no spaces: tokenizes it, 0.6 s, then returns `InputTooLong` | median 52–55 ms | median 501, 501 ms; max 1.05, 1.05 s | median 51, 54 ms; max 56, 57 ms |
+| 30 rejections of `hello world ` × 12,000 as a document (about 24,000 tokens) | embeds a 459-token document, 1.6 s | median 80–84 ms | median 4.9, 8.2 s; max 168, 252 s | median 81, 88 ms; max 84, 95 ms |
+
+Before, the measured thread waited for the other thread's tokenizing or encoding to finish,
+and sometimes longer: a thread that releases a `std::sync::Mutex` and at once locks it
+again can keep it from a waiting thread. Now neither waits for the other, and the measured
+thread's latency is the same as alone.
 
 ## Errors
 

@@ -118,7 +118,11 @@ differs from the sha256 the notice records. The same test fails until `LLAMA_CPP
 and both variants' sections of `tests/fixtures/llama_cpp_reference.json` name the new release:
 rebuild the reference tool and regenerate both sections
 ([testing.md](./testing.md#llamacpp-reference-testsfixturesllama_cpp_referencejson)), then
-run the tokenizer parity and integration tests on both variants.
+run the tokenizer parity and integration tests on both variants. The engine tokenizes
+without the backend's lock, and a data race can pass the concurrency test, so also check
+the new llama.cpp commit against the argument at `tokenize_with_vocab` in
+`src/engine/llama/mod.rs` that `llama_tokenize` only reads shared state
+([architecture.md](./architecture.md#concurrency)).
 
 ## Native builds
 

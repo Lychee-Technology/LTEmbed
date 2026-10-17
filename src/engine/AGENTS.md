@@ -110,6 +110,7 @@ When changing it:
 - verify expected embedding width (the projected `n_embd_out`, not `n_embd`);
 - keep `llama_encode` for this non-causal encoder, and `n_ubatch` equal to the context length: the encoder cannot split a sequence across micro-batches;
 - check memory and latency at 8192 tokens when changing context, batch or attention parameters (`docs/architecture.md` § "Long inputs and memory");
+- call `llama_encode` and anything else that touches the context only under the context's mutex. Tokenizing takes no lock because `llama_tokenize` only reads shared state; the argument and its llama.cpp references are at `tokenize_with_vocab` in `src/engine/llama/mod.rs` (`docs/architecture.md` § "Concurrency"). Recheck it when the llama.cpp commit changes, and do not call anything else on the model outside the mutex without making the same argument;
 - do not assume another upstream llama.cpp version behaves identically.
 
 Do not retain pointers beyond the lifetime guaranteed by the underlying library.

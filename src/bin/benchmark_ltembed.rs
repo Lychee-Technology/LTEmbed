@@ -180,9 +180,7 @@ struct ProfileAccumulator {
     seq_len_sum: usize,
     prefix_ms_sum: f64,
     tokenize_ms_sum: f64,
-    tensorize_ms_sum: f64,
     run_ms_sum: f64,
-    extract_ms_sum: f64,
     postprocess_ms_sum: f64,
     total_ms_sum: f64,
 }
@@ -401,14 +399,12 @@ fn profiling_enabled_from_env() -> bool {
 
 fn profile_summary_line(scenario_name: &str, samples: usize, profile: EmbedBatchProfile) -> String {
     format!(
-        "profile {scenario_name} samples={samples} batch_size={} seq_len={} prefix_ms={:.3} tokenize_ms={:.3} tensorize_ms={:.3} run_ms={:.3} extract_ms={:.3} postprocess_ms={:.3} total_ms={:.3}",
+        "profile {scenario_name} samples={samples} batch_size={} seq_len={} prefix_ms={:.3} tokenize_ms={:.3} run_ms={:.3} postprocess_ms={:.3} total_ms={:.3}",
         profile.batch_size,
         profile.sequence_length,
         profile.prefix_ms,
         profile.tokenize_ms,
-        profile.tensorize_ms,
         profile.run_ms,
-        profile.extract_ms,
         profile.postprocess_ms,
         profile.total_ms,
     )
@@ -421,9 +417,7 @@ impl ProfileAccumulator {
         self.seq_len_sum += profile.sequence_length;
         self.prefix_ms_sum += profile.prefix_ms;
         self.tokenize_ms_sum += profile.tokenize_ms;
-        self.tensorize_ms_sum += profile.tensorize_ms;
         self.run_ms_sum += profile.run_ms;
-        self.extract_ms_sum += profile.extract_ms;
         self.postprocess_ms_sum += profile.postprocess_ms;
         self.total_ms_sum += profile.total_ms;
     }
@@ -442,9 +436,7 @@ impl ProfileAccumulator {
                 sequence_length: self.seq_len_sum / self.samples,
                 prefix_ms: self.prefix_ms_sum / samples,
                 tokenize_ms: self.tokenize_ms_sum / samples,
-                tensorize_ms: self.tensorize_ms_sum / samples,
                 run_ms: self.run_ms_sum / samples,
-                extract_ms: self.extract_ms_sum / samples,
                 postprocess_ms: self.postprocess_ms_sum / samples,
                 total_ms: self.total_ms_sum / samples,
             },
@@ -830,17 +822,15 @@ mod tests {
                 sequence_length: 7,
                 prefix_ms: 1.25,
                 tokenize_ms: 2.5,
-                tensorize_ms: 3.75,
                 run_ms: 5.0,
-                extract_ms: 6.25,
                 postprocess_ms: 7.5,
-                total_ms: 26.25,
+                total_ms: 16.25,
             },
         );
 
         assert_eq!(
             line,
-            "profile single/zh samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 tensorize_ms=3.750 run_ms=5.000 extract_ms=6.250 postprocess_ms=7.500 total_ms=26.250"
+            "profile single/zh samples=3 batch_size=1 seq_len=7 prefix_ms=1.250 tokenize_ms=2.500 run_ms=5.000 postprocess_ms=7.500 total_ms=16.250"
         );
     }
 

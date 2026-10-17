@@ -44,6 +44,9 @@ and code that names a removed one no longer compiles:
   engine now rejects without tokenizing it
   ([architecture.md](./architecture.md#inputs-over-the-byte-bound)); otherwise it is the
   token count, as before.
+- **`EmbedBatchProfile::tensorize_ms` and `extract_ms` are removed.** They were named for
+  stages of the earlier ONNX Runtime backend and were always `0.0` with llama.cpp. `run_ms`
+  covers running the model and copying out each pooled vector, as before.
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 

@@ -591,11 +591,7 @@ impl EmbeddingBackend for LlamaBackend {
             embeddings.push(raw);
         }
 
-        let profile = collect_profile.then_some(BackendRunProfile {
-            tensorize_ms: 0.0,
-            run_ms,
-            extract_ms: 0.0,
-        });
+        let profile = collect_profile.then_some(BackendRunProfile { run_ms });
         Ok((embeddings, profile))
     }
 }

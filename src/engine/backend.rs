@@ -1,15 +1,12 @@
 use crate::error::LTEmbedError;
 
-/// Timing breakdown for one backend inference pass (populated only when profiling is
-/// requested). Field names mirror the backend-relevant stages of [`super::EmbedBatchProfile`].
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// Timing for one backend inference pass (populated only when profiling is requested): the
+/// backend's part of [`super::EmbedBatchProfile`].
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BackendRunProfile {
-    /// Building backend inputs (batches/tensors), in ms.
-    pub tensorize_ms: f64,
-    /// Running the model (e.g. `llama_encode`), in ms.
+    /// Running the model on every input (e.g. `llama_encode`) and copying out its pooled
+    /// vector, in ms.
     pub run_ms: f64,
-    /// Extracting the pooled embeddings, in ms.
-    pub extract_ms: f64,
 }
 
 /// An embedding inference backend.

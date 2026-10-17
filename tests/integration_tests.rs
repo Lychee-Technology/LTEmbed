@@ -1,7 +1,7 @@
 use approx::assert_relative_eq;
 use ltembed::engine::{
-    EmbeddingEngine, EmbeddingInput, EngineConfig, DOCUMENT_PREFIX, EMBEDDING_DIMENSION,
-    MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION,
+    EmbedBatchProfile, EmbeddingEngine, EmbeddingInput, EngineConfig, DOCUMENT_PREFIX,
+    EMBEDDING_DIMENSION, MAX_LENGTH, QUERY_PREFIX, RAW_EMBEDDING_DIMENSION,
 };
 use ltembed::error::{LTEmbedError, ModelLoadError};
 use serde::Deserialize;
@@ -1281,6 +1281,46 @@ fn test_embed_batch_matches_single_embeds_and_repeats_exactly() {
         engine.embed_batch(&inputs).unwrap(),
         "a repeated call"
     );
+}
+
+/// `embed_batch_profiled` returns `embed_batch`'s vectors, and every field of its profile is
+/// measured: the batch's size and longest input in tokens (the golden fixture's counts), and
+/// stage times that fit in the whole call's. Tokenizing and running the model take time, so
+/// they cannot be zero.
+#[test]
+fn test_embed_batch_profiled_measures_every_stage() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let engine = make_engine(&bundle_dir);
+    let data = golden_fixtures();
+    let fixtures = data.short_fixtures();
+    let inputs: Vec<EmbeddingInput<'_>> = fixtures.iter().map(|f| f.input()).collect();
+
+    let (embeddings, profile) = engine.embed_batch_profiled(&inputs).unwrap();
+    assert_eq!(embeddings, engine.embed_batch(&inputs).unwrap());
+    // No `..`: a new field fails to compile here until this test checks it.
+    let EmbedBatchProfile {
+        batch_size,
+        sequence_length,
+        prefix_ms,
+        tokenize_ms,
+        run_ms,
+        postprocess_ms,
+        total_ms,
+    } = profile;
+    assert_eq!(batch_size, fixtures.len());
+    assert_eq!(
+        sequence_length,
+        fixtures.iter().map(|f| f.tokens).max().unwrap()
+    );
+    let stages = [prefix_ms, tokenize_ms, run_ms, postprocess_ms];
+    assert!(
+        stages.iter().all(|ms| ms.is_finite() && *ms >= 0.0),
+        "{profile:?}"
+    );
+    assert!(tokenize_ms > 0.0 && run_ms > 0.0, "{profile:?}");
+    assert!(stages.iter().sum::<f64>() <= total_ms, "{profile:?}");
 }
 
 /// What one `embed_batch` call returned, as `test_concurrent_calls_match_a_single_thread`

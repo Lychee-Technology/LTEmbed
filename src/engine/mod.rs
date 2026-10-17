@@ -228,19 +228,16 @@ impl EmbeddingEngine {
         let postprocess_ms = postprocess_start.elapsed().as_secs_f64() * 1_000.0;
         let total_ms = overall_start.elapsed().as_secs_f64() * 1_000.0;
 
-        let profile = collect_profile.then(|| {
-            let backend = backend_profile.unwrap_or_default();
-            EmbedBatchProfile {
-                batch_size,
-                sequence_length,
-                prefix_ms,
-                tokenize_ms,
-                tensorize_ms: backend.tensorize_ms,
-                run_ms: backend.run_ms,
-                extract_ms: backend.extract_ms,
-                postprocess_ms,
-                total_ms,
-            }
+        // A backend asked for a profile that returns none leaves this call without one, which
+        // `embed_batch_profiled` reports as an internal error, instead of a run time of zero.
+        let profile = backend_profile.map(|backend| EmbedBatchProfile {
+            batch_size,
+            sequence_length,
+            prefix_ms,
+            tokenize_ms,
+            run_ms: backend.run_ms,
+            postprocess_ms,
+            total_ms,
         });
 
         Ok((embeddings, profile))
@@ -371,5 +368,21 @@ mod tests {
         let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
         assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         assert_eq!(tokenized.load(Ordering::SeqCst), 2);
+    }
+
+    /// [`CountingBackend`] measures nothing, so a profiled call fails instead of reporting a
+    /// run time of zero. An empty batch never reaches the backend and is profiled as empty.
+    #[test]
+    fn test_profile_without_the_backends_run_time_is_an_error() {
+        let (engine, _) = counting_engine();
+        let result = engine.embed_batch_profiled(&[EmbeddingInput::query("hello")]);
+        match result.map(|(_, profile)| profile) {
+            Err(LTEmbedError::Inference(InferenceError::Internal(_))) => {}
+            other => panic!("expected Inference(Internal), got {other:?}"),
+        }
+        assert_eq!(
+            engine.embed_batch_profiled(&[]).unwrap(),
+            (Vec::new(), EmbedBatchProfile::empty())
+        );
     }
 }

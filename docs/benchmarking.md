@@ -38,8 +38,10 @@ batching.
 
 - **Latency** (`warm`, `cold`): mean, median, p95, p99, min and max in milliseconds.
 - **Stage profile**: with `LTEMBED_PROFILE=1` (also `true` or `yes`), warm mode prints one
-  line per scenario to stderr with mean `prefix_ms`, `tokenize_ms`, `tensorize_ms`,
-  `run_ms`, `extract_ms`, `postprocess_ms` and `total_ms`.
+  line per scenario to stderr with the mean of each `EmbedBatchProfile` field: `batch_size`,
+  `seq_len`, `prefix_ms`, `tokenize_ms`, `run_ms`, `postprocess_ms` and `total_ms`.
+  `run_ms` covers building each input's `llama_batch`, `llama_encode` and the copy of its
+  pooled vector; `total_ms` is the whole call, so it also covers the input size checks.
 - **Correctness vs. PyTorch**: cosine between LTEmbed and the PyTorch F32 model (run by
   SentenceTransformers, `scripts/bench_pytorch.py`) on the retrieval-eval texts. The default pass threshold is `0.98`
   (`--correctness-threshold`).

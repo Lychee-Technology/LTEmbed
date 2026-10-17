@@ -4,17 +4,24 @@ use super::bundle::ModelSpec;
 use super::config::EngineConfig;
 use super::input::{EmbeddingInput, EmbeddingInputKind};
 
-/// Per-stage timing for one `embed_batch` call (backend-agnostic).
+/// Per-stage timing for one `embed_batch_profiled` call, in milliseconds (backend-agnostic).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EmbedBatchProfile {
+    /// Number of inputs.
     pub batch_size: usize,
+    /// Token count of the longest input, prefix, BOS and EOS included.
     pub sequence_length: usize,
+    /// Adding the query or document prefix to every input.
     pub prefix_ms: f64,
+    /// Tokenizing every prefixed input.
     pub tokenize_ms: f64,
-    pub tensorize_ms: f64,
+    /// Running the model on every input and copying out its pooled vector. Waiting for
+    /// another call's inference is not included.
     pub run_ms: f64,
-    pub extract_ms: f64,
+    /// Checking, truncating and normalizing every pooled vector.
     pub postprocess_ms: f64,
+    /// The whole call, including what no stage above covers, such as the input size checks
+    /// and waiting for another call's inference.
     pub total_ms: f64,
 }
 
@@ -26,9 +33,7 @@ impl EmbedBatchProfile {
             sequence_length: 0,
             prefix_ms: 0.0,
             tokenize_ms: 0.0,
-            tensorize_ms: 0.0,
             run_ms: 0.0,
-            extract_ms: 0.0,
             postprocess_ms: 0.0,
             total_ms: 0.0,
         }

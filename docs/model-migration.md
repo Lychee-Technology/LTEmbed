@@ -38,12 +38,17 @@ and code that names a removed one no longer compiles:
 - **`InferenceError::SequenceTooLong` and `InferenceError::AllPadding` are removed.** An
   input longer than the bundle's `max_length` is `LTEmbedError::InputTooLong`, which the
   engine returns before inference runs, as before.
+- **`InferenceError::Tensor` is removed.** Its one remaining cause, llama.cpp returning no
+  pooled embedding, is now `InferenceError::Backend`.
 - **`LTEmbedError::InputTooLong` is `{ tokens: Option<usize>, bytes: usize, max: usize }`**,
   no longer `{ tokens: usize, max: usize }`. `bytes` is the input's size with its prefix.
   `tokens` is `None` when the input is too large to fit in `max` tokens at all, which the
   engine now rejects without tokenizing it
   ([architecture.md](./architecture.md#inputs-over-the-byte-bound)); otherwise it is the
   token count, as before.
+- **`EmbedBatchProfile::tensorize_ms` and `extract_ms` are removed.** They were named for
+  stages of the earlier ONNX Runtime backend and were always `0.0` with llama.cpp. `run_ms`
+  covers running the model and copying out each pooled vector, as before.
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 

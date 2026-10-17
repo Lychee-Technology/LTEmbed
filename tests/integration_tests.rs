@@ -130,6 +130,20 @@ fn norm(v: &[f32]) -> f64 {
         .sqrt()
 }
 
+/// Asserts that a setting the embedding space leaves out moved `vector` from `expected` by
+/// floating-point rounding at most, with the bound the llama.cpp reference test allows for the
+/// same computation rounded differently. The space leaves a setting out only on that ground
+/// (`src/engine/AGENTS.md` § "Embedding Space"). On x86-64-v3 the vectors are bit-identical
+/// (`docs/architecture.md` § "Embedding space"). If a llama.cpp release moves them further,
+/// find out why before adding the setting to the space.
+fn assert_rounding_at_most(vector: &[f32], expected: &[f32], setting: &str) {
+    let similarity = cosine(vector, expected);
+    assert!(
+        similarity >= LLAMA_CPP_MIN_COSINE,
+        "{setting}: cosine {similarity:.9} < {LLAMA_CPP_MIN_COSINE}"
+    );
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FixtureKind {
@@ -1106,14 +1120,15 @@ fn test_gguf_without_eos_returns_model_load_error() {
 
 /// The test bundle's embedding space names the GGUF the llama.cpp reference was generated
 /// from (the release GGUF), the model's prompts and the engine's config. The config's two
-/// fields change it; the thread count, which changes no vector, does not.
+/// fields change it; the thread count, which changes vectors by rounding at most, does not.
 #[test]
 fn test_embedding_space_names_the_release_gguf_and_settings() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
     let reference = llama_cpp_reference(&golden_fixtures());
-    let space = make_engine(&bundle_dir).embedding_space().unwrap().clone();
+    let release = make_engine(&bundle_dir);
+    let space = release.embedding_space().unwrap().clone();
     assert_eq!(space.model_sha256, reference.gguf.sha256);
     assert_eq!(
         (space.query_prefix.as_str(), space.document_prefix.as_str()),
@@ -1125,6 +1140,12 @@ fn test_embedding_space_names_the_release_gguf_and_settings() {
     );
 
     let threads = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, 4);
+    let input = EmbeddingInput::document("Four threads embedded this.");
+    assert_rounding_at_most(
+        &threads.embed(input).unwrap(),
+        &release.embed(input).unwrap(),
+        "4 threads",
+    );
     assert_eq!(*threads.embedding_space().unwrap(), space);
     for (output_dimension, l2_normalize) in [(256, true), (EMBEDDING_DIMENSION, false)] {
         let engine = make_engine_with(&bundle_dir, output_dimension, l2_normalize, 1);
@@ -1137,9 +1158,10 @@ fn test_embedding_space_names_the_release_gguf_and_settings() {
     }
 }
 
-/// A bundle cannot claim another space through its metadata. `target_id`, `quant` and
-/// `max_length` in `build-info.json`, and `provenance.json`, change no vector, and leave the
-/// space as it is. A prompt changes the vectors, and the space.
+/// A bundle cannot claim another space through its metadata. `target_id` and `quant` in
+/// `build-info.json`, and `provenance.json`, are not read and change no vector; `max_length`
+/// sizes the context and changes vectors by rounding at most. None of them changes the space.
+/// A prompt changes the vectors, and the space.
 #[test]
 fn test_edited_bundle_metadata_cannot_claim_another_space() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
@@ -1158,7 +1180,6 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
     write_edited_bundle_build_info(&bundle_dir, &claims_dir, |build_info| {
         build_info["target_id"] = "jinaai/jina-embeddings-v5-text-nano-retrieval".into();
         build_info["model_metadata"]["quant"] = "Q8_0".into();
-        build_info["model_metadata"]["max_length"] = 64.into();
     });
     let provenance = serde_json::json!({
         "files": {
@@ -1173,6 +1194,17 @@ fn test_edited_bundle_metadata_cannot_claim_another_space() {
     assert_eq!(claims.embed(input).unwrap(), vector);
     assert_eq!(claims.embedding_space().unwrap(), space);
     fs::remove_dir_all(claims_dir).unwrap();
+
+    let max_length_dir = unique_temp_dir();
+    fs::create_dir_all(&max_length_dir).unwrap();
+    link_bundle_files(&bundle_dir, &max_length_dir, ENGINE_BUNDLE_FILES);
+    write_edited_bundle_build_info(&bundle_dir, &max_length_dir, |build_info| {
+        build_info["model_metadata"]["max_length"] = 64.into();
+    });
+    let max_length = make_engine(&max_length_dir);
+    assert_rounding_at_most(&max_length.embed(input).unwrap(), &vector, "max_length 64");
+    assert_eq!(max_length.embedding_space().unwrap(), space);
+    fs::remove_dir_all(max_length_dir).unwrap();
 
     let prompt_dir = unique_temp_dir();
     fs::create_dir_all(&prompt_dir).unwrap();

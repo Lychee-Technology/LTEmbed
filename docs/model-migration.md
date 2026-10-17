@@ -38,6 +38,8 @@ and code that names a removed one no longer compiles:
 - **`InferenceError::SequenceTooLong` and `InferenceError::AllPadding` are removed.** An
   input longer than the bundle's `max_length` is `LTEmbedError::InputTooLong`, which the
   engine returns before inference runs, as before.
+- **`InferenceError::Tensor` is removed.** Its one remaining cause, llama.cpp returning no
+  pooled embedding, is now `InferenceError::Backend`.
 - **`LTEmbedError::InputTooLong` is `{ tokens: Option<usize>, bytes: usize, max: usize }`**,
   no longer `{ tokens: usize, max: usize }`. `bytes` is the input's size with its prefix.
   `tokens` is `None` when the input is too large to fit in `max` tokens at all, which the

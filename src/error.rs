@@ -91,11 +91,8 @@ pub enum InferenceError {
     #[error("{0}")]
     OutputShape(String),
 
-    /// Tensor conversion or extraction failure.
-    #[error("{0}")]
-    Tensor(String),
-
-    /// Backend inference (e.g. `llama_encode`) failure.
+    /// Backend inference failure: `llama_encode` failed, llama.cpp returned no pooled
+    /// embedding, or a pooled vector has a NaN or infinite value.
     #[error("{0}")]
     Backend(String),
 

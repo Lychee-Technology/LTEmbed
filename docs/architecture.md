@@ -356,7 +356,7 @@ thread's latency is the same as alone.
 | `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure |
 | `InputTooLong { tokens, bytes, max }` | An input is longer than `max_length` tokens. `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the [byte bound](#inputs-over-the-byte-bound) and not tokenized |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
-| `Inference(Backend / Tensor / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code or a raw vector with a NaN or infinite value |
+| `Inference(Backend / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code, a null pooled embedding from `llama_get_embeddings_seq`, or a raw vector with a NaN or infinite value |
 
 ## Platform constraint
 

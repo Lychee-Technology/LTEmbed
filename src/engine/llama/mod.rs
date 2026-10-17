@@ -537,7 +537,7 @@ impl LlamaBackend {
         let ptr = ffi::llama_get_embeddings_seq(ctx, 0);
         if ptr.is_null() {
             ffi::llama_batch_free(batch);
-            return Err(LTEmbedError::Inference(InferenceError::Tensor(
+            return Err(LTEmbedError::Inference(InferenceError::Backend(
                 "llama_get_embeddings_seq returned null".into(),
             )));
         }

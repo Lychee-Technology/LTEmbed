@@ -43,6 +43,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         EmbeddingInput::query("Hello, world!"),
         EmbeddingInput::query("LTEmbed Rust API example"),
     ];
+
+    // Nothing is truncated: an input of more than `max_length()` tokens (prompt, BOS and EOS
+    // included) is rejected with `InputTooLong`. `token_count` gives that count, so long text
+    // can be split to fit before it is embedded.
+    let first_input_tokens = engine.token_count(inputs[0])?;
+
     let embeddings = engine.embed_batch(&inputs)?;
     let first = embeddings
         .first()
@@ -54,6 +60,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
     println!("embedding_space: {embedding_space}");
+    println!("max_length: {}", engine.max_length());
+    println!("first_input_tokens: {first_input_tokens}");
     println!("inputs: {}", embeddings.len());
     println!("embedding_dim: {}", first.len());
     println!("first_embedding_head: [{}]", preview.join(", "));

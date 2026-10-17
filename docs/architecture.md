@@ -18,7 +18,8 @@ EmbeddingEngine                      src/engine/mod.rs
 
 - **`EmbeddingEngine`** is the public entry point. It owns the shared pipeline: prefixing,
   the input length limit, Matryoshka truncation and normalization. It also reports the
-  [embedding space](#embedding-space) its vectors belong to.
+  [embedding space](#embedding-space) its vectors belong to, the limit (`max_length()`) and
+  an input's token count (`token_count()`, see [Inference path](#inference-path)).
 - **`EmbeddingBackend`** is a crate-private trait. A backend tokenizes text with the
   model's own vocabulary (`tokenize`), and for tokenized inputs returns one raw,
   un-normalized, pooled vector of `raw_embedding_dimension` floats per input (`embed`).
@@ -163,6 +164,12 @@ An empty slice returns an empty `Vec` without touching the backend.
 `embed_batch_profiled` returns the same embeddings plus an `EmbedBatchProfile`, which holds
 per-stage milliseconds. The benchmark binary prints it when `LTEMBED_PROFILE=1`.
 
+`token_count(input)` runs steps 1 to 3 for one input and returns the number of tokens that
+step 3 compares with `max_length`, prefix, `<bos>` and `<eos>` included, without the
+comparison: the count of an input over the limit is returned, and `embed` of that input
+returns `InputTooLong { tokens: Some(count), .. }` with the same count. `max_length()`
+returns the bundle's limit.
+
 ## Long inputs and memory
 
 The memory an input needs grows with its length. Peak resident memory
@@ -266,7 +273,9 @@ before it is tokenized:
   is over it, the call returns `InputTooLong { tokens: None, bytes, max }` before any input
   of the batch is prefixed or tokenized: there is no token count to report. Otherwise the
   inputs are tokenized as before, and one of more than `max_length` tokens returns
-  `InputTooLong { tokens: Some(count), bytes, max }`.
+  `InputTooLong { tokens: Some(count), bytes, max }`. `token_count` makes the same
+  comparison for its one input and returns the same error for a text over the bound; a text
+  at or under it is tokenized and counted.
 
 The bound rejects no text that fits, because this tokenizer never drops or contracts input.
 llama.cpp (`llama_vocab::impl::tokenize` in `src/llama-vocab.cpp`, `v0.7.0`) turns
@@ -309,7 +318,8 @@ them, is now at most 2.9 MiB.
 `EmbeddingEngine` holds one llama.cpp context behind a `Mutex`. `llama_encode` writes to
 the context, so concurrent calls on a shared engine encode their inputs one at a time. They
 tokenize without the mutex, so a thread tokenizing a long input does not hold up another
-thread's inference, and inference does not hold up tokenizing. If the mutex is poisoned,
+thread's inference, and inference does not hold up tokenizing; `token_count` only
+tokenizes, so it never takes the mutex. If the mutex is poisoned,
 calls that reach inference return `InferenceError::MutexPoisoned`. For parallel inference,
 either load several engines or raise `n_threads` to parallelize inside each call.
 
@@ -435,7 +445,7 @@ whether or not it asks for the space.
 | `ModelLoad(Metadata)` | `build-info.json` cannot be read or parsed, or `max_length` is outside `1..=8192` |
 | `ModelLoad(Config)` | Bad `output_dimension` or `n_threads = 0` |
 | `ModelLoad(Runtime)` | GGUF load failure, `n_embd` or `n_embd_out` mismatch, a GGUF that does not declare mean pooling or whose tokenization does not add BOS and EOS, context creation failure, a `model.gguf` replaced while it loaded |
-| `InputTooLong { tokens, bytes, max }` | An input is longer than `max_length` tokens. `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the [byte bound](#inputs-over-the-byte-bound) and not tokenized |
+| `InputTooLong { tokens, bytes, max }` | An `embed` input is longer than `max_length` tokens, or an `embed` or `token_count` input is over the [byte bound](#inputs-over-the-byte-bound). `bytes` is its size with the prefix; `tokens` is its token count, or `None` if it was over the bound and not tokenized |
 | `Tokenization(_)` | The input cannot be tokenized with the GGUF's vocabulary |
 | `Io(_)` | `embedding_space()` cannot read `model.gguf` |
 | `Inference(Backend / OutputShape / MutexPoisoned / Internal)` | Backend-side failures; `Backend` wraps a non-zero `llama_encode` return code, a null pooled embedding from `llama_get_embeddings_seq`, or a raw vector with a NaN or infinite value |

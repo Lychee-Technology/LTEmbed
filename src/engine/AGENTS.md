@@ -30,6 +30,11 @@ optional L2 normalization
 
 Preserve separation between shared retrieval semantics and backend-specific inference.
 
+`EmbeddingEngine::token_count` runs the size check, prefix and tokenization steps for one
+input and returns the count without comparing it with `max_length`, which
+`EmbeddingEngine::max_length` reports. Keep it in step with `embed`: it must count what
+`embed` compares with the limit, and the same byte bound applies to both.
+
 ## Embedding Space
 
 `EmbeddingEngine::embedding_space()` names the vector space of an engine's output:

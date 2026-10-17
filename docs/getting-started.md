@@ -112,8 +112,10 @@ indexing and querying.
 
 - `from_gguf_bundle_dir` uses one llama.cpp thread.
 - `from_gguf_bundle_dir_with_threads(dir, config, n)` sets `n` threads; `0` is rejected.
-- `EmbeddingEngine` is `Send + Sync`. Calls on one engine are serialized by an internal
-  mutex. To run calls in parallel, load several engines.
+- `EmbeddingEngine` is `Send + Sync`. Calls on one engine tokenize their inputs in
+  parallel, but encode them one at a time, under an internal mutex
+  ([architecture.md](./architecture.md#concurrency)). To run inference in parallel, load
+  several engines.
 - `embed_batch` encodes its inputs one after another; it is not faster per input than
   repeated `embed` calls apart from saved overhead.
 

@@ -12,6 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Barrier;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FIXTURES: &str = "tests/fixtures/test_fixtures.json";
@@ -1280,6 +1281,92 @@ fn test_embed_batch_matches_single_embeds_and_repeats_exactly() {
         engine.embed_batch(&inputs).unwrap(),
         "a repeated call"
     );
+}
+
+/// What one `embed_batch` call returned, as `test_concurrent_calls_match_a_single_thread`
+/// compares it: the vectors, or the `InputTooLong` of an input over `MAX_LENGTH` tokens.
+#[derive(Debug, PartialEq)]
+enum CallResult {
+    Embeddings(Vec<Vec<f32>>),
+    TooLong {
+        tokens: Option<usize>,
+        bytes: usize,
+        max: usize,
+    },
+}
+
+fn call_result(engine: &EmbeddingEngine, inputs: &[EmbeddingInput<'_>]) -> CallResult {
+    match engine.embed_batch(inputs) {
+        Ok(embeddings) => CallResult::Embeddings(embeddings),
+        Err(LTEmbedError::InputTooLong { tokens, bytes, max }) => {
+            CallResult::TooLong { tokens, bytes, max }
+        }
+        Err(err) => panic!("unexpected error: {err}"),
+    }
+}
+
+/// Threads that share one engine in `test_concurrent_calls_match_a_single_thread`.
+const CONCURRENT_THREADS: usize = 8;
+
+/// Calls on one engine from `CONCURRENT_THREADS` threads at once return exactly what they
+/// return one after another on one thread. Only inference takes the engine's lock, so threads
+/// tokenize short inputs, a document of about 100 tokens and inputs of about 24,000 tokens,
+/// which are rejected after tokenizing, while another thread encodes: a data race in
+/// tokenizing, or between tokenizing and inference, would show as a different vector or token
+/// count. Thread `t` starts at call `t` (modulo the number of calls), so different inputs
+/// overlap.
+#[test]
+fn test_concurrent_calls_match_a_single_thread() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    const ROUNDS: usize = 2;
+    let engine = make_engine(&bundle_dir);
+    let document = "Mean pooling averages every token of the sequence. ".repeat(10);
+    let too_long = "hello world ".repeat(12000);
+    let calls = [
+        vec![EmbeddingInput::query("hello")],
+        vec![EmbeddingInput::document(&too_long)],
+        vec![EmbeddingInput::document(&document)],
+        vec![
+            EmbeddingInput::query("世界"),
+            EmbeddingInput::document("在登录页面点击忘记密码"),
+        ],
+        vec![EmbeddingInput::query(&too_long)],
+    ];
+    let expected: Vec<CallResult> = calls
+        .iter()
+        .map(|inputs| call_result(&engine, inputs))
+        .collect();
+    for call in [1, 4] {
+        assert!(
+            matches!(expected[call], CallResult::TooLong { tokens: Some(tokens), .. } if tokens > MAX_LENGTH),
+            "call {call} must be tokenized and rejected: {:?}",
+            expected[call]
+        );
+    }
+
+    let start = Barrier::new(CONCURRENT_THREADS);
+    std::thread::scope(|scope| {
+        for thread in 0..CONCURRENT_THREADS {
+            let (engine, calls, expected, start) = (&engine, &calls, &expected, &start);
+            scope.spawn(move || {
+                start.wait();
+                for round in 0..ROUNDS {
+                    for offset in 0..calls.len() {
+                        let call = (thread + round + offset) % calls.len();
+                        let result = call_result(engine, &calls[call]);
+                        // Not `assert_eq!`: a mismatch would print every vector.
+                        assert!(
+                            result == expected[call],
+                            "thread {thread}, round {round}: call {call} differs from one \
+                             thread's result"
+                        );
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// The same text as a query and as a document gets different prompts, so different vectors.

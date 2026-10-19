@@ -134,7 +134,7 @@ unknown field: the output size comes from `EngineConfig`.
 | `model_metadata.query_prefix` | yes (string) | — | Prepended to `EmbeddingInput::query` text; part of the [embedding space](./architecture.md#embedding-space) |
 | `model_metadata.document_prefix` | yes (string) | — | Prepended to `EmbeddingInput::document` text; part of the embedding space |
 | `model_metadata.raw_embedding_dimension` | yes (integer) | Must equal the GGUF `n_embd_out` | Upper bound for `EngineConfig::output_dimension`; backend output length |
-| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`), the input byte bound (`max_length` × the vocabulary's longest token, 93 bytes) and llama.cpp context size |
+| `model_metadata.max_length` | yes (integer) | `1..=8192` (`MAX_LENGTH`, the model's context length); else `Metadata` | Input token limit (`InputTooLong`; `EmbeddingEngine::max_length()` reports it), the input byte bound (`max_length` × the vocabulary's longest token, 93 bytes) and llama.cpp context size |
 | `model_metadata.quant` | no | — | **Not read.** Informational. |
 
 If the file is missing, the engine returns `ModelLoad(MissingFile)`. If it cannot be read or

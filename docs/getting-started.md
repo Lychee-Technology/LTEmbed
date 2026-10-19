@@ -62,11 +62,14 @@ cargo run --example api_usage
 ```
 
 `examples/api_usage.rs` looks for `gguf_bundle/` in the current directory and its parents,
-embeds two queries, and prints the engine's [embedding space](#tagging-an-index) and the
-first embedding's head:
+embeds two queries, and prints the engine's [embedding space](#tagging-an-index), its
+[token limit](#token-limit) and the first query's token count, and the first embedding's
+head:
 
 ```
 embedding_space: ltembed-space/1;model-sha256=a9d7a3b7…;query-prefix=task: search result | query: ;document-prefix=title: none | text: ;output-dimension=512;l2-normalize=true
+max_length: 8192
+first_input_tokens: 13
 inputs: 2
 embedding_dim: 512
 first_embedding_head: [...]
@@ -100,6 +103,32 @@ engine adds EmbeddingGemma 2's `task: search result | query: ` or `title: none |
 prompt from `build-info.json`. Pass raw text; do not add the prompt yourself, or it is
 applied twice.
 
+### Token limit
+
+Nothing is truncated. The bundle's `max_length`, 8192 for the release bundle, is the most
+tokens an input may take, prompt, `<bos>` and `<eos>` included, and `embed` returns
+`InputTooLong` for a longer one. To split text to fit, count it as the engine does.
+`token_count` returns the count of an input over the limit too, and takes no lock. An input
+that cannot fit at all, over 761,856 bytes with its prompt for the release bundle, has no
+count: it is rejected without being tokenized, with `InputTooLong { tokens: None, .. }`, by
+`token_count` as by `embed` ([architecture.md](./architecture.md#inputs-over-the-byte-bound)).
+Text is too long in either case:
+
+```rust
+use ltembed::error::LTEmbedError;
+
+let limit = engine.max_length();
+let fits = match engine.token_count(EmbeddingInput::document(text)) {
+    Ok(tokens) => tokens <= limit,
+    // Over the byte bound (`tokens: None`): too large to fit at all, so not tokenized.
+    Err(LTEmbedError::InputTooLong { .. }) => false,
+    Err(error) => return Err(error.into()),
+};
+if !fits {
+    // Split `text` and count the pieces: `embed` would return `InputTooLong`.
+}
+```
+
 ### `EngineConfig`
 
 | Field | Meaning | `Default` |
@@ -125,8 +154,8 @@ and compare it with the engine's before adding to or searching the index; see
 - `from_gguf_bundle_dir_with_threads(dir, config, n)` sets `n` threads; `0` is rejected.
 - `EmbeddingEngine` is `Send + Sync`. Calls on one engine tokenize their inputs in
   parallel, but encode them one at a time, under an internal mutex
-  ([architecture.md](./architecture.md#concurrency)). To run inference in parallel, load
-  several engines.
+  ([architecture.md](./architecture.md#concurrency)); `token_count` only tokenizes, so it
+  never waits. To run inference in parallel, load several engines.
 - `embed_batch` encodes its inputs one after another; it is not faster per input than
   repeated `embed` calls apart from saved overhead.
 
@@ -141,7 +170,7 @@ All methods return `ltembed::error::LTEmbedError`. The ones you are most likely 
 | `ModelLoad(Config(_))` | `output_dimension` is 0 or above 768, or `n_threads` is 0 |
 | `ModelLoad(UnsupportedPooling { .. })` | `build-info.json` is from a bundle for the previous model (`last_token` pooling); see [model-migration.md](./model-migration.md) |
 | `ModelLoad(Runtime(_))` | The GGUF failed to load, does not match `build-info.json`, or its tokenization does not add BOS and EOS |
-| `InputTooLong { tokens, bytes, max }` | An input is longer than the bundle's `max_length` (8192 tokens). `tokens` is its token count, or `None` for an input too large to fit at all (over 761,856 bytes with its prefix), which is rejected without being tokenized. Nothing is truncated, so split long text first. |
+| `InputTooLong { tokens, bytes, max }` | An input is longer than the bundle's `max_length` (8192 tokens). `tokens` is its token count, or `None` for an input too large to fit at all (over 761,856 bytes with its prefix), which `embed` and `token_count` reject without tokenizing it. Nothing is truncated, so count and split long text first ([Token limit](#token-limit)). |
 
 The full list is in [architecture.md](./architecture.md#errors).
 

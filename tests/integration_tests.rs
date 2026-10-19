@@ -1360,18 +1360,28 @@ fn longest_token() -> String {
 /// token, as many copies as `MAX_LENGTH` tokens hold, embeds. With BOS, the six prompt tokens,
 /// a `▁` for the prompt's last space and EOS, that is `MAX_LENGTH - 9` copies: 761,039 bytes,
 /// 817 under the bound. One more copy is tokenized and counted, not rejected by its size.
+/// `token_count` gives both counts, `MAX_LENGTH` and one more, and `max_length()` the limit.
 #[test]
 fn test_input_of_the_longest_tokens_that_fits_embeds() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
         return;
     };
     let engine = make_engine_with(&bundle_dir, EMBEDDING_DIMENSION, true, long_input_threads());
+    assert_eq!(engine.max_length(), MAX_LENGTH);
     let fits = longest_token().repeat(MAX_LENGTH - 9);
+    assert_eq!(
+        engine.token_count(EmbeddingInput::document(&fits)).unwrap(),
+        MAX_LENGTH
+    );
     let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
     assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
     assert!(embedding.iter().all(|value| value.is_finite()));
 
     let over = longest_token().repeat(MAX_LENGTH - 8);
+    assert_eq!(
+        engine.token_count(EmbeddingInput::document(&over)).unwrap(),
+        MAX_LENGTH + 1
+    );
     match engine.embed(EmbeddingInput::document(&over)) {
         Err(LTEmbedError::InputTooLong { tokens, bytes, max }) => {
             assert_eq!(
@@ -1388,8 +1398,8 @@ fn test_input_of_the_longest_tokens_that_fits_embeds() {
 }
 
 /// A text one byte over the bound, `MAX_LENGTH` times the longest token's length with the
-/// prefix, is rejected without being tokenized: its `InputTooLong` has no token count. One at
-/// the bound is tokenized and counted.
+/// prefix, is rejected without being tokenized, by `embed` and `token_count` alike: its
+/// `InputTooLong` has no token count. One at the bound is tokenized and counted.
 #[test]
 fn test_input_over_the_byte_bound_is_rejected_without_tokenizing() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
@@ -1401,33 +1411,65 @@ fn test_input_over_the_byte_bound_is_rejected_without_tokenizing() {
 
     for bytes in [bound + 1, 64 << 20] {
         let text = text_of(bytes);
-        match engine.embed(EmbeddingInput::document(&text)) {
-            Err(LTEmbedError::InputTooLong {
-                tokens: None,
-                bytes: reported,
-                max,
-            }) => assert_eq!((reported, max), (bytes, MAX_LENGTH)),
-            other => panic!("{bytes} bytes: expected InputTooLong without a count, got {other:?}"),
+        let input = EmbeddingInput::document(&text);
+        for (call, result) in [
+            ("embed", engine.embed(input).map(drop)),
+            ("token_count", engine.token_count(input).map(drop)),
+        ] {
+            match result {
+                Err(LTEmbedError::InputTooLong {
+                    tokens: None,
+                    bytes: reported,
+                    max,
+                }) => assert_eq!((reported, max), (bytes, MAX_LENGTH)),
+                other => panic!(
+                    "{call} of {bytes} bytes: expected InputTooLong without a count, got \
+                     {other:?}"
+                ),
+            }
         }
     }
 
     let at_bound = text_of(bound);
+    let count = engine
+        .token_count(EmbeddingInput::document(&at_bound))
+        .unwrap();
+    assert!(count > MAX_LENGTH, "{count} tokens");
     match engine.embed(EmbeddingInput::document(&at_bound)) {
         Err(LTEmbedError::InputTooLong {
             tokens: Some(tokens),
             bytes,
             ..
-        }) => {
-            assert!(tokens > MAX_LENGTH, "{tokens} tokens");
-            assert_eq!(bytes, bound);
-        }
+        }) => assert_eq!((tokens, bytes), (count, bound)),
         other => panic!("expected InputTooLong with a token count, got {other:?}"),
     }
 }
 
-/// A bundle's `max_length` is the input limit the engine enforces and the context it sizes:
-/// an input of exactly that many tokens embeds, one more token fails with `InputTooLong`
-/// instead of being truncated. Lowering it is how a deployment caps peak memory.
+/// `token_count` gives the count the golden fixture recorded for each of its inputs, prompt,
+/// BOS and EOS included, up to the 8192-token input, and `max_length()` the limit the fixture
+/// was generated for.
+#[test]
+fn test_token_count_matches_the_golden_fixtures() {
+    let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
+        return;
+    };
+    let engine = make_engine(&bundle_dir);
+    let data = golden_fixtures();
+    assert_eq!(engine.max_length(), data.max_length);
+    for fixture in &data.fixtures {
+        assert_eq!(
+            engine.token_count(fixture.input()).unwrap(),
+            fixture.tokens,
+            "{}",
+            fixture.name
+        );
+    }
+}
+
+/// A bundle's `max_length` is the input limit the engine enforces and the context it sizes,
+/// and `max_length()` reports it: an input of exactly that many tokens, as `token_count`
+/// counts them, embeds; one token more fails with `InputTooLong` naming that count instead
+/// of being truncated. Lowering it is how a deployment caps peak memory.
 #[test]
 fn test_bundle_max_length_is_enforced_without_truncation() {
     let Some(bundle_dir) = test_bundle(ENGINE_BUNDLE_FILES) else {
@@ -1440,38 +1482,19 @@ fn test_bundle_max_length_is_enforced_without_truncation() {
     write_edited_bundle_build_info(&bundle_dir, &temp_dir, |build_info| {
         build_info["model_metadata"]["max_length"] = LIMIT.into();
     });
+    let engine = make_engine(&temp_dir);
+    assert_eq!(engine.max_length(), LIMIT);
 
-    // Texts whose prompted form is exactly LIMIT and LIMIT + 1 tokens. An engine whose
-    // `max_length` is 8 counts tokens: each text below has more than 8 tokens (one word makes
-    // 9) and fewer bytes than its byte bound (8 × 93), so it rejects each one after
-    // tokenizing it, naming its token count.
-    const COUNTER_LIMIT: usize = 8;
-    let counter_dir = unique_temp_dir();
-    fs::create_dir_all(&counter_dir).unwrap();
-    link_bundle_files(&bundle_dir, &counter_dir, ENGINE_BUNDLE_FILES);
-    write_edited_bundle_build_info(&bundle_dir, &counter_dir, |build_info| {
-        build_info["model_metadata"]["max_length"] = COUNTER_LIMIT.into();
-    });
-    let counter = make_engine(&counter_dir);
+    // Texts whose prompted form is exactly LIMIT and LIMIT + 1 tokens (one word makes 9).
+    // `token_count` counts past the limit: every candidate is under the byte bound.
     let text_of = |tokens: usize| {
         (1..LIMIT)
             .map(|words| vec!["alpha"; words].join(" "))
-            .find(|text| match counter.embed(EmbeddingInput::document(text)) {
-                Err(LTEmbedError::InputTooLong {
-                    tokens: Some(count),
-                    ..
-                }) => count == tokens,
-                other => panic!(
-                    "expected InputTooLong with a token count at max_length {COUNTER_LIMIT}, \
-                     got {other:?}"
-                ),
-            })
+            .find(|text| engine.token_count(EmbeddingInput::document(text)).unwrap() == tokens)
             .unwrap_or_else(|| panic!("no text of {tokens} tokens"))
     };
     let (fits, too_long) = (text_of(LIMIT), text_of(LIMIT + 1));
-    fs::remove_dir_all(counter_dir).unwrap();
 
-    let engine = make_engine(&temp_dir);
     let embedding = engine.embed(EmbeddingInput::document(&fits)).unwrap();
     assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
     match engine.embed(EmbeddingInput::document(&too_long)) {

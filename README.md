@@ -23,9 +23,10 @@ entry point is [`EmbeddingEngine`](./src/engine/mod.rs).
 - **Output:** mean pooling, projected from the 512-wide hidden state to 768 raw dimensions;
   truncated to 512 and L2-normalized by default. The model is trained for 768, 512, 256
   and 128.
-- **Max input:** 8192 tokens. Longer inputs return an error; nothing is truncated. Memory
-  grows with input length, from about 0.45 GB for short inputs to about 1.6 GB for an
-  8192-token input; a bundle can set a lower limit (see
+- **Max input:** 8192 tokens (`engine.max_length()`). Longer inputs return an error;
+  nothing is truncated, and `engine.token_count(input)` counts an input before it is
+  embedded. Memory grows with input length, from about 0.45 GB for short inputs to about
+  1.6 GB for an 8192-token input; a bundle can set a lower limit (see
   [docs/architecture.md](./docs/architecture.md#long-inputs-and-memory)).
 
 ## Model bundle
@@ -102,7 +103,16 @@ text.
 
 `EngineConfig` picks the output dimension (1–768) and whether to L2-normalize.
 `from_gguf_bundle_dir_with_threads` sets the llama.cpp thread count (default 1). One engine
-handles one call at a time.
+encodes one input at a time, under a mutex; calls tokenize without it, so `token_count`
+never waits ([docs/architecture.md](./docs/architecture.md#concurrency)).
+
+**Token limit.** `engine.max_length()` is the most tokens an input may take, and
+`engine.token_count(input)` counts an input as the engine does, prompt, `<bos>` and `<eos>`
+included, over the limit too. A longer input returns `InputTooLong` and is never truncated,
+so count and split long text first. An input too large to fit at all, over 761,856 bytes
+with its prompt for the release bundle, has no count: `token_count` returns `InputTooLong`
+for it as well, without tokenizing it
+([docs/getting-started.md](./docs/getting-started.md#token-limit)).
 
 **Tagging an index.** `engine.embedding_space()` names the model file, prompts and settings
 the vectors depend on. Store its string form with an index and check it before every write

@@ -31,10 +31,12 @@ and code that names a removed one no longer compiles:
 
 - **The `ltembed::traits` module is removed**: `traits::tokenizer::HFTokenizer`, with its
   `from_file` and `encode_batch`, the `Tokenizer` trait and `TokenizerOutput`. The engine
-  tokenizes with the GGUF's own vocabulary, the library no longer depends on `tokenizers`,
-  and nothing replaces them.
+  tokenizes with the GGUF's own vocabulary and the library no longer depends on
+  `tokenizers`. `EmbeddingEngine::token_count` ([below](#counting-tokens)) counts an input;
+  no API returns token ids.
 - **`ltembed::benchmarking::scenario_token_lengths` and `BENCHMARK_MAX_LENGTH` are
-  removed.** The function counted tokens with a `Tokenizer`.
+  removed.** The function counted tokens with a `Tokenizer`; `EmbeddingEngine::token_count`
+  counts an input and `EmbeddingEngine::max_length` is the bundle's limit.
 - **`InferenceError::SequenceTooLong` and `InferenceError::AllPadding` are removed.** An
   input longer than the bundle's `max_length` is `LTEmbedError::InputTooLong`, which the
   engine returns before inference runs, as before.
@@ -52,9 +54,41 @@ and code that names a removed one no longer compiles:
 - **`ltembed::engine::QUERY_PREFIX` and `DOCUMENT_PREFIX`** hold EmbeddingGemma 2's prompts
   from the table above. Code that reads them still compiles and gets the new strings.
 
-Code that used `HFTokenizer` to count or inspect tokens, for example to chunk text under the
-token limit, can load the model's pinned `tokenizer.json` with the
-[`tokenizers`](https://crates.io/crates/tokenizers) crate directly.
+### Counting tokens
+
+Code that used `HFTokenizer` to count tokens, for example to chunk text under the token
+limit, counts with the engine instead. `EmbeddingEngine::token_count` counts an input as
+`embed` does: with the prefix the engine adds, tokenized with the GGUF's own vocabulary,
+`<bos>` and `<eos>` included. `EmbeddingEngine::max_length` is the bundle's limit, 8192 in
+the release bundle and lower in a bundle that sets less. The count is returned for an input
+over the limit too, so a chunker can measure text before splitting it; `embed` rejects such
+an input with `InputTooLong { tokens: Some(count), .. }`, naming the same count. An input
+that cannot fit in `max_length()` tokens at all, over the
+[byte bound](./architecture.md#inputs-over-the-byte-bound), has no count: `token_count`
+rejects it with `InputTooLong { tokens: None, .. }` without tokenizing it, as `embed` does.
+Text is too long in either case:
+
+```rust
+use ltembed::error::LTEmbedError;
+
+let limit = engine.max_length();
+let fits = match engine.token_count(EmbeddingInput::document(text)) {
+    Ok(tokens) => tokens <= limit,
+    // Over the byte bound (`tokens: None`): too large to fit at all, so not tokenized.
+    Err(LTEmbedError::InputTooLong { .. }) => false,
+    Err(error) => return Err(error.into()),
+};
+if !fits {
+    // Split `text` and count the pieces: `embed` would return `InputTooLong`.
+}
+```
+
+`token_count` takes no lock, so it does not wait for another call's inference on the same
+engine.
+
+Counting without a loaded engine, for example in a tool that runs where LTEmbed does not
+build, is possible with the model's pinned `tokenizer.json` and the
+[`tokenizers`](https://crates.io/crates/tokenizers) crate.
 `scripts/assemble_gguf_bundle.py --reference-tokenizer PATH` writes that file outside the
 bundle. Encode the text with the prefix the engine adds, the bundle's `query_prefix` or
 `document_prefix` (in a release bundle, `QUERY_PREFIX` and `DOCUMENT_PREFIX`), and with
@@ -69,8 +103,9 @@ let encoding = tokenizer.encode(format!("{QUERY_PREFIX}{text}"), true)?;
 let token_count = encoding.get_ids().len();
 ```
 
-These ids equal the GGUF vocabulary's on the [tokenizer parity](./testing.md#tokenizer-parity)
-corpus. That covers the corpus, not every possible input. Load the tokenizer once and reuse
+That is a second tokenizer. Its ids equal the GGUF vocabulary's on the
+[tokenizer parity](./testing.md#tokenizer-parity) corpus, which covers the corpus, not every
+possible input; `token_count` is the engine's own count. Load the tokenizer once and reuse
 it: `tokenizers` 0.23 keeps each loaded tokenizer's BPE word cache in thread-locals that
 dropping it does not free, which `HFTokenizer` avoided by turning that cache off.
 
@@ -132,12 +167,12 @@ still missing cannot be found.
   widths are accepted by `EngineConfig` but were not trained. If the index changes width,
   set it before re-embedding. Each width needs its own index: a 256-wide vector is not
   comparable with a 512-wide one.
-- **Token budgets and chunking.** The limit is still 8192 tokens, but counted with a
-  different tokenizer, so the same text can have a different count. Inputs over the limit
-  fail with `InputTooLong`; nothing is truncated. A chunker that counts tokens must count
-  them with the new model's tokenizer, which the bundle no longer contains; the
-  [Rust API](#rust-api) section shows how. The engine's count includes `<bos>` and `<eos>`
-  and the prefix.
+- **Token budgets and chunking.** The limit is still 8192 tokens (`engine.max_length()`),
+  but counted with a different tokenizer, so the same text can have a different count.
+  Inputs over the limit fail with `InputTooLong`; nothing is truncated. A chunker that
+  counts tokens must count them as the new model does: `engine.token_count(input)` is the
+  engine's own count, prefix, `<bos>` and `<eos>` included
+  ([Counting tokens](#counting-tokens)).
 - **Memory.** Peak memory grows with input length, and an engine keeps its peak for its
   lifetime: an 8192-token input needs about 1.6 GB. Size hosts for the longest input you
   accept, or set a lower `max_length` in `build-info.json` to reject longer inputs

@@ -499,7 +499,8 @@ fails the step. It also checks that the step runs on every trigger before anythi
 downloaded or published, and that the tarball is named with the version it checked. The step
 that creates the release on a tag push runs with a stub `gh`: it must create the release
 with the notes of its tag, `docs/release-notes/<tag>.md`, fail without them, and leave an
-existing release alone.
+existing release alone. The `Cargo.toml` version must have its notes, which link with
+absolute URLs only, as the release page needs.
 
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub

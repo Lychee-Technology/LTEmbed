@@ -23,6 +23,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "release-bundles.yml"
 RELEASE_VERSION = ROOT / ".github" / "scripts" / "release-version.sh"
 VERSION_STEP = "Check the release tag against Cargo.toml"
 CREATE_STEP = "Ensure release exists for tag"
+NOTES_DIR = ROOT / "docs" / "release-notes"
 REPOSITORY = "Lychee-Technology/LTEmbed"
 # GitHub's command for a `run` step without `shell:` on Linux, with the script as {0}.
 DEFAULT_STEP_SHELL = ["bash", "-e"]
@@ -281,6 +282,31 @@ class ReleaseCreationStepTests(unittest.TestCase):
     def test_only_a_tag_push_creates_a_release(self):
         self.assertIn("        if: github.event_name == 'push'\n", workflow_steps()[CREATE_STEP])
         self.assertNotIn("--generate-notes", WORKFLOW.read_text(encoding="utf-8"))
+
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    """docs/release-notes/v<version>.md, which a tag push publishes as the release's notes."""
+
+    def test_the_cargo_toml_version_has_its_release_notes(self):
+        with open(ROOT / "Cargo.toml", "rb") as f:
+            version = tomllib.load(f)["package"]["version"]
+        notes = NOTES_DIR / f"v{version}.md"
+        self.assertTrue(notes.is_file(),
+                        f"{notes.relative_to(ROOT)} is missing: write it with the version bump")
+        self.assertEqual(notes.read_text(encoding="utf-8").splitlines()[0],
+                         f"# LTEmbed v{version}")
+
+    def test_release_notes_link_with_absolute_urls(self):
+        # The release page renders the notes, and a relative link does not resolve there.
+        for notes in sorted(NOTES_DIR.glob("*.md")):
+            text = notes.read_text(encoding="utf-8")
+            targets = (re.findall(r"\]\(([^)\s]+)", text)
+                       + re.findall(r"^ {0,3}\[[^\]]+\]:\s*(\S+)", text, flags=re.MULTILINE))
+            self.assertTrue(targets, notes.name)
+            for target in targets:
+                with self.subTest(notes=notes.name, target=target):
+                    self.assertRegex(target, r"^https://")
 
 
 if __name__ == "__main__":

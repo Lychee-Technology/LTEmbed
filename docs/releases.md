@@ -93,19 +93,25 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 
 The repository has no release script. Based on the workflow, the steps are:
 
-1. Set `version` in `Cargo.toml` and merge that change to `main` with CI green.
-2. Push a tag `v<version>` that points at that commit:
+1. Set `version` in `Cargo.toml`, write the release's notes in
+   [`docs/release-notes/v<version>.md`](./release-notes/), and merge both to `main` with CI
+   green. `tests/test_release_bundles.py` fails while the `Cargo.toml` version has no
+   notes, so they are reviewed in the pull request that sets it. The release page shows
+   them as written, and a relative link does not resolve there: link with absolute URLs at
+   the tag, such as `https://github.com/Lychee-Technology/LTEmbed/blob/v<version>/docs/...`.
+   The test fails on a relative link.
+2. Run the workflow by hand on `main` (`workflow_dispatch`); that publishes nothing.
+   Download the workflow artifact and check it: the two `sha256sum -c` commands above, and
+   the files listed under [What a release tarball contains](#what-a-release-tarball-contains).
+3. Push a tag `v<version>` that points at that commit:
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "LTEmbed v0.2.0"
+   git push origin v0.2.0
    ```
 
-3. When the `release-bundles` run finishes, check that the release has the tarball and its
-   `.sha256` attached.
-
-To try the packaging without publishing anything, run the workflow by hand
-(`workflow_dispatch`) and download the workflow artifact.
+4. When the `release-bundles` run finishes, check that the release has its notes, the
+   tarball and its `.sha256`.
 
 ## Why UD-Q5_K_XL
 

@@ -14,6 +14,7 @@ llama.cpp/GGUF backend running EmbeddingGemma 2. Start with the [project README]
 | Know what the tests cover and what CI runs | [testing.md](./testing.md) |
 | Measure latency, parity or retrieval quality | [benchmarking.md](./benchmarking.md) |
 | Cut a release or see why UD-Q5_K_XL was chosen | [releases.md](./releases.md) |
+| See what a release changed and what to do before upgrading to it | [release-notes/](./release-notes/) |
 | See the model's license and attribution | [licenses/embeddinggemma-2/NOTICE.md](../licenses/embeddinggemma-2/NOTICE.md) |
 | Move an existing index from the previous model, or update code that used `HFTokenizer` | [model-migration.md](./model-migration.md) |
 | Tag an index with the model and settings its vectors depend on | [architecture.md → Embedding space](./architecture.md#embedding-space) |

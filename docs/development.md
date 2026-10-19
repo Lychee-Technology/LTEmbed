@@ -287,6 +287,7 @@ and the first five values.
 | `scripts/` | Python tooling ([scripts/README.md](../scripts/README.md)) |
 | `.github/scripts/fetch-static-llama.sh` | CI download and verify of the static release |
 | `.github/scripts/x86-64-v3.sh` | The x86-64-v3 CPU check, sourced by `fetch-static-llama.sh` and `pre-push` |
+| `.github/scripts/release-version.sh` | The release's version, and the check that its tag is `v<version>` ([releases.md](./releases.md#how-the-workflow-runs)) |
 | `.githooks/` | `pre-commit`, `pre-push` |
 
 ## Branches

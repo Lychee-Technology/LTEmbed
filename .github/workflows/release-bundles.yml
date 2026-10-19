@@ -13,7 +13,8 @@ name: release-bundles
 #
 # workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
 # published release it also uploads the tarball as a release asset. Pushing a v* tag creates
-# the release automatically (if missing) and uploads the tarball to it.
+# the release automatically (if missing) and uploads the tarball to it. A tag push or
+# published release fails before any of that unless its tag is v<Cargo.toml version>.
 
 on:
   push:
@@ -47,6 +48,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The tarball is named for the Cargo.toml version, so a tag push or a published release
+      # must be tagged v<version>. Checked first: on a mismatch nothing is downloaded or
+      # published.
+      - name: Check the release tag against Cargo.toml
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(.github/scripts/release-version.sh)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
       - name: Assemble GGUF bundle
         env:
           QUANT: ${{ matrix.quant }}
@@ -73,24 +84,17 @@ jobs:
       - name: Build LTEmbed release tarball
         id: bundle
         env:
+          VERSION: ${{ steps.version.outputs.version }}
           QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
           OUTPUT_DIMENSION: ${{ matrix.output_dimension }}
           L2_NORMALIZE: ${{ matrix.l2_normalize }}
         run: |
           set -euo pipefail
-          VERSION="$(python3 - <<'PY'
-          import pathlib, tomllib
-          print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"])
-          PY
-          )"
-
-          if [ -n "${RELEASE_TAG}" ] && [ "v${VERSION}" != "${RELEASE_TAG}" ]; then
-            echo "::warning::release tag ${RELEASE_TAG} does not match Cargo.toml version v${VERSION}"
-          fi
-
           MODEL_SLUG="${EXPECTED_MODEL_ID//\//__}"
-          ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}-linux-arm64"
+          # No platform in the name: the tarball holds source and a bundle, which build and
+          # load on every supported platform.
+          ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}"
           OUTPUT_NAME="${ROOT_NAME}.tar.gz"
 
           mkdir -p artifacts/package
@@ -152,6 +156,9 @@ jobs:
             ${{ steps.bundle.outputs.checksum }}
           retention-days: 7
 
+      # A release this step creates gets the notes reviewed with the tagged commit,
+      # docs/release-notes/<tag>.md; tests/test_release_bundles.py checks that the
+      # Cargo.toml version has them. A release that already exists keeps its own notes.
       - name: Ensure release exists for tag
         if: github.event_name == 'push'
         env:
@@ -159,11 +166,16 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            notes="docs/release-notes/${RELEASE_TAG}.md"
+            if [ ! -f "${notes}" ]; then
+              echo "::error::${notes} is missing; a release is created only with the notes reviewed for its tag"
+              exit 1
+            fi
             if ! gh release create "${RELEASE_TAG}" \
                    --repo "${{ github.repository }}" \
                    --verify-tag \
                    --title "${RELEASE_TAG}" \
-                   --generate-notes; then
+                   --notes-file "${notes}"; then
               # Concurrent matrix jobs can race view||create; losing the creation race is fine,
               # but any other create failure must still fail the job.
               gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" >/dev/null

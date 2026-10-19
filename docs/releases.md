@@ -3,18 +3,21 @@
 What a release contains, how it is produced, and which model quant it ships. Everything
 here comes from `.github/workflows/release-bundles.yml`.
 
-As of 2026-10-06, the GitHub repository has no tags and no published releases. The crate
-version in `Cargo.toml` is `0.1.0`. This repository has no workflow that publishes to
-crates.io.
+A release is tagged `v<version>`, where `<version>` is `package.version` in `Cargo.toml`.
+`v0.1.0` (2026-10-13) is the last version of the previous model, Jina v5 Nano. Its GitHub
+release, whose asset held that model's GGUF and `tokenizer.json` without their license
+text, has been deleted; the tag remains and holds source code only
+([Jina notice](../licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md)). This
+repository has no workflow that publishes to crates.io.
 
 ## What a release tarball contains
 
 One tarball per matrix entry. There is currently one entry, `UD-Q5_K_XL`:
 
 ```
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.sha256
-└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64/
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL.tar.gz
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL.tar.gz.sha256
+└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL/
     ├── <source tree>      git archive of the commit being built
     │   └── licenses/embeddinggemma-2/
     │       ├── LICENSE-APACHE-2.0.txt   the model's license
@@ -43,9 +46,9 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.s
 - The tarball contains **no compiled binary and no static llama.cpp archives**. To build
   from it, you still need aarch64 Linux or x86-64-v3 Linux and `STATIC_LLAMA_DIR`; see
   [development.md](./development.md).
-- `linux-arm64` in the name dates from when aarch64 Linux was the only supported build
-  platform. The tarball itself holds source code and model files, which build on either
-  supported platform.
+- The name has no platform: the tarball holds source code and model files, which build on
+  either supported platform. Up to `v0.1.0` it ended in `-linux-arm64`, from when aarch64
+  Linux was the only supported build platform.
 - Check the download and the bundle:
 
   ```bash
@@ -62,7 +65,7 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 
 | Trigger | Builds the tarball | Uploads a workflow artifact | Creates the GitHub release | Uploads a release asset |
 |---|---|---|---|---|
-| `push` of a tag matching `v*` | Yes | Yes | Yes, if missing (`--verify-tag --generate-notes`) | Yes |
+| `push` of a tag matching `v*` | Yes | Yes | Yes, if missing, with `docs/release-notes/<tag>.md` as its notes (`--verify-tag --notes-file`) | Yes |
 | `release: published` | Yes | Yes | — (already exists) | Yes |
 | `workflow_dispatch` | Yes | Yes | No | No |
 
@@ -70,8 +73,15 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 - Workflow artifacts are kept for 7 days.
 - Release assets are uploaded with `gh release upload --clobber`, so a re-run replaces an
   asset with the same name.
-- If the tag is not `v<Cargo.toml version>`, the workflow only prints a warning and still
-  publishes, with the `Cargo.toml` version in the file name.
+- A tag push or published release fails in its first step unless the tag is
+  `v<Cargo.toml version>`, before anything is downloaded or published:
+  `.github/scripts/release-version.sh` compares the two and prints the version the tarball
+  is named with. `workflow_dispatch` has no tag, so it skips the comparison.
+- A tag push that has to create the release fails if the tagged commit has no
+  `docs/release-notes/<tag>.md`; by then only the workflow artifact has been uploaded. The
+  notes are published as written: they are reviewed with the commit, not generated from
+  pull request titles. A release that already exists, for example one created by hand
+  before the tag was pushed, keeps its own notes.
 - The workflow does **not** build the crate or run tests. It packages whatever commit the
   tag points at, so run CI on that commit first.
 - `model.gguf` comes from the same pinned revision and hash as CI's bundle
@@ -83,19 +93,25 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 
 The repository has no release script. Based on the workflow, the steps are:
 
-1. Set `version` in `Cargo.toml` and merge that change to `main` with CI green.
-2. Push a tag `v<version>` that points at that commit:
+1. Set `version` in `Cargo.toml`, write the release's notes in
+   [`docs/release-notes/v<version>.md`](./release-notes/), and merge both to `main` with CI
+   green. `tests/test_release_bundles.py` fails while the `Cargo.toml` version has no
+   notes, so they are reviewed in the pull request that sets it. The release page shows
+   them as written, and a relative link does not resolve there: link with absolute URLs at
+   the tag, such as `https://github.com/Lychee-Technology/LTEmbed/blob/v<version>/docs/...`.
+   The test fails on a relative link.
+2. Run the workflow by hand on `main` (`workflow_dispatch`); that publishes nothing.
+   Download the workflow artifact and check it: the two `sha256sum -c` commands above, and
+   the files listed under [What a release tarball contains](#what-a-release-tarball-contains).
+3. Push a tag `v<version>` that points at that commit:
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "LTEmbed v0.2.0"
+   git push origin v0.2.0
    ```
 
-3. When the `release-bundles` run finishes, check that the release has the tarball and its
-   `.sha256` attached.
-
-To try the packaging without publishing anything, run the workflow by hand
-(`workflow_dispatch`) and download the workflow artifact.
+4. When the `release-bundles` run finishes, check that the release has its notes, the
+   tarball and its `.sha256`.
 
 ## Why UD-Q5_K_XL
 

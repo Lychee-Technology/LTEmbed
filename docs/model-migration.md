@@ -151,7 +151,8 @@ when vectors are written: tag the index with the engine's embedding space and ch
    reader switches to the new index, not before.
 4. **Keep the old deployment until the switch is done.** This LTEmbed version cannot embed
    with the previous model, so rolling back means returning to the previous LTEmbed version,
-   its Jina bundle and the old index together.
+   its Jina bundle and the old index together. Keep your copy of that bundle: the `v0.1.0`
+   release asset that held it has been deleted.
 5. **Delete the old index** only after the new one has served for long enough to compare.
 
 Do not run old and new engines behind one query path, and do not backfill the new index
@@ -192,7 +193,8 @@ still missing cannot be found.
 - **Bundles and releases.** Bundles built for the previous model fail to load
   (`UnsupportedPooling`); build a new one with `scripts/assemble_gguf_bundle.py`
   ([bundle-format.md](./bundle-format.md#assembling-a-bundle)). Release tarballs are now
-  named `ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz`.
+  named `ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL.tar.gz`, without the
+  `-linux-arm64` the previous release's name ended in.
 - **License.** The model cards of `google/embeddinggemma-2` and of both Unsloth repositories
   the bundle comes from declare `apache-2.0`. The previous model had its own terms. Check
   that the new license fits your distribution before shipping the bundle. Release tarballs

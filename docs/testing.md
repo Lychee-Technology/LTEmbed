@@ -491,6 +491,17 @@ on any machine they fail if the rest of the runner needs one of them. The tests 
 `load_model`, which compare real torch dtypes, and of `main` need torch and skip without
 it.
 
+`tests/test_release_bundles.py` covers the version check of
+`.github/workflows/release-bundles.yml`. It runs `.github/scripts/release-version.sh` on
+scratch `Cargo.toml` files with the tag of each trigger, and the workflow's own version step
+under the shell GitHub runs it with, so it fails if a tag that is not `v<version>` no longer
+fails the step. It also checks that the step runs on every trigger before anything is
+downloaded or published, and that the tarball is named with the version it checked. The step
+that creates the release on a tag push runs with a stub `gh`: it must create the release
+with the notes of its tag, `docs/release-notes/<tag>.md`, fail without them, and leave an
+existing release alone. The `Cargo.toml` version must have its notes, which link with
+absolute URLs only, as the release page needs.
+
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub
 `uname`, `cargo` and `docker` commands and a stub CPU check, so on any machine it checks

@@ -156,6 +156,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("          VERSION: ${{ steps.version.outputs.version }}\n", step)
         self.assertNotIn("Cargo.toml", step)
         self.assertNotIn("::warning::", step)
+        # The name docs/releases.md documents: version, model and quant, and no platform.
+        self.assertIn('ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}"\n', step)
 
 
 class VersionStepTests(unittest.TestCase):

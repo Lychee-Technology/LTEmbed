@@ -12,9 +12,9 @@ crates.io.
 One tarball per matrix entry. There is currently one entry, `UD-Q5_K_XL`:
 
 ```
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz
-ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.sha256
-└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64/
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL.tar.gz
+ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL.tar.gz.sha256
+└── ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL/
     ├── <source tree>      git archive of the commit being built
     │   └── licenses/embeddinggemma-2/
     │       ├── LICENSE-APACHE-2.0.txt   the model's license
@@ -43,9 +43,9 @@ ltembed-<version>-unsloth__embeddinggemma-2-GGUF-UD-Q5_K_XL-linux-arm64.tar.gz.s
 - The tarball contains **no compiled binary and no static llama.cpp archives**. To build
   from it, you still need aarch64 Linux or x86-64-v3 Linux and `STATIC_LLAMA_DIR`; see
   [development.md](./development.md).
-- `linux-arm64` in the name dates from when aarch64 Linux was the only supported build
-  platform. The tarball itself holds source code and model files, which build on either
-  supported platform.
+- The name has no platform: the tarball holds source code and model files, which build on
+  either supported platform. Up to `v0.1.0` it ended in `-linux-arm64`, from when aarch64
+  Linux was the only supported build platform.
 - Check the download and the bundle:
 
   ```bash

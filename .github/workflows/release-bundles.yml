@@ -92,7 +92,9 @@ jobs:
         run: |
           set -euo pipefail
           MODEL_SLUG="${EXPECTED_MODEL_ID//\//__}"
-          ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}-linux-arm64"
+          # No platform in the name: the tarball holds source and a bundle, which build and
+          # load on every supported platform.
+          ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}"
           OUTPUT_NAME="${ROOT_NAME}.tar.gz"
 
           mkdir -p artifacts/package

@@ -46,7 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Nothing is truncated: an input of more than `max_length()` tokens (prompt, BOS and EOS
     // included) is rejected with `InputTooLong`. `token_count` gives that count, so long text
-    // can be split to fit before it is embedded.
+    // can be split to fit before it is embedded; text too large to fit at all has no count,
+    // and `token_count` returns `InputTooLong { tokens: None, .. }` for it.
     let first_input_tokens = engine.token_count(inputs[0])?;
 
     let embeddings = engine.embed_batch(&inputs)?;

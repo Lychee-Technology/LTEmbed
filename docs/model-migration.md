@@ -62,20 +62,29 @@ limit, counts with the engine instead. `EmbeddingEngine::token_count` counts an 
 `<bos>` and `<eos>` included. `EmbeddingEngine::max_length` is the bundle's limit, 8192 in
 the release bundle and lower in a bundle that sets less. The count is returned for an input
 over the limit too, so a chunker can measure text before splitting it; `embed` rejects such
-an input with `InputTooLong { tokens: Some(count), .. }`, naming the same count:
+an input with `InputTooLong { tokens: Some(count), .. }`, naming the same count. An input
+that cannot fit in `max_length()` tokens at all, over the
+[byte bound](./architecture.md#inputs-over-the-byte-bound), has no count: `token_count`
+rejects it with `InputTooLong { tokens: None, .. }` without tokenizing it, as `embed` does.
+Text is too long in either case:
 
 ```rust
+use ltembed::error::LTEmbedError;
+
 let limit = engine.max_length();
-let tokens = engine.token_count(EmbeddingInput::document(text))?;
-if tokens > limit {
+let fits = match engine.token_count(EmbeddingInput::document(text)) {
+    Ok(tokens) => tokens <= limit,
+    // Over the byte bound (`tokens: None`): too large to fit at all, so not tokenized.
+    Err(LTEmbedError::InputTooLong { .. }) => false,
+    Err(error) => return Err(error.into()),
+};
+if !fits {
     // Split `text` and count the pieces: `embed` would return `InputTooLong`.
 }
 ```
 
 `token_count` takes no lock, so it does not wait for another call's inference on the same
-engine. An input that cannot fit in `max_length()` tokens at all, over the
-[byte bound](./architecture.md#inputs-over-the-byte-bound), is rejected with
-`InputTooLong { tokens: None, .. }` without being tokenized, by `token_count` as by `embed`.
+engine.
 
 Counting without a loaded engine, for example in a tool that runs where LTEmbed does not
 build, is possible with the model's pinned `tokenizer.json` and the

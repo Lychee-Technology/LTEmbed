@@ -107,17 +107,27 @@ applied twice.
 
 Nothing is truncated. The bundle's `max_length`, 8192 for the release bundle, is the most
 tokens an input may take, prompt, `<bos>` and `<eos>` included, and `embed` returns
-`InputTooLong` for a longer one. To split text to fit, count it as the engine does:
+`InputTooLong` for a longer one. To split text to fit, count it as the engine does.
+`token_count` returns the count of an input over the limit too, and takes no lock. An input
+that cannot fit at all, over 761,856 bytes with its prompt for the release bundle, has no
+count: it is rejected without being tokenized, with `InputTooLong { tokens: None, .. }`, by
+`token_count` as by `embed` ([architecture.md](./architecture.md#inputs-over-the-byte-bound)).
+Text is too long in either case:
 
 ```rust
-let limit = engine.max_length();
-let tokens = engine.token_count(EmbeddingInput::document(text))?;
-```
+use ltembed::error::LTEmbedError;
 
-`token_count` returns the count whether or not it is over the limit, and takes no lock. An
-input that cannot fit at all, over 761,856 bytes with its prompt for the release bundle, is
-rejected without being tokenized, with `InputTooLong { tokens: None, .. }`, by `token_count`
-as by `embed` ([architecture.md](./architecture.md#inputs-over-the-byte-bound)).
+let limit = engine.max_length();
+let fits = match engine.token_count(EmbeddingInput::document(text)) {
+    Ok(tokens) => tokens <= limit,
+    // Over the byte bound (`tokens: None`): too large to fit at all, so not tokenized.
+    Err(LTEmbedError::InputTooLong { .. }) => false,
+    Err(error) => return Err(error.into()),
+};
+if !fits {
+    // Split `text` and count the pieces: `embed` would return `InputTooLong`.
+}
+```
 
 ### `EngineConfig`
 

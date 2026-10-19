@@ -189,9 +189,10 @@ impl EmbeddingEngine {
     /// The number of tokens `input` takes: its text with the query or document prefix the
     /// engine adds, tokenized with the GGUF's own vocabulary, BOS and EOS included. This is the
     /// count [`EmbeddingEngine::embed`] compares with [`EmbeddingEngine::max_length`], and it
-    /// is returned whether or not the input fits, so that text can be split to fit before it
-    /// is embedded: `embed` rejects an input of more than `max_length()` tokens with
-    /// `InputTooLong { tokens: Some(count), .. }`, where `count` is this value.
+    /// is returned for an input over that limit too, so that text can be split to fit before
+    /// it is embedded: `embed` rejects an input of more than `max_length()` tokens with
+    /// `InputTooLong { tokens: Some(count), .. }`, where `count` is this value. An input too
+    /// large to fit at all has no count: it is the `InputTooLong` error under "Errors".
     ///
     /// Takes no lock: it does not wait for another call's inference on the same engine
     /// (`docs/architecture.md` § "Concurrency").

@@ -107,8 +107,10 @@ handles one call at a time.
 
 **Token limit.** `engine.max_length()` is the most tokens an input may take, and
 `engine.token_count(input)` counts an input as the engine does, prompt, `<bos>` and `<eos>`
-included, whether or not it fits. A longer input returns `InputTooLong` and is never
-truncated, so count and split long text first
+included, over the limit too. A longer input returns `InputTooLong` and is never truncated,
+so count and split long text first. An input too large to fit at all, over 761,856 bytes
+with its prompt for the release bundle, has no count: `token_count` returns `InputTooLong`
+for it as well, without tokenizing it
 ([docs/getting-started.md](./docs/getting-started.md#token-limit)).
 
 **Tagging an index.** `engine.embedding_space()` names the model file, prompts and settings

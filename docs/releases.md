@@ -70,8 +70,10 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 - Workflow artifacts are kept for 7 days.
 - Release assets are uploaded with `gh release upload --clobber`, so a re-run replaces an
   asset with the same name.
-- If the tag is not `v<Cargo.toml version>`, the workflow only prints a warning and still
-  publishes, with the `Cargo.toml` version in the file name.
+- A tag push or published release fails in its first step unless the tag is
+  `v<Cargo.toml version>`, before anything is downloaded or published:
+  `.github/scripts/release-version.sh` compares the two and prints the version the tarball
+  is named with. `workflow_dispatch` has no tag, so it skips the comparison.
 - The workflow does **not** build the crate or run tests. It packages whatever commit the
   tag points at, so run CI on that commit first.
 - `model.gguf` comes from the same pinned revision and hash as CI's bundle

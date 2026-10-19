@@ -13,7 +13,8 @@ name: release-bundles
 #
 # workflow_dispatch builds + uploads a workflow artifact only (safe to run any time). On a
 # published release it also uploads the tarball as a release asset. Pushing a v* tag creates
-# the release automatically (if missing) and uploads the tarball to it.
+# the release automatically (if missing) and uploads the tarball to it. A tag push or
+# published release fails before any of that unless its tag is v<Cargo.toml version>.
 
 on:
   push:
@@ -47,6 +48,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The tarball is named for the Cargo.toml version, so a tag push or a published release
+      # must be tagged v<version>. Checked first: on a mismatch nothing is downloaded or
+      # published.
+      - name: Check the release tag against Cargo.toml
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(.github/scripts/release-version.sh)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
       - name: Assemble GGUF bundle
         env:
           QUANT: ${{ matrix.quant }}
@@ -73,22 +84,13 @@ jobs:
       - name: Build LTEmbed release tarball
         id: bundle
         env:
+          VERSION: ${{ steps.version.outputs.version }}
           QUANT: ${{ matrix.quant }}
           EXPECTED_MODEL_ID: ${{ matrix.expected_model_id }}
           OUTPUT_DIMENSION: ${{ matrix.output_dimension }}
           L2_NORMALIZE: ${{ matrix.l2_normalize }}
         run: |
           set -euo pipefail
-          VERSION="$(python3 - <<'PY'
-          import pathlib, tomllib
-          print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"])
-          PY
-          )"
-
-          if [ -n "${RELEASE_TAG}" ] && [ "v${VERSION}" != "${RELEASE_TAG}" ]; then
-            echo "::warning::release tag ${RELEASE_TAG} does not match Cargo.toml version v${VERSION}"
-          fi
-
           MODEL_SLUG="${EXPECTED_MODEL_ID//\//__}"
           ROOT_NAME="ltembed-${VERSION}-${MODEL_SLUG}-${QUANT}-linux-arm64"
           OUTPUT_NAME="${ROOT_NAME}.tar.gz"

@@ -65,7 +65,7 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
 
 | Trigger | Builds the tarball | Uploads a workflow artifact | Creates the GitHub release | Uploads a release asset |
 |---|---|---|---|---|
-| `push` of a tag matching `v*` | Yes | Yes | Yes, if missing (`--verify-tag --generate-notes`) | Yes |
+| `push` of a tag matching `v*` | Yes | Yes | Yes, if missing, with `docs/release-notes/<tag>.md` as its notes (`--verify-tag --notes-file`) | Yes |
 | `release: published` | Yes | Yes | — (already exists) | Yes |
 | `workflow_dispatch` | Yes | Yes | No | No |
 
@@ -77,6 +77,11 @@ not stored in the bundle; the caller chooses them through `EngineConfig`.
   `v<Cargo.toml version>`, before anything is downloaded or published:
   `.github/scripts/release-version.sh` compares the two and prints the version the tarball
   is named with. `workflow_dispatch` has no tag, so it skips the comparison.
+- A tag push that has to create the release fails if the tagged commit has no
+  `docs/release-notes/<tag>.md`; by then only the workflow artifact has been uploaded. The
+  notes are published as written: they are reviewed with the commit, not generated from
+  pull request titles. A release that already exists, for example one created by hand
+  before the tag was pushed, keeps its own notes.
 - The workflow does **not** build the crate or run tests. It packages whatever commit the
   tag points at, so run CI on that commit first.
 - `model.gguf` comes from the same pinned revision and hash as CI's bundle

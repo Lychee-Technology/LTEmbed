@@ -1,9 +1,10 @@
-"""Tests for .github/workflows/release-bundles.yml and the version check it runs first.
+"""Tests for .github/workflows/release-bundles.yml: its version check and release notes.
 
 `.github/scripts/release-version.sh` runs against scratch Cargo.toml files, with RELEASE_TAG
 set as each trigger sets it. The workflow is read as text, as the other workflow tests read
-theirs; the version step's own `run` script is also executed, in a scratch directory with a
-copy of the script, under the shell GitHub runs a step with when the step names none.
+theirs. Two steps' own `run` scripts are also executed, in a scratch directory, under the
+shell GitHub runs a step with when the step names none: the version step with a copy of the
+script, and the step that creates the release with a stub `gh` first on PATH.
 """
 
 import os
@@ -21,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release-bundles.yml"
 RELEASE_VERSION = ROOT / ".github" / "scripts" / "release-version.sh"
 VERSION_STEP = "Check the release tag against Cargo.toml"
+CREATE_STEP = "Ensure release exists for tag"
+REPOSITORY = "Lychee-Technology/LTEmbed"
 # GitHub's command for a `run` step without `shell:` on Linux, with the script as {0}.
 DEFAULT_STEP_SHELL = ["bash", "-e"]
 
@@ -47,6 +50,15 @@ def run_script(step):
             break
         body.append(line)
     return textwrap.dedent("\n".join(body)).strip() + "\n"
+
+
+def render(script, **expressions):
+    """Substitute a script's `${{ }}` expressions, as the runner does before running it."""
+    for name, value in expressions.items():
+        script = script.replace("${{ " + name + " }}", value)
+    if "${{" in script:
+        raise AssertionError(f"unrendered expression in:\n{script}")
+    return script
 
 
 def environment(release_tag):
@@ -197,6 +209,78 @@ class VersionStepTests(unittest.TestCase):
                 result = self.run_step(release_tag)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.output.read_text(encoding="utf-8"), "version=0.2.0\n")
+
+
+
+# Logs each call to $STUB_LOG; `release view` exits $STUB_VIEW_STATUS (default 1: no release).
+STUB_GH = """#!/bin/sh
+echo "gh $*" >> "$STUB_LOG"
+case "$1 $2" in
+  "release view") exit "${STUB_VIEW_STATUS:-1}" ;;
+  "release create") exit 0 ;;
+esac
+exit 2
+"""
+
+
+class ReleaseCreationStepTests(unittest.TestCase):
+    """The step that creates the release on a tag push, as the runner executes it."""
+
+    def setUp(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.tmp = Path(temp_dir.name)
+        self.repo = self.tmp / "repo"
+        self.notes_dir = self.repo / "docs" / "release-notes"
+        self.notes_dir.mkdir(parents=True)
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(STUB_GH, encoding="utf-8")
+        gh.chmod(0o755)
+        self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+        self.log = self.tmp / "calls.log"
+        self.script = self.tmp / "step.sh"
+        self.script.write_text(
+            render(run_script(workflow_steps()[CREATE_STEP]), **{"github.repository": REPOSITORY}),
+            encoding="utf-8",
+        )
+
+    def run_step(self, release_tag="v0.2.0", view_status=1):
+        env = environment(release_tag)
+        env.update(PATH=self.path, STUB_LOG=str(self.log), STUB_VIEW_STATUS=str(view_status))
+        result = subprocess.run(
+            [*DEFAULT_STEP_SHELL, str(self.script)],
+            cwd=self.repo, env=env, capture_output=True, text=True,
+        )
+        calls = self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+        return result, calls
+
+    def test_creates_the_release_with_the_notes_of_its_tag(self):
+        (self.notes_dir / "v0.2.0.md").write_text("# LTEmbed v0.2.0\n", encoding="utf-8")
+        result, calls = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [
+            f"gh release view v0.2.0 --repo {REPOSITORY}",
+            f"gh release create v0.2.0 --repo {REPOSITORY} --verify-tag --title v0.2.0"
+            " --notes-file docs/release-notes/v0.2.0.md",
+        ])
+
+    def test_fails_without_the_notes_of_its_tag(self):
+        (self.notes_dir / "v0.1.0.md").write_text("# LTEmbed v0.1.0\n", encoding="utf-8")
+        result, calls = self.run_step()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("::error::docs/release-notes/v0.2.0.md is missing;", result.stdout)
+        self.assertEqual(calls, [f"gh release view v0.2.0 --repo {REPOSITORY}"])
+
+    def test_keeps_an_existing_release_and_its_notes(self):
+        result, calls = self.run_step(view_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [f"gh release view v0.2.0 --repo {REPOSITORY}"])
+
+    def test_only_a_tag_push_creates_a_release(self):
+        self.assertIn("        if: github.event_name == 'push'\n", workflow_steps()[CREATE_STEP])
+        self.assertNotIn("--generate-notes", WORKFLOW.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

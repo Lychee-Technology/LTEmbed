@@ -496,7 +496,10 @@ it.
 scratch `Cargo.toml` files with the tag of each trigger, and the workflow's own version step
 under the shell GitHub runs it with, so it fails if a tag that is not `v<version>` no longer
 fails the step. It also checks that the step runs on every trigger before anything is
-downloaded or published, and that the tarball is named with the version it checked.
+downloaded or published, and that the tarball is named with the version it checked. The step
+that creates the release on a tag push runs with a stub `gh`: it must create the release
+with the notes of its tag, `docs/release-notes/<tag>.md`, fail without them, and leave an
+existing release alone.
 
 `tests/test_pre_push_hook.py` covers `.githooks/pre-push` and the x86-64-v3 check in
 `.github/scripts/x86-64-v3.sh`. It runs the hook in a scratch Git repository with stub

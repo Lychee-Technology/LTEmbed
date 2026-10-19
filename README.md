@@ -103,7 +103,8 @@ text.
 
 `EngineConfig` picks the output dimension (1–768) and whether to L2-normalize.
 `from_gguf_bundle_dir_with_threads` sets the llama.cpp thread count (default 1). One engine
-handles one call at a time.
+encodes one input at a time, under a mutex; calls tokenize without it, so `token_count`
+never waits ([docs/architecture.md](./docs/architecture.md#concurrency)).
 
 **Token limit.** `engine.max_length()` is the most tokens an input may take, and
 `engine.token_count(input)` counts an input as the engine does, prompt, `<bos>` and `<eos>`

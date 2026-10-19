@@ -4,9 +4,10 @@
 > **LTEmbed no longer ships this model.** Since [#179](https://github.com/Lychee-Technology/LTEmbed/pull/179), `main` and the releases built from
 > it use EmbeddingGemma 2, under Apache-2.0 ([its license and attribution](../embeddinggemma-2/NOTICE.md)).
 > This notice applies to the Jina model in the `v0.1.0` release asset described below,
-> and to anyone who redistributes that asset. Later release tarballs contain this
-> directory only because they contain the source tree; they do not contain the Jina
-> model.
+> and to anyone who redistributes a copy of that asset. The `v0.1.0` GitHub release and
+> its asset have since been deleted; the `v0.1.0` tag remains and holds source code only.
+> Later release tarballs contain this directory only because they contain the source
+> tree; they do not contain the Jina model.
 
 This directory preserves upstream terms and attribution for
 **`jinaai/jina-embeddings-v5-text-nano-retrieval`**, published by **Jina AI**.
@@ -56,9 +57,9 @@ Direct upstream sources:
 
 ## Exact audited bundle and packaging changes
 
-The following unchanged-content statement applies **only to the audited existing
-LTEmbed `v0.1.0` Q5_K_M bundle** in
-<https://github.com/Lychee-Technology/LTEmbed/releases/download/v0.1.0/ltembed-0.1.0-jinaai__jina-embeddings-v5-text-nano-retrieval-Q5_K_M-linux-arm64.tar.gz>.
+The following unchanged-content statement applies **only to the audited LTEmbed
+`v0.1.0` Q5_K_M bundle**, published until the release's deletion as
+`https://github.com/Lychee-Technology/LTEmbed/releases/download/v0.1.0/ltembed-0.1.0-jinaai__jina-embeddings-v5-text-nano-retrieval-Q5_K_M-linux-arm64.tar.gz`.
 The recorded asset SHA-256 is
 `34998a20b0cb068cc12c8950f90b1bfa075be7e1e9fa41d0cff01b9fd7eab326`.
 The completed audit found these model/tokenizer bytes identical to the pinned
@@ -79,8 +80,8 @@ the upstream card retains their description and base-model relationship.
 **Every future redistribution must verify these same hashes before reusing this
 unchanged-content statement.** If bytes or revisions differ, review their terms
 and provenance and update the notice to describe actual changes. This directory
-does not amend the existing published archive, and the release workflow does not
-package the Jina model.
+does not amend that archive, which shipped without these files, and the release
+workflow does not package the Jina model.
 
 ## EuroBERT base and retained Apache attribution
 

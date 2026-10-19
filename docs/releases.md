@@ -3,9 +3,12 @@
 What a release contains, how it is produced, and which model quant it ships. Everything
 here comes from `.github/workflows/release-bundles.yml`.
 
-As of 2026-10-06, the GitHub repository has no tags and no published releases. The crate
-version in `Cargo.toml` is `0.1.0`. This repository has no workflow that publishes to
-crates.io.
+A release is tagged `v<version>`, where `<version>` is `package.version` in `Cargo.toml`.
+`v0.1.0` (2026-10-13) is the last version of the previous model, Jina v5 Nano. Its GitHub
+release, whose asset held that model's GGUF and `tokenizer.json` without their license
+text, has been deleted; the tag remains and holds source code only
+([Jina notice](../licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md)). This
+repository has no workflow that publishes to crates.io.
 
 ## What a release tarball contains
 

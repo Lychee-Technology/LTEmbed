@@ -60,10 +60,12 @@ tarballs carry its license text and attribution in `licenses/embeddinggemma-2/`
 ([NOTICE.md](./licenses/embeddinggemma-2/NOTICE.md)); if you pass the bundle on without
 the rest of the tarball, pass that directory on with it.
 
-The `v0.1.0` release asset holds the previous model, Jina v5 Nano, which is
-**CC BY-NC 4.0 (NonCommercial only)**; commercial use requires separate permission from
-[sales@jina.ai](mailto:sales@jina.ai). `main` no longer ships it. Its terms, attribution
-and redistribution checklist are in
+The previous model, Jina v5 Nano, is **CC BY-NC 4.0 (NonCommercial only)**; commercial use
+requires separate permission from [sales@jina.ai](mailto:sales@jina.ai). `main` no longer
+ships it, and the `v0.1.0` release asset that held it has been deleted with that release;
+the `v0.1.0` tag remains and holds source code only. A copy of the asset downloaded before
+then is still under the model's terms. The model's terms, attribution and redistribution
+checklist are in
 [licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md](./licenses/jina-embeddings-v5-text-nano-retrieval/NOTICE.md),
 which does not clear redistribution of that asset, resolve its tokenizer's upstream
 rights, or grant additional rights.

@@ -151,7 +151,8 @@ when vectors are written: tag the index with the engine's embedding space and ch
    reader switches to the new index, not before.
 4. **Keep the old deployment until the switch is done.** This LTEmbed version cannot embed
    with the previous model, so rolling back means returning to the previous LTEmbed version,
-   its Jina bundle and the old index together.
+   its Jina bundle and the old index together. Keep your copy of that bundle: the `v0.1.0`
+   release asset that held it has been deleted.
 5. **Delete the old index** only after the new one has served for long enough to compare.
 
 Do not run old and new engines behind one query path, and do not backfill the new index
